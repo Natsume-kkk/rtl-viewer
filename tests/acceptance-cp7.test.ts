@@ -1,0 +1,158 @@
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { parseFile, parseXci, scanStructure } from "../src/parser";
+import { ModuleIndex } from "../src/model";
+import { buildHierarchy, type TreeNode } from "../src/model/hierarchy";
+
+/**
+ * CP7 真实工程验收：对 .tmp/cp7-acceptance/project（cameralink 工程副本，
+ * 含 58 个 GBK 文件、2 个 .xci IP、IP 生成的 VHDL）跑完整解析管线。
+ * 夹具缺失时跳过（夹具由 CP7 验收流程生成，不入 Git）。
+ */
+const PROJECT = join(__dirname, "..", ".tmp", "cp7-acceptance", "project");
+const SKIP_DIRS = new Set(["node_modules", "target", "dist"]);
+const HDL_RE = /\.(v|sv|vh|svh|vhd|vhdl)$/i;
+
+function walk(dir: string, out: { hdl: string[]; xci: string[] }): void {
+  for (const name of readdirSync(dir)) {
+    if (name.startsWith(".") || SKIP_DIRS.has(name)) continue;
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) {
+      walk(p, out);
+      continue;
+    }
+    if (HDL_RE.test(name)) out.hdl.push(p.replace(/\\/g, "/"));
+    else if (/\.xci$/i.test(name)) out.xci.push(p.replace(/\\/g, "/"));
+  }
+}
+
+/** 与 Rust 端 read_file 同策略：BOM → 严格 UTF-8 → GBK 兜底。 */
+function decode(buf: Buffer): { content: string; encoding: string } {
+  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+    return { content: buf.subarray(3).toString("utf8"), encoding: "utf8-bom" };
+  }
+  try {
+    return { content: new TextDecoder("utf-8", { fatal: true }).decode(buf), encoding: "utf8" };
+  } catch {
+    return { content: new TextDecoder("gbk").decode(buf), encoding: "gbk" };
+  }
+}
+
+function findNode(node: TreeNode, pred: (n: TreeNode) => boolean): TreeNode | undefined {
+  if (pred(node)) return node;
+  for (const c of node.children) {
+    const hit = findNode(c, pred);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+describe.skipIf(!existsSync(PROJECT))("CP7 真实工程验收（cameralink 副本）", () => {
+  function build() {
+    const files = { hdl: [] as string[], xci: [] as string[] };
+    walk(PROJECT, files);
+    // 与应用一致：.xci 所在目录树内的 HDL 不进索引（IP 生成目录）
+    const xciDirs = files.xci.map((f) => f.slice(0, f.lastIndexOf("/")));
+    const hdlFiles = files.hdl.filter(
+      (f) => !xciDirs.some((dir) => f.startsWith(dir + "/") || f.startsWith(dir + "\\")),
+    );
+    const index = new ModuleIndex();
+    const structures = new Map<string, ReturnType<typeof scanStructure>>();
+    const encodings = new Map<string, string>();
+    for (const file of hdlFiles) {
+      const { content, encoding } = decode(readFileSync(file));
+      encodings.set(file, encoding);
+      const mods = scanStructure(content, file);
+      index.addStructure(mods);
+      structures.set(file, mods);
+    }
+    for (const file of files.xci) {
+      const { content } = decode(readFileSync(file));
+      index.addIp(parseXci(content, file).name, file);
+    }
+    const h = buildHierarchy(index, structures, "cameralink_converter_top");
+    const hAuto = buildHierarchy(index, structures);
+    return { files, h, hAuto, encodings };
+  }
+
+  it("GBK 文件解码无乱码", () => {
+    const { encodings } = build();
+    const gbkFiles = [...encodings.entries()].filter(([, e]) => e === "gbk");
+    expect(gbkFiles.length).toBeGreaterThanOrEqual(2);
+    const sample = gbkFiles.find(([f]) => f.includes("gbk_sample"));
+    expect(sample).toBeDefined();
+    const { content } = decode(readFileSync(sample![0]));
+    expect(content).toContain("时钟复位模块");
+    expect(content).toContain("中文注释");
+    expect(content).not.toContain("�");
+  });
+
+  it("层级树：顶层正确、IP 解析为黑盒节点", () => {
+    const { h } = build();
+    expect(h.tops).toHaveLength(1);
+    const root = h.tops[0];
+    expect(root.moduleName).toBe("cameralink_converter_top");
+    expect(root.children.length).toBeGreaterThan(2);
+    for (const ipName of ["cl_clock_ip", "cl_line_ram_ip"]) {
+      const node = findNode(root, (n) => n.moduleName === ipName);
+      expect(node, `IP ${ipName} 应出现在树中`).toBeDefined();
+      expect(node!.kind).toBe("ip");
+    }
+  });
+
+  it("自动识别顶层：仿真封装环境解包出真实顶层", () => {
+    const { hAuto } = build();
+    expect(hAuto.tops[0]?.moduleName).toBe("cameralink_converter_top");
+  });
+
+  it("IP 端口可从 stub 提取（与端口面板同候选路径）", () => {
+    const cases: { xci: string; expectPorts: string[] }[] = [
+      {
+        xci: "ip/generated/ip-20261004-111410-ce9f5898/cl_clock_ip/cl_clock_ip.xci",
+        expectPorts: ["clk_out1", "resetn", "locked", "clk_in1"],
+      },
+      {
+        xci: "ip/generated/ip-20261004-111410-ce9f5898/cl_line_ram_ip/cl_line_ram_ip.xci",
+        expectPorts: ["clka", "wea", "addra", "doutb"],
+      },
+    ];
+    for (const c of cases) {
+      const xciPath = join(PROJECT, c.xci).replace(/\\/g, "/");
+      const name = c.xci.split("/").pop()!.replace(/\.xci$/i, "");
+      const base = xciPath.replace(/\.xci$/i, "");
+      const dir = xciPath.slice(0, xciPath.lastIndexOf("/"));
+      const candidates = [
+        `${base}.v`,
+        `${dir}/synth/${name}.v`,
+        `${dir}/sim/${name}.v`,
+      ];
+      let ports: string[] = [];
+      for (const candidate of candidates) {
+        if (!existsSync(candidate)) continue;
+        const { content } = decode(readFileSync(candidate));
+        const mods = parseFile(content, candidate);
+        const mod = mods.find((m) => m.name.toLowerCase() === name.toLowerCase()) ?? mods[0];
+        if (mod && mod.ports.length > 0) {
+          ports = mod.ports.map((p) => p.name);
+          break;
+        }
+      }
+      for (const p of c.expectPorts) {
+        expect(ports, `${name} 应提取到端口 ${p}`).toContain(p);
+      }
+    }
+  });
+
+  it("未解析例化占比低，未使用分组有效", () => {
+    const { h } = build();
+    const unresolved: string[] = [];
+    const collect = (n: TreeNode) => {
+      if (n.kind === "unresolved") unresolved.push(n.moduleName);
+      n.children.forEach(collect);
+    };
+    h.tops.forEach(collect);
+    expect(unresolved.length).toBeLessThanOrEqual(5);
+    expect(h.unused.length).toBeGreaterThan(0);
+  });
+});

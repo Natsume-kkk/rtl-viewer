@@ -1,0 +1,284 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use serde::Serialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const SKIP_DIRS: &[&str] = &["node_modules", "target", "dist"];
+/** EDA 工具生成目录（按后缀匹配）：内容是工具产物，不是用户源码。 */
+const GENERATED_DIR_SUFFIXES: &[&str] = &[".runs", ".sim", ".cache", ".hw", ".gen", ".ip_user_files"];
+const HDL_EXTS: &[&str] = &["v", "sv", "vh", "svh", "vhd", "vhdl"];
+
+#[derive(Serialize)]
+struct ScanResult {
+    hdl: Vec<String>,
+    xci: Vec<String>,
+}
+
+fn walk(dir: &Path, out: &mut ScanResult) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if path.is_dir() {
+            if name.starts_with('.')
+                || SKIP_DIRS.contains(&name)
+                || GENERATED_DIR_SUFFIXES.iter().any(|s| name.ends_with(s))
+            {
+                continue;
+            }
+            walk(&path, out);
+        } else {
+            let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+            if HDL_EXTS.contains(&ext.as_str()) {
+                out.hdl.push(normalize(&path));
+            } else if ext == "xci" {
+                out.xci.push(normalize(&path));
+            }
+        }
+    }
+}
+
+fn normalize(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+#[tauri::command]
+fn scan_folder(path: String) -> Result<ScanResult, String> {
+    let root = PathBuf::from(&path);
+    if !root.is_dir() {
+        return Err(format!("not a directory: {path}"));
+    }
+    let mut out = ScanResult { hdl: vec![], xci: vec![] };
+    walk(&root, &mut out);
+    out.hdl.sort();
+    out.xci.sort();
+    Ok(out)
+}
+
+#[derive(Serialize)]
+struct FileContent {
+    content: String,
+    encoding: String,
+}
+
+pub fn decode(bytes: &[u8]) -> (String, &'static str) {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return (
+            String::from_utf8_lossy(&bytes[3..]).into_owned(),
+            "utf8-bom",
+        );
+    }
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let (s, _, _) = encoding_rs::UTF_16LE.decode(&bytes[2..]);
+        return (s.into_owned(), "utf16le");
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let (s, _, _) = encoding_rs::UTF_16BE.decode(&bytes[2..]);
+        return (s.into_owned(), "utf16be");
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => (s.to_owned(), "utf8"),
+        Err(_) => {
+            let (s, _, _) = encoding_rs::GBK.decode(bytes);
+            (s.into_owned(), "gbk")
+        }
+    }
+}
+
+pub fn encode(content: &str, encoding: &str) -> Result<Vec<u8>, String> {
+    match encoding {
+        "utf8" => Ok(content.as_bytes().to_vec()),
+        "utf8-bom" => {
+            let mut v = vec![0xEF, 0xBB, 0xBF];
+            v.extend_from_slice(content.as_bytes());
+            Ok(v)
+        }
+        "utf16le" => {
+            let mut v = vec![0xFF, 0xFE];
+            for u in content.encode_utf16() {
+                v.extend_from_slice(&u.to_le_bytes());
+            }
+            Ok(v)
+        }
+        "utf16be" => {
+            let mut v = vec![0xFE, 0xFF];
+            for u in content.encode_utf16() {
+                v.extend_from_slice(&u.to_be_bytes());
+            }
+            Ok(v)
+        }
+        "gbk" => {
+            let (cow, _, had_errors) = encoding_rs::GBK.encode(content);
+            if had_errors {
+                return Err("内容包含 GBK 无法表示的字符，请改用 UTF-8 保存".to_owned());
+            }
+            Ok(cow.into_owned())
+        }
+        other => Err(format!("unsupported encoding: {other}")),
+    }
+}
+
+fn decode_as(bytes: &[u8], encoding: &str) -> Result<(String, String), String> {
+    let skip = match encoding {
+        "utf8-bom" if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) => 3,
+        "utf16le" if bytes.starts_with(&[0xFF, 0xFE]) => 2,
+        "utf16be" if bytes.starts_with(&[0xFE, 0xFF]) => 2,
+        _ => 0,
+    };
+    let body = &bytes[skip..];
+    let name = encoding.to_owned();
+    match encoding {
+        "utf8" | "utf8-bom" => String::from_utf8(body.to_vec())
+            .map(|s| (s, name))
+            .map_err(|_| format!("文件内容不是有效的 UTF-8: {encoding}")),
+        "utf16le" => Ok((encoding_rs::UTF_16LE.decode(body).0.into_owned(), name)),
+        "utf16be" => Ok((encoding_rs::UTF_16BE.decode(body).0.into_owned(), name)),
+        "gbk" => Ok((encoding_rs::GBK.decode(body).0.into_owned(), name)),
+        other => Err(format!("unsupported encoding: {other}")),
+    }
+}
+
+#[tauri::command]
+fn read_file(path: String, encoding: Option<String>) -> Result<FileContent, String> {
+    let bytes = fs::read(&path).map_err(|e| format!("read {path} failed: {e}"))?;
+    let (content, encoding) = match encoding.as_deref() {
+        Some(enc) => decode_as(&bytes, enc)?,
+        None => {
+            let (s, enc) = decode(&bytes);
+            (s, enc.to_owned())
+        }
+    };
+    Ok(FileContent { content, encoding })
+}
+
+#[tauri::command]
+fn write_file(path: String, content: String, encoding: String) -> Result<(), String> {
+    let bytes = encode(&content, &encoding)?;
+    fs::write(&path, bytes).map_err(|e| format!("write {path} failed: {e}"))
+}
+
+fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![scan_folder, read_file, write_file])
+        .run(tauri::generate_context!())
+        .expect("error while running rtl-viewer");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utf8_no_bom() {
+        let (s, enc) = decode("中文 module".as_bytes());
+        assert_eq!(enc, "utf8");
+        assert_eq!(s, "中文 module");
+    }
+
+    #[test]
+    fn utf8_bom() {
+        let mut b = vec![0xEF, 0xBB, 0xBF];
+        b.extend_from_slice("abc".as_bytes());
+        let (s, enc) = decode(&b);
+        assert_eq!(enc, "utf8-bom");
+        assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn gbk_fallback() {
+        // "中文" 的 GBK 编码
+        let gbk_bytes = [0xD6, 0xD0, 0xCE, 0xC4];
+        let (s, enc) = decode(&gbk_bytes);
+        assert_eq!(enc, "gbk");
+        assert_eq!(s, "中文");
+    }
+
+    #[test]
+    fn ascii_is_utf8() {
+        let (_, enc) = decode(b"module top;");
+        assert_eq!(enc, "utf8");
+    }
+
+    #[test]
+    fn gbk_roundtrip() {
+        let bytes = encode("中文注释", "gbk").unwrap();
+        let (s, enc) = decode(&bytes);
+        assert_eq!(enc, "gbk");
+        assert_eq!(s, "中文注释");
+    }
+
+    #[test]
+    fn gbk_unrepresentable_errors() {
+        assert!(encode("emoji \u{1F600}", "gbk").is_err());
+    }
+
+    #[test]
+    fn utf16le_roundtrip() {
+        let bytes = encode("中文", "utf16le").unwrap();
+        assert_eq!(&bytes[..2], &[0xFF, 0xFE]);
+        let (s, enc) = decode(&bytes);
+        assert_eq!(enc, "utf16le");
+        assert_eq!(s, "中文");
+    }
+
+    fn temp_file(name: &str, bytes: &[u8]) -> String {
+        let dir = std::env::temp_dir().join(format!("rtl-viewer-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        fs::write(&path, bytes).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// 文件级编辑保存：GBK 文件读出→修改→原编码写回→再读，内容与编码均无损。
+    #[test]
+    fn gbk_file_edit_save_roundtrip() {
+        let original = "// 时钟模块\nmodule top;\n";
+        let path = temp_file("gbk_edit.v", &encode(original, "gbk").unwrap());
+
+        let read1 = read_file(path.clone(), None).unwrap();
+        assert_eq!(read1.encoding, "gbk");
+        assert_eq!(read1.content, original);
+
+        let edited = read1.content.replace("时钟模块", "时钟模块改");
+        write_file(path.clone(), edited.clone(), read1.encoding.clone()).unwrap();
+
+        // 落盘字节仍是 GBK（不是合法 UTF-8）
+        let raw = fs::read(&path).unwrap();
+        assert!(std::str::from_utf8(&raw).is_err());
+
+        let read2 = read_file(path, None).unwrap();
+        assert_eq!(read2.encoding, "gbk");
+        assert_eq!(read2.content, edited);
+    }
+
+    /// UTF-8 BOM 文件保存后 BOM 保留。
+    #[test]
+    fn utf8_bom_file_edit_save_roundtrip() {
+        let path = temp_file("bom_edit.v", &encode("module a;\n", "utf8-bom").unwrap());
+        let read1 = read_file(path.clone(), None).unwrap();
+        assert_eq!(read1.encoding, "utf8-bom");
+        write_file(path.clone(), read1.content.replace("module a", "module b"), read1.encoding)
+            .unwrap();
+        let raw = fs::read(&path).unwrap();
+        assert!(raw.starts_with(&[0xEF, 0xBB, 0xBF]));
+        let read2 = read_file(path, None).unwrap();
+        assert!(read2.content.starts_with("module b"));
+    }
+
+    /// 手动切换编码保存：GBK 读出后以 UTF-8 写回，内容不变、编码改变。
+    #[test]
+    fn gbk_save_as_utf8() {
+        let original = "// 中文注释\nmodule c;\n";
+        let path = temp_file("transcode.v", &encode(original, "gbk").unwrap());
+        let read1 = read_file(path.clone(), None).unwrap();
+        assert_eq!(read1.encoding, "gbk");
+        write_file(path.clone(), read1.content.clone(), "utf8".to_owned()).unwrap();
+        let read2 = read_file(path, None).unwrap();
+        assert_eq!(read2.encoding, "utf8");
+        assert_eq!(read2.content, original);
+    }
+}

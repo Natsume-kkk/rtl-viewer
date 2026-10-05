@@ -1,0 +1,25 @@
+# 依赖与产物
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# 环境配置（真实密钥）
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+
+# AI 本地配置
+/.tmp/
+/goals/
+/.playwright-mcp/
+/AGENTS.md
+/ROADMAP.md

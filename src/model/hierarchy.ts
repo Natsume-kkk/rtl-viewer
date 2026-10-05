@@ -1,0 +1,195 @@
+import type { ModuleInfo } from "../parser";
+import { ModuleIndex } from "./index";
+
+export type NodeKind = "module" | "ip" | "unresolved" | "primitive";
+
+/**
+ * 常见厂商原语（Xilinx UNISIM 家族）。只在例化无定义时生效：
+ * 命中按原语叶子显示、不标 unresolved；已定义的同名模块仍按 module 处理。
+ */
+const PRIMITIVE_RE =
+  /^(?:gnd|vcc|pulldown|pullup|inv|bufg\w*|bufio\w*|i?o?buf\w*|dcm\w*|mmcm\w*|pll\w*|ramb?\d\w*|dsp48\w*|fd\w*|ld\w*|iddr\w*|oddr\w*|(?:i|o)serdes\w*|idelay\w*|odelay\w*|carry\d|muxcy\w*|xorcy\w*|muxf\d|srl\w*|lut\d|and\d|or\d|nand\d|nor\d|xor\d|xnor\d|startupe?\w*|gt[phex]\w*|bscan\w*|icap\w*|keep\w*)$/i;
+
+export function isVendorPrimitive(name: string): boolean {
+  return PRIMITIVE_RE.test(name);
+}
+
+export interface TreeNode {
+  /** 树内唯一键：例化路径 */
+  key: string;
+  /** 显示名：例化名（顶层为模块名） */
+  label: string;
+  moduleName: string;
+  kind: NodeKind;
+  file?: string;
+  line?: number;
+  /** 例化点（父模块文件与该例化所在行），顶层节点无；用于「跳到父模块中的例化位置」 */
+  instFile?: string;
+  instLine?: number;
+  recursive: boolean;
+  children: TreeNode[];
+}
+
+export interface Hierarchy {
+  tops: TreeNode[];
+  /** 候选顶层模块名（未被任何模块例化） */
+  topCandidates: string[];
+  /** 未被引用的模块定义 */
+  unused: { name: string; file: string; line: number }[];
+}
+
+/** 测试台命名（次优先信号）：tb_/tbs_/test_ 前缀或 _tb/_test 后缀。 */
+const TB_NAME_RE = /^(?:tb|tbs|test)_|_(?:tb|test)$/i;
+/** 验证环境目录（主优先信号）：定义文件位于 sim/tb/test 等目录段内的候选靠后。 */
+const SIM_PATH_RE =
+  /(^|[/\\])(sim|sim_\d+|tb|tbs|test|tests|testbench|verification|simulation|dv|uvm|bench)([/\\]|$)/i;
+
+/**
+ * 多候选顶层自动识别：测试台/仿真候选先向内「解包」出 DUT（可达子图最大的已定义子模块），
+ * 再在所有候选的有效顶层中取可达子图最大者。仿真环境通常例化真实顶层，
+ * 导致真实顶层不在候选中，直接过滤仿真候选会误选孤立小模块。
+ */
+function autoPickTop(
+  candidates: string[],
+  structByModule: Map<string, ModuleInfo>,
+): string | undefined {
+  if (candidates.length === 0) return undefined;
+  const sizeCache = new Map<string, number>();
+  const reachableSize = (root: string): number => {
+    const cached = sizeCache.get(root.toLowerCase());
+    if (cached !== undefined) return cached;
+    const seen = new Set<string>();
+    const stack = [root.toLowerCase()];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      for (const inst of structByModule.get(cur)?.instances ?? []) {
+        stack.push(inst.module.toLowerCase());
+      }
+    }
+    sizeCache.set(root.toLowerCase(), seen.size);
+    return seen.size;
+  };
+  const fileOf = (name: string) => structByModule.get(name.toLowerCase())?.file ?? "";
+  const isTb = (name: string) =>
+    TB_NAME_RE.test(name) || SIM_PATH_RE.test(fileOf(name));
+  const unwrap = (name: string): string => {
+    let cur = name;
+    const seen = new Set([cur.toLowerCase()]);
+    while (isTb(cur)) {
+      const children = (structByModule.get(cur.toLowerCase())?.instances ?? [])
+        .map((i) => i.module)
+        .filter((m) => structByModule.has(m.toLowerCase()) && !seen.has(m.toLowerCase()));
+      if (children.length === 0) break;
+      let bestChild = children[0];
+      for (const c of children.slice(1)) {
+        if (reachableSize(c) > reachableSize(bestChild)) bestChild = c;
+      }
+      cur = bestChild;
+      seen.add(cur.toLowerCase());
+    }
+    return cur;
+  };
+  let best: string | undefined;
+  let bestSize = -1;
+  for (const name of candidates) {
+    const eff = unwrap(name);
+    const size = reachableSize(eff);
+    if (size > bestSize || (size === bestSize && best !== undefined && isTb(best) && !isTb(eff))) {
+      best = eff;
+      bestSize = size;
+    }
+  }
+  return best;
+}
+
+/**
+ * 构建例化层级树。
+ * @param index 模块索引
+ * @param structures 文件路径 → 该文件的模块结构（含例化边）
+ * @param topName 指定顶层；缺省自动识别（唯一候选直接采用，多候选时仿真/测试台候选先解包出 DUT，再取可达子图最大者）
+ */
+export function buildHierarchy(
+  index: ModuleIndex,
+  structures: Map<string, ModuleInfo[]>,
+  topName?: string,
+): Hierarchy {
+  const structByModule = new Map<string, ModuleInfo>();
+  for (const modules of structures.values()) {
+    for (const m of modules) {
+      if (!structByModule.has(m.name.toLowerCase())) {
+        structByModule.set(m.name.toLowerCase(), m);
+      }
+    }
+  }
+
+  const instantiated = new Set<string>();
+  for (const modules of structures.values()) {
+    for (const m of modules) {
+      for (const inst of m.instances) {
+        instantiated.add(inst.module.toLowerCase());
+      }
+    }
+  }
+
+  const topCandidates = index
+    .allDefs()
+    .filter((d) => !d.isIp && !instantiated.has(d.name.toLowerCase()))
+    .map((d) => d.name);
+
+  const chosenTop = topName ?? autoPickTop(topCandidates, structByModule);
+
+  const buildNode = (
+    moduleName: string,
+    label: string,
+    key: string,
+    ancestors: Set<string>,
+  ): TreeNode => {
+    const def = index.resolve(moduleName);
+    const node: TreeNode = {
+      key,
+      label,
+      moduleName,
+      kind: def ? (def.isIp ? "ip" : "module") : isVendorPrimitive(moduleName) ? "primitive" : "unresolved",
+      file: def?.file,
+      line: def?.line,
+      recursive: false,
+      children: [],
+    };
+    const lower = moduleName.toLowerCase();
+    if (ancestors.has(lower)) {
+      node.recursive = true;
+      return node;
+    }
+    const struct = structByModule.get(lower);
+    if (!struct) return node;
+    const nextAncestors = new Set(ancestors).add(lower);
+    node.children = struct.instances.map((inst) => {
+      const child = buildNode(inst.module, inst.inst, `${key}/${inst.inst}`, nextAncestors);
+      child.instFile = struct.file;
+      child.instLine = inst.line;
+      return child;
+    });
+    return node;
+  };
+
+  const tops: TreeNode[] = [];
+  const reachable = new Set<string>();
+  if (chosenTop) {
+    const root = buildNode(chosenTop, chosenTop, chosenTop, new Set());
+    const walk = (n: TreeNode) => {
+      reachable.add(n.moduleName.toLowerCase());
+      n.children.forEach(walk);
+    };
+    walk(root);
+    tops.push(root);
+  }
+
+  const unused = index
+    .allDefs()
+    .filter((d) => !d.isIp && !reachable.has(d.name.toLowerCase()))
+    .map((d) => ({ name: d.name, file: d.file, line: d.line }));
+
+  return { tops, topCandidates, unused };
+}

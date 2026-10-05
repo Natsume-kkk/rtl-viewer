@@ -7,6 +7,8 @@ export interface TreeCallbacks {
   onIpInfo?(node: TreeNode): void;
   /** 多顶层时用户选定顶层模块 */
   onSelectTop?(name: string): void;
+  /** 点击约束文件：打开查看 */
+  onOpenFile?(path: string): void;
 }
 
 export class HierarchyTree {
@@ -19,7 +21,7 @@ export class HierarchyTree {
     this.callbacks = callbacks;
   }
 
-  render(h: Hierarchy): void {
+  render(h: Hierarchy, constraints: string[] = []): void {
     this.rootEl.textContent = "";
     if (h.topCandidates.length > 1) {
       this.renderTopSwitch(h.topCandidates, h.tops[0]?.moduleName);
@@ -39,6 +41,29 @@ export class HierarchyTree {
       this.rootEl.appendChild(ul);
     }
     this.renderUnused(h.unused);
+    this.renderConstraints(constraints);
+  }
+
+  /** 约束文件分组（.xdc/.sdc），只读查看入口，不参与层级。 */
+  private renderConstraints(files: string[]): void {
+    if (files.length === 0) return;
+    const box = document.createElement("div");
+    box.className = "tree-unused";
+    const title = document.createElement("div");
+    title.className = "tree-unused-title";
+    title.textContent = `约束 (${files.length})`;
+    box.appendChild(title);
+    const ul = document.createElement("ul");
+    for (const file of files) {
+      const li = document.createElement("li");
+      li.className = "tree-row kind-constraint";
+      li.textContent = file.split(/[\\/]/).pop() ?? file;
+      li.title = file;
+      li.addEventListener("click", () => this.callbacks.onOpenFile?.(file));
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+    this.rootEl.appendChild(box);
   }
 
   /** 多顶层候选时的切换下拉，当前自动识别/已选顶层为选中项。 */

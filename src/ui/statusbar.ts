@@ -20,6 +20,17 @@ export class StatusBar {
   private encEl: HTMLSpanElement;
   private callbacks: StatusBarCallbacks;
   private menu: HTMLDivElement | null = null;
+  private hintEl!: HTMLSpanElement;
+  private hintTimer: number | undefined;
+
+  /** 瞬态提示（找不到跳转目标等），3 秒后自动消失。 */
+  hint(text: string): void {
+    window.clearTimeout(this.hintTimer);
+    this.hintEl.textContent = text;
+    this.hintTimer = window.setTimeout(() => {
+      this.hintEl.textContent = "";
+    }, 3000);
+  }
 
   constructor(rootEl: HTMLElement, callbacks: StatusBarCallbacks) {
     this.rootEl = rootEl;
@@ -39,6 +50,9 @@ export class StatusBar {
 
     const left = document.createElement("div");
     left.className = "status-left";
+    this.hintEl = document.createElement("span");
+    this.hintEl.className = "status-item status-hint";
+    left.appendChild(this.hintEl);
     const right = document.createElement("div");
     right.className = "status-right";
     right.append(this.langEl, this.encEl, this.posEl);

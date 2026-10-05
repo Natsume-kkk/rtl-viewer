@@ -1,5 +1,6 @@
 import { monaco, langForFile } from "./monaco";
-import { readFile, writeFile, saveFileDialog, confirmDialog } from "../ipc";
+import { readFile, writeFile, saveFileDialog, confirmDialog, fileStates } from "../ipc";
+import { choiceDialog } from "../ui/dialog";
 
 export interface Tab {
   /** 磁盘路径；未命名新文件为空字符串 */
@@ -8,6 +9,10 @@ export interface Tab {
   model: monaco.editor.ITextModel;
   encoding: string;
   dirty: boolean;
+  /** 载入/上次保存时的磁盘 mtime，用于外部变更检测；0 表示未知 */
+  mtime: number;
+  /** 磁盘已被外部修改（脏标签上的 ⚠ 徽章） */
+  externalChanged: boolean;
   element: HTMLLIElement;
 }
 
@@ -15,8 +20,8 @@ export interface TabEvents {
   /** 活动标签变化（含编码、语言，用于状态栏刷新） */
   onActiveChange(): void;
   /** 文件从磁盘读取/写回后回调（用于刷新解析缓存与层级树） */
-  onFileReloaded(path: string, content: string): void;
-  onFileSaved(path: string, content: string): void;
+  onFileReloaded(path: string, content: string, encoding: string, mtime: number): void;
+  onFileSaved(path: string, content: string, encoding: string, mtime: number): void;
 }
 
 export class TabManager {
@@ -54,25 +59,25 @@ export class TabManager {
       if (line !== undefined) this.reveal(line);
       return;
     }
-    const { content, encoding } = await readFile(path);
-    this.createTab(path, basename(path), content, encoding, line);
-    this.events.onFileReloaded(path, content);
+    const { content, encoding, mtime } = await readFile(path);
+    this.createTab(path, basename(path), content, encoding, mtime, line);
+    this.events.onFileReloaded(path, content, encoding, mtime);
   }
 
   /** 已缓存内容的文件直接打开，不再读盘（扫描阶段已读过的场景）。 */
-  openContent(path: string, content: string, encoding: string, line?: number): void {
+  openContent(path: string, content: string, encoding: string, mtime: number, line?: number): void {
     const existing = this.findTab(path);
     if (existing) {
       this.activate(existing);
       if (line !== undefined) this.reveal(line);
       return;
     }
-    this.createTab(path, basename(path), content, encoding, line);
+    this.createTab(path, basename(path), content, encoding, mtime, line);
   }
 
   newFile(): void {
     this.untitledCount += 1;
-    this.createTab("", `untitled-${this.untitledCount}`, "", "utf8");
+    this.createTab("", `untitled-${this.untitledCount}`, "", "utf8", 0);
   }
 
   /** 以指定编码重新读取当前文件并替换内容。 */
@@ -84,16 +89,43 @@ export class TabManager {
     }
     if (!tab.path) return; // 未命名文件无盘可读
     try {
-      const { content } = await readFile(tab.path, encoding);
+      const { content, mtime } = await readFile(tab.path, encoding);
       tab.model.setValue(content);
       tab.encoding = encoding;
+      tab.mtime = mtime;
       tab.dirty = false;
+      tab.externalChanged = false;
       this.renderTab(tab);
-      this.events.onFileReloaded(tab.path, content);
+      this.events.onFileReloaded(tab.path, content, encoding, mtime);
       this.events.onActiveChange();
     } catch (e) {
       await confirmDialog(`重新打开失败：${String(e)}`);
     }
+  }
+
+  /** 磁盘内容静默重载（外部变更、标签无未保存修改时）。返回是否执行。 */
+  reloadFromDisk(path: string, content: string, encoding: string, mtime: number): boolean {
+    const tab = this.findTab(path);
+    if (!tab || tab.dirty) return false;
+    const viewing = this.editor.getModel() === tab.model;
+    const pos = viewing ? this.editor.getPosition() : null;
+    tab.model.setValue(content);
+    tab.encoding = encoding;
+    tab.mtime = mtime;
+    tab.dirty = false;
+    tab.externalChanged = false;
+    this.renderTab(tab);
+    if (viewing && pos) this.editor.setPosition(pos);
+    this.events.onFileReloaded(path, content, encoding, mtime);
+    return true;
+  }
+
+  /** 设置/清除「磁盘已变更」徽章。 */
+  markExternalChanged(path: string, changed: boolean): void {
+    const tab = this.findTab(path);
+    if (!tab || tab.externalChanged === changed) return;
+    tab.externalChanged = changed;
+    this.renderTab(tab);
   }
 
   /** 修改当前标签的保存编码（不动磁盘）。 */
@@ -150,19 +182,49 @@ export class TabManager {
   }
 
   private async doWrite(tab: Tab, path: string): Promise<boolean> {
+    // 保存前检测：磁盘 mtime 与载入时不一致说明外部已修改，禁止静默覆盖
+    if (path === tab.path && tab.mtime) {
+      const [current] = await fileStates([tab.path]);
+      if (current && current !== tab.mtime) {
+        const choice = await choiceDialog(
+          `「${tab.title}」在磁盘上已被外部修改。`,
+          ["覆盖保存", "放弃修改重新加载", "取消"],
+        );
+        if (choice === 1) {
+          try {
+            const { content, encoding, mtime } = await readFile(tab.path);
+            tab.model.setValue(content);
+            tab.encoding = encoding;
+            tab.mtime = mtime;
+            tab.dirty = false;
+            tab.externalChanged = false;
+            this.renderTab(tab);
+            this.events.onFileReloaded(tab.path, content, encoding, mtime);
+            this.events.onActiveChange();
+          } catch (e) {
+            await confirmDialog(`重新加载失败：${String(e)}`);
+          }
+          return false;
+        }
+        if (choice !== 0) return false;
+      }
+    }
+    let mtime: number;
     try {
-      await writeFile(path, tab.model.getValue(), tab.encoding);
+      mtime = await writeFile(path, tab.model.getValue(), tab.encoding);
     } catch (e) {
       await confirmDialog(`保存失败：${String(e)}`);
       return false;
     }
     tab.dirty = false;
+    tab.externalChanged = false;
+    tab.mtime = mtime;
     this.renderTab(tab);
-    this.events.onFileSaved(path, tab.model.getValue());
+    this.events.onFileSaved(path, tab.model.getValue(), tab.encoding, mtime);
     return true;
   }
 
-  private createTab(path: string, title: string, content: string, encoding: string, line?: number): void {
+  private createTab(path: string, title: string, content: string, encoding: string, mtime: number, line?: number): void {
     const uri = path
       ? monaco.Uri.parse(`file:///${path}`)
       : monaco.Uri.parse(`inmemory:///${title}`);
@@ -173,6 +235,8 @@ export class TabManager {
       model,
       encoding,
       dirty: false,
+      mtime,
+      externalChanged: false,
       element: document.createElement("li"),
     };
     model.onDidChangeContent(() => {
@@ -194,8 +258,8 @@ export class TabManager {
     tab.element.className = "tab";
     const label = document.createElement("span");
     label.className = "tab-label";
-    label.textContent = (tab.dirty ? "*" : "") + tab.title;
-    label.title = tab.path || "未保存";
+    label.textContent = (tab.dirty ? "*" : "") + (tab.externalChanged ? "⚠ " : "") + tab.title;
+    label.title = tab.externalChanged ? "磁盘文件已被外部修改" : tab.path || "未保存";
     const close = document.createElement("span");
     close.className = "tab-close";
     close.textContent = "×";

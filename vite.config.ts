@@ -11,7 +11,7 @@ function e2eFsPlugin(): Plugin {
   const SKIP_DIRS = new Set(["node_modules", "target", "dist"]);
   const HDL_RE = /\.(v|sv|vh|svh|vhd|vhdl)$/i;
 
-  function walk(dir: string, out: { hdl: string[]; xci: string[] }): void {
+  function walk(dir: string, out: { hdl: string[]; xci: string[]; con: string[] }): void {
     for (const name of readdirSync(dir)) {
       if (name.startsWith(".") || SKIP_DIRS.has(name)) continue;
       const p = join(dir, name).replace(/\\/g, "/");
@@ -21,6 +21,8 @@ function e2eFsPlugin(): Plugin {
         out.hdl.push(p);
       } else if (/\.xci$/i.test(name)) {
         out.xci.push(p);
+      } else if (/\.(xdc|sdc)$/i.test(name)) {
+        out.con.push(p);
       }
     }
   }
@@ -50,10 +52,11 @@ function e2eFsPlugin(): Plugin {
         try {
           const url = new URL(req.url ?? "", "http://localhost");
           const root = url.searchParams.get("path") ?? "";
-          const out = { hdl: [] as string[], xci: [] as string[] };
+          const out = { hdl: [] as string[], xci: [] as string[], con: [] as string[] };
           walk(root, out);
           out.hdl.sort();
           out.xci.sort();
+          out.con.sort();
           json(res, out);
         } catch (e) {
           json(res, { error: String(e) }, 500);
@@ -77,21 +80,51 @@ function e2eFsPlugin(): Plugin {
                 ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text, "utf8")])
                 : Buffer.from(text, "utf8");
             writeFileSync(path, bytes);
-            json(res, null);
+            json(res, Math.round(statSync(path).mtimeMs));
           });
           return;
         }
         try {
           const forced = url.searchParams.get("encoding");
           const buf = readFileSync(path);
+          const mtime = Math.round(statSync(path).mtimeMs);
           if (forced && forced !== "null") {
             const label = forced === "gbk" ? "gbk" : "utf-8";
-            json(res, { content: new TextDecoder(label).decode(buf), encoding: forced });
+            json(res, { content: new TextDecoder(label).decode(buf), encoding: forced, mtime });
           } else {
-            json(res, decode(buf));
+            json(res, { ...decode(buf), mtime });
           }
         } catch (e) {
           json(res, { error: String(e) }, 500);
+        }
+      });
+      server.middlewares.use("/__e2e_stat", (req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (c: Buffer) => chunks.push(c));
+        req.on("end", () => {
+          try {
+            const paths = JSON.parse(Buffer.concat(chunks).toString("utf8")) as string[];
+            const states = paths.map((p) => {
+              try {
+                return Math.round(statSync(p).mtimeMs);
+              } catch {
+                return null;
+              }
+            });
+            json(res, states);
+          } catch (e) {
+            json(res, { error: String(e) }, 500);
+          }
+        });
+      });
+      server.middlewares.use("/__e2e_exists", (req, res) => {
+        const url = new URL(req.url ?? "", "http://localhost");
+        const path = url.searchParams.get("path") ?? "";
+        try {
+          statSync(path);
+          json(res, true);
+        } catch {
+          json(res, false);
         }
       });
     },

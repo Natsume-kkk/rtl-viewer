@@ -1,4 +1,4 @@
-import type { DefinitionRef, ModuleInfo, PortInfo } from "./types";
+import type { DefinitionRef, InstanceInfo, ModuleInfo, PortInfo } from "./types";
 
 function computeLineStarts(s: string): number[] {
   const starts = [0];
@@ -93,8 +93,8 @@ function findEnd(stripped: string, from: number, name: string, extraTag?: string
   return stripped.length;
 }
 
-/** 完整解析：entity 定义、端口、例化（component / direct entity，按 architecture 归属）。withPorts=false 时跳过端口提取（第一级结构扫描用）。 */
-export function parseVhdl(src: string, file: string, withPorts = true): ModuleInfo[] {
+/** 完整解析：entity 定义、端口、例化（component / direct entity，按 architecture 归属）。withPorts=false 时跳过端口提取（第一级结构扫描用）；withConn=true 时额外提取 port map 连接（悬停端口映射用）。 */
+export function parseVhdl(src: string, file: string, withPorts = true, withConn = false): ModuleInfo[] {
   const stripped = stripVhdlComments(src);
   const lineStarts = computeLineStarts(stripped);
   const byName = new Map<string, ModuleInfo>();
@@ -133,6 +133,7 @@ export function parseVhdl(src: string, file: string, withPorts = true): ModuleIn
     const owner = byName.get(m[2].toLowerCase());
     const archEnd = findEnd(stripped, archRe.lastIndex, "architecture", m[1]);
     const body = stripped.slice(archRe.lastIndex, archEnd);
+    const bodyStart = archRe.lastIndex;
     archRe.lastIndex = archEnd;
     if (!owner) continue;
     let im: RegExpExecArray | null;
@@ -140,12 +141,63 @@ export function parseVhdl(src: string, file: string, withPorts = true): ModuleIn
     while ((im = instRe.exec(body))) {
       const module = im[3] ?? im[4] ?? im[5];
       if (!module) continue;
-      owner.instances.push({
+      const info: InstanceInfo = {
         module,
         inst: im[1],
-        line: lineAt(lineStarts, archRe.lastIndex - body.length + im.index),
-      });
+        line: lineAt(lineStarts, bodyStart + im.index),
+      };
+      if (withConn) {
+        // port map 可能跟在 generic map 之后，从例化名起向后找第一个 port map (
+        const pm = /\bport\s+map\s*\(/i.exec(body.slice(im.index));
+        if (pm) {
+          const open = im.index + pm.index + pm[0].length - 1;
+          const close = skipBalanced(body, open);
+          if (close > 0) {
+            info.connections = parseVhdlConnections(body.slice(open + 1, close - 1), bodyStart + open + 1, lineStarts);
+            info.endLine = lineAt(lineStarts, bodyStart + close - 1);
+          }
+        }
+      }
+      owner.instances.push(info);
     }
   }
   return [...byName.values()];
+}
+
+/** 解析 VHDL port map 连接表：`port => expr` 命名连接或位置连接，按顶层逗号切分。 */
+function parseVhdlConnections(
+  src: string,
+  baseOffset: number,
+  lineStarts: number[],
+): InstanceInfo["connections"] {
+  const entries: { text: string; start: number }[] = [];
+  let depth = 0, cur = "", curStart = 0;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (ch === "," && depth === 0) {
+      entries.push({ text: cur, start: curStart });
+      cur = "";
+      curStart = i + 1;
+    } else {
+      cur += ch;
+    }
+  }
+  entries.push({ text: cur, start: curStart });
+  const out: NonNullable<InstanceInfo["connections"]> = [];
+  for (const { text, start } of entries) {
+    const expr = text.trim();
+    if (!expr) continue;
+    // 行号取条目内首个非空白字符（条目可能以换行开头）
+    const lead = /^\s*/.exec(text)![0].length;
+    const line = lineAt(lineStarts, baseOffset + start + lead);
+    const named = /^([A-Za-z_]\w*)\s*=>\s*([\s\S]*?)$/.exec(expr);
+    if (named) {
+      out.push({ port: named[1], expr: named[2].trim(), line });
+    } else {
+      out.push({ expr, line });
+    }
+  }
+  return out;
 }

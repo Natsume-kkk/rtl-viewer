@@ -91,6 +91,22 @@ describe("HierarchyTree", () => {
     );
   });
 
+  it("约束文件分组渲染并可点击打开", () => {
+    const onOpenFile = vi.fn();
+    const { rootEl, tree } = makeTree({ onOpen: vi.fn(), onOpenFile });
+    const h: Hierarchy = {
+      tops: [node({ key: "mod_a", label: "mod_a", moduleName: "mod_a" })],
+      topCandidates: ["mod_a"],
+      unused: [],
+    };
+    tree.render(h, ["D:/proj/constraints/pins.xdc", "D:/proj/timing.sdc"]);
+    const rows = [...rootEl.querySelectorAll(".tree-row.kind-constraint")];
+    expect(rows.map((r) => r.textContent)).toEqual(["pins.xdc", "timing.sdc"]);
+    expect(rootEl.querySelector(".tree-unused-title")?.textContent).toBe("约束 (2)");
+    rows[0].dispatchEvent(new Event("click", { bubbles: true }));
+    expect(onOpenFile).toHaveBeenCalledWith("D:/proj/constraints/pins.xdc");
+  });
+
   it("toggle 展开/收起子节点", () => {
     const { rootEl, tree } = makeTree({ onOpen: vi.fn() });
     const h: Hierarchy = {

@@ -88,6 +88,54 @@ body.resizing {
   background: #1177bb;
 }
 
+.open-wrap {
+  display: inline-flex;
+  position: relative;
+}
+
+.open-wrap .recent-btn {
+  padding: 4px 6px;
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.recent-menu {
+  position: fixed;
+  top: 34px;
+  left: 8px;
+  min-width: 260px;
+  max-width: 420px;
+  background: #252526;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  z-index: 30;
+}
+
+.recent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.recent-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  flex: 1;
+}
+
+.recent-remove {
+  color: var(--fg-dim);
+  padding: 0 4px;
+}
+
+.recent-remove:hover {
+  color: #fff;
+}
+
 .progress {
   padding: 4px 8px;
   color: var(--fg-dim);
@@ -271,7 +319,8 @@ body.resizing {
 
 /* ---------- IP 面板 ---------- */
 
-#ip-panel {
+#ip-panel,
+#portmap-panel {
   position: absolute;
   top: 40px;
   right: 24px;
@@ -282,6 +331,75 @@ body.resizing {
   border: 1px solid var(--border);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   z-index: 10;
+}
+
+.pm-link {
+  color: #4ec9b0;
+  cursor: pointer;
+}
+
+.pm-link:hover {
+  text-decoration: underline;
+}
+
+.pm-unconnected {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.status-hint {
+  color: #d7ba7d;
+}
+
+/* ---------- 选择对话框 ---------- */
+
+.choice-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.choice-box {
+  min-width: 320px;
+  max-width: 480px;
+  background: #252526;
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+  padding: 14px 16px;
+}
+
+.choice-msg {
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+
+.choice-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.choice-buttons button {
+  background: #3c3c3c;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.choice-buttons button.primary {
+  background: #0e639c;
+  color: #fff;
+  border-color: #0e639c;
+}
+
+.choice-buttons button:hover {
+  filter: brightness(1.2);
 }
 
 .ip-panel-head {

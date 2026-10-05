@@ -32,5 +32,13 @@ export function parseFile(src: string, file: string, withPorts = true): ModuleIn
   return [];
 }
 
+/** 第三级：在完整解析基础上额外提取例化端口连接与收尾行。用于悬停端口映射。 */
+export function parseFileDetail(src: string, file: string): ModuleInfo[] {
+  const lang = detectLang(file);
+  if (lang === "verilog") return parseVerilog(src, file, true, true);
+  if (lang === "vhdl") return parseVhdl(src, file, true, true);
+  return [];
+}
+
 export * from "./types";
 export { parseXci } from "./xci";

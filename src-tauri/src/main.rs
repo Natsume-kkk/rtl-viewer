@@ -8,11 +8,14 @@ const SKIP_DIRS: &[&str] = &["node_modules", "target", "dist"];
 /** EDA 工具生成目录（按后缀匹配）：内容是工具产物，不是用户源码。 */
 const GENERATED_DIR_SUFFIXES: &[&str] = &[".runs", ".sim", ".cache", ".hw", ".gen", ".ip_user_files"];
 const HDL_EXTS: &[&str] = &["v", "sv", "vh", "svh", "vhd", "vhdl"];
+/** 约束文件（只读查看，不参与解析与索引） */
+const CONSTRAINT_EXTS: &[&str] = &["xdc", "sdc"];
 
 #[derive(Serialize)]
 struct ScanResult {
     hdl: Vec<String>,
     xci: Vec<String>,
+    con: Vec<String>,
 }
 
 fn walk(dir: &Path, out: &mut ScanResult) {
@@ -36,6 +39,8 @@ fn walk(dir: &Path, out: &mut ScanResult) {
                 out.hdl.push(normalize(&path));
             } else if ext == "xci" {
                 out.xci.push(normalize(&path));
+            } else if CONSTRAINT_EXTS.contains(&ext.as_str()) {
+                out.con.push(normalize(&path));
             }
         }
     }
@@ -51,10 +56,11 @@ fn scan_folder(path: String) -> Result<ScanResult, String> {
     if !root.is_dir() {
         return Err(format!("not a directory: {path}"));
     }
-    let mut out = ScanResult { hdl: vec![], xci: vec![] };
+    let mut out = ScanResult { hdl: vec![], xci: vec![], con: vec![] };
     walk(&root, &mut out);
     out.hdl.sort();
     out.xci.sort();
+    out.con.sort();
     Ok(out)
 }
 
@@ -62,6 +68,33 @@ fn scan_folder(path: String) -> Result<ScanResult, String> {
 struct FileContent {
     content: String,
     encoding: String,
+    /// 磁盘修改时间（毫秒时间戳），读取失败为 0
+    mtime: u64,
+}
+
+fn mtime_ms(path: &str) -> u64 {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+fn file_states(paths: Vec<String>) -> Vec<Option<u64>> {
+    paths
+        .iter()
+        .map(|p| {
+            let m = mtime_ms(p);
+            if m == 0 { None } else { Some(m) }
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+    PathBuf::from(&path).exists()
 }
 
 pub fn decode(bytes: &[u8]) -> (String, &'static str) {
@@ -151,19 +184,30 @@ fn read_file(path: String, encoding: Option<String>) -> Result<FileContent, Stri
             (s, enc.to_owned())
         }
     };
-    Ok(FileContent { content, encoding })
+    Ok(FileContent {
+        content,
+        encoding,
+        mtime: mtime_ms(&path),
+    })
 }
 
 #[tauri::command]
-fn write_file(path: String, content: String, encoding: String) -> Result<(), String> {
+fn write_file(path: String, content: String, encoding: String) -> Result<u64, String> {
     let bytes = encode(&content, &encoding)?;
-    fs::write(&path, bytes).map_err(|e| format!("write {path} failed: {e}"))
+    fs::write(&path, bytes).map_err(|e| format!("write {path} failed: {e}"))?;
+    Ok(mtime_ms(&path))
 }
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![scan_folder, read_file, write_file])
+        .invoke_handler(tauri::generate_handler![
+            scan_folder,
+            read_file,
+            write_file,
+            file_states,
+            path_exists
+        ])
         .run(tauri::generate_context!())
         .expect("error while running rtl-viewer");
 }
@@ -280,5 +324,24 @@ mod tests {
         let read2 = read_file(path, None).unwrap();
         assert_eq!(read2.encoding, "utf8");
         assert_eq!(read2.content, original);
+    }
+
+    /// 外部变更监视基础：file_states 对存在文件返回 mtime、缺失文件返回 None；
+    /// read_file 与 write_file 的 mtime 一致且写后变化。
+    #[test]
+    fn file_states_and_mtime() {
+        let path = temp_file("mtime.v", b"module m;\n");
+        let states = file_states(vec![path.clone(), "definitely/missing.v".to_owned()]);
+        assert!(states[0].unwrap() > 0);
+        assert_eq!(states[1], None);
+
+        let read = read_file(path.clone(), None).unwrap();
+        assert_eq!(read.mtime, states[0].unwrap());
+        assert!(path_exists(path.clone()));
+        assert!(!path_exists("definitely/missing.v".to_owned()));
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let new_mtime = write_file(path, "module m2;\n".to_owned(), "utf8".to_owned()).unwrap();
+        assert!(new_mtime >= read.mtime);
     }
 }

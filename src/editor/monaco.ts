@@ -128,6 +128,8 @@ export function langForFile(file: string): string {
   const ext = file.toLowerCase().split(".").pop() ?? "";
   if (["v", "sv", "vh", "svh"].includes(ext)) return "verilog";
   if (["vhd", "vhdl"].includes(ext)) return "vhdl";
+  // 约束文件本质是 Tcl 命令，复用 monaco 内置 tcl 高亮
+  if (["xdc", "sdc"].includes(ext)) return "tcl";
   return "plaintext";
 }
 

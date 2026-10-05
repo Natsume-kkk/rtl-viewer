@@ -4,11 +4,15 @@ import { open, save, confirm } from "@tauri-apps/plugin-dialog";
 export interface ScanResult {
   hdl: string[];
   xci: string[];
+  /** 约束文件（.xdc/.sdc），只读查看不参与索引 */
+  con: string[];
 }
 
 export interface FileContent {
   content: string;
   encoding: string;
+  /** 磁盘修改时间（毫秒时间戳） */
+  mtime: number;
 }
 
 export function scanFolder(path: string): Promise<ScanResult> {
@@ -19,8 +23,18 @@ export function readFile(path: string, encoding?: string): Promise<FileContent> 
   return invoke<FileContent>("read_file", { path, encoding: encoding ?? null });
 }
 
-export function writeFile(path: string, content: string, encoding: string): Promise<void> {
-  return invoke<void>("write_file", { path, content, encoding });
+/** 写回文件，返回落盘后的 mtime（毫秒时间戳）。 */
+export function writeFile(path: string, content: string, encoding: string): Promise<number> {
+  return invoke<number>("write_file", { path, content, encoding });
+}
+
+/** 批量查询文件 mtime；文件不存在对应位置为 null。 */
+export function fileStates(paths: string[]): Promise<(number | null)[]> {
+  return invoke<(number | null)[]>("file_states", { paths });
+}
+
+export function pathExists(path: string): Promise<boolean> {
+  return invoke<boolean>("path_exists", { path });
 }
 
 export async function openFolderDialog(): Promise<string | null> {

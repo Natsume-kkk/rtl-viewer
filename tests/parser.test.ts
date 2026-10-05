@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseFile, parseXci, scanDefinitions } from "../src/parser";
+import { parseFile, parseFileDetail, parseXci, scanDefinitions } from "../src/parser";
 
 describe("verilog 定义扫描（第一级）", () => {
   it("提取 module 定义名与行号", () => {
@@ -314,6 +314,83 @@ end architecture;
       ["sub_mod", "u_g"],
       ["old_mod", "u_c"],
     ]);
+  });
+});
+
+describe("例化端口连接提取（悬停端口映射用）", () => {
+  it("verilog 命名连接跨行提取端口、表达式与行号", () => {
+    const src = `module top(input clk, input rst_n, output [7:0] q);
+  wire [7:0] s_data;
+  sub_mod u_sub (
+    .clk   (clk),
+    .rst_n (rst_n),
+    .q     (s_data)
+  );
+endmodule
+module sub_mod(input clk, input rst_n, output [7:0] q);
+endmodule
+`;
+    const mods = parseFileDetail(src, "top.v");
+    const inst = mods[0].instances[0];
+    expect(inst.connections).toEqual([
+      { port: "clk", expr: "clk", line: 4 },
+      { port: "rst_n", expr: "rst_n", line: 5 },
+      { port: "q", expr: "s_data", line: 6 },
+    ]);
+    expect(inst.endLine).toBe(7);
+  });
+
+  it("verilog 参数覆盖不进连接表，位置连接无端口名", () => {
+    const src = `module top(input clk);
+  sub_mod #(.WIDTH(8), .DEPTH(4)) u_sub (clk, 1'b0, {a, b});
+endmodule
+`;
+    const inst = parseFileDetail(src, "top.v")[0].instances[0];
+    expect(inst.connections).toEqual([
+      { expr: "clk", line: 2 },
+      { expr: "1'b0", line: 2 },
+      { expr: "{a, b}", line: 2 },
+    ]);
+  });
+
+  it("verilog 空连接与默认 parseFile 不带连接字段", () => {
+    const src = `module top;
+  sub_mod u_sub (.clk(), .rst_n(rst_n));
+endmodule
+`;
+    const inst = parseFileDetail(src, "top.v")[0].instances[0];
+    expect(inst.connections).toEqual([
+      { port: "clk", expr: "", line: 2 },
+      { port: "rst_n", expr: "rst_n", line: 2 },
+    ]);
+    const plain = parseFile(src, "top.v")[0].instances[0];
+    expect(plain.connections).toBeUndefined();
+    expect(plain.endLine).toBeUndefined();
+  });
+
+  it("vhdl port map 命名与位置连接混排", () => {
+    const src = `entity top is
+end entity;
+architecture rtl of top is
+  signal s_clk : std_logic;
+begin
+  u_sub : entity work.sub_mod(rtl)
+    generic map (WIDTH => 8)
+    port map (
+      clk    => s_clk,
+      rst_n  => rst_n,
+      data_o
+    );
+end architecture;
+`;
+    const mods = parseFileDetail(src, "top.vhd");
+    const inst = mods[0].instances[0];
+    expect(inst.connections).toEqual([
+      { port: "clk", expr: "s_clk", line: 9 },
+      { port: "rst_n", expr: "rst_n", line: 10 },
+      { expr: "data_o", line: 11 },
+    ]);
+    expect(inst.endLine).toBe(12);
   });
 });
 

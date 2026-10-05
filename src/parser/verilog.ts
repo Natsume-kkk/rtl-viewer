@@ -159,11 +159,49 @@ function parsePortList(portListSrc: string): PortInfo[] {
   return ports;
 }
 
+/** 解析例化端口连接表：`.name(expr)` 命名连接或位置连接，按顶层逗号切分。 */
+function parseConnections(
+  src: string,
+  baseOffset: number,
+  lineStarts: number[],
+): InstanceInfo["connections"] {
+  const entries: { text: string; start: number }[] = [];
+  let depth = 0, cur = "", curStart = 0;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    if (ch === ")" || ch === "]" || ch === "}") depth--;
+    if (ch === "," && depth === 0) {
+      entries.push({ text: cur, start: curStart });
+      cur = "";
+      curStart = i + 1;
+    } else {
+      cur += ch;
+    }
+  }
+  entries.push({ text: cur, start: curStart });
+  const out: NonNullable<InstanceInfo["connections"]> = [];
+  for (const { text, start } of entries) {
+    // 行号取条目内首个非空白字符（条目可能以换行开头）
+    const lead = /^\s*/.exec(text)![0].length;
+    const line = lineAt(lineStarts, baseOffset + start + lead);
+    const named = /^\s*\.\s*([A-Za-z_]\w*)\s*\(\s*([\s\S]*?)\s*\)\s*$/.exec(text);
+    if (named) {
+      out.push({ port: named[1], expr: named[2], line });
+    } else {
+      const expr = text.trim();
+      if (expr) out.push({ expr, line });
+    }
+  }
+  return out;
+}
+
 function scanInstances(
   body: string,
   bodyStart: number,
   lineStarts: number[],
   selfName: string,
+  withConn: boolean,
 ): InstanceInfo[] {
   const out: InstanceInfo[] = [];
   const re = /[A-Za-z_]\w*/g;
@@ -199,7 +237,12 @@ function scanInstances(
       if (j < 0) break;
       const k = skipWs(body, j);
       if (body[k] !== ";" && body[k] !== ",") break;
-      out.push({ module: typeName, inst: instName, line: groupLine });
+      const info: InstanceInfo = { module: typeName, inst: instName, line: groupLine };
+      if (withConn) {
+        info.connections = parseConnections(body.slice(p + 1, j - 1), bodyStart + p + 1, lineStarts);
+        info.endLine = lineAt(lineStarts, bodyStart + j - 1);
+      }
+      out.push(info);
       lastEnd = j;
       if (body[k] !== ",") break;
       cursor = skipWs(body, k + 1);
@@ -209,8 +252,8 @@ function scanInstances(
   return out;
 }
 
-/** 完整解析：module/interface 定义、端口、例化。withPorts=false 时跳过端口提取（第一级结构扫描用）。 */
-export function parseVerilog(src: string, file: string, withPorts = true): ModuleInfo[] {
+/** 完整解析：module/interface 定义、端口、例化。withPorts=false 时跳过端口提取（第一级结构扫描用）；withConn=true 时额外提取例化端口连接（悬停端口映射用）。 */
+export function parseVerilog(src: string, file: string, withPorts = true, withConn = false): ModuleInfo[] {
   const stripped = stripComments(src);
   const lineStarts = computeLineStarts(stripped);
   const modules: ModuleInfo[] = [];
@@ -254,6 +297,7 @@ export function parseVerilog(src: string, file: string, withPorts = true): Modul
         bodyStart,
         lineStarts,
         name,
+        withConn,
       ),
     });
     modRe.lastIndex = endMatch ? endRe.lastIndex : stripped.length;

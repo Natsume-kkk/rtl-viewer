@@ -32,8 +32,17 @@ const internals: TauriInternals = {
         );
         const body = await res.json();
         if (body?.error) throw new Error(body.error);
-        return null;
+        return body;
       }
+      case "file_states": {
+        const res = await fetch("/__e2e_stat", {
+          method: "POST",
+          body: JSON.stringify(args.paths ?? []),
+        });
+        return res.json();
+      }
+      case "path_exists":
+        return (await fetch(`/__e2e_exists?path=${encodeURIComponent(path)}`)).json();
       // 对话框：选文件夹固定返回 fixture，另存为写到 fixture 下的输出文件
       case "plugin:dialog|open":
         return FIXTURE;

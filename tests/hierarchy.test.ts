@@ -57,19 +57,20 @@ endmodule`,
     expect(h.unused.map((u) => u.name)).toEqual(["b"]);
   });
 
-  it("未使用只含未被任何模块例化的定义，被其他顶层收纳的模块不列入", () => {
+  it("未使用只含无父无子的孤儿模块，有例化的顶层候选（tb 等）不列入", () => {
     const h = buildFromFiles(
       {
         "a.v": `module a; leaf u (.x(1'b0)); endmodule`,
         "leaf.v": `module leaf(input x); endmodule`,
         "tb_top.v": `module tb_top; env u_env (); endmodule`,
         "env.v": `module env; endmodule`,
+        "orphan.v": `module orphan; endmodule`,
       },
       [],
       "a",
     );
-    // env 被 tb_top 例化（被其他顶层收纳），不进未使用；tb_top 自身无人例化，保留
-    expect(h.unused.map((u) => u.name)).toEqual(["tb_top"]);
+    // env 被 tb_top 例化（有父）；tb_top 例化了 env（有子，属顶层候选）；orphan 无父无子才是未使用
+    expect(h.unused.map((u) => u.name)).toEqual(["orphan"]);
   });
 
   it("测试台候选向内解包出 DUT 顶层", () => {

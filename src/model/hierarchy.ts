@@ -60,7 +60,7 @@ export interface Hierarchy {
   tops: TreeNode[];
   /** 候选顶层模块名（未被任何模块例化） */
   topCandidates: string[];
-  /** 未被任何模块例化的模块定义（顶层候选中除当前顶层） */
+  /** 孤儿模块定义：无父（未被例化）且无子（不例化任何模块） */
   unused: { name: string; file: string; line: number }[];
 }
 
@@ -205,14 +205,15 @@ export function buildHierarchy(
     tops.push(buildNode(chosenTop, chosenTop, chosenTop, new Set()));
   }
 
-  // 未使用 = 未被任何模块例化的定义（即顶层候选，除去当前顶层自身）；
-  // 被其他顶层子图收纳的模块（仿真环境、其他 DUT 等）不算未使用
+  // 未使用 = 无父（未被任何模块例化）且无子（自身不例化任何模块）的孤儿模块；
+  // tb 等有子的顶层候选、被其他顶层收纳的模块都不算
   const unused = index
     .allDefs()
     .filter(
       (d) =>
         !d.isIp &&
         !instantiated.has(d.name.toLowerCase()) &&
+        (structByModule.get(d.name.toLowerCase())?.instances.length ?? 0) === 0 &&
         d.name.toLowerCase() !== chosenTop?.toLowerCase(),
     )
     .map((d) => ({ name: d.name, file: d.file, line: d.line }));

@@ -83,6 +83,15 @@ export class SearchPanel {
     this.input.select();
   }
 
+  /** 一键查引用：填入查询、强制整词匹配，立即执行并聚焦面板。 */
+  searchAll(query: string): void {
+    this.input.value = query;
+    this.options.wholeWord = true;
+    this.wordBtn.classList.add("on");
+    this.run();
+    this.focus();
+  }
+
   clear(): void {
     this.input.value = "";
     this.resultsEl.textContent = "";

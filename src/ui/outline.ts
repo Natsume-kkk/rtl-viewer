@@ -110,7 +110,33 @@ export class OutlineView {
   render(items: OutlineItem[], fileName: string): void {
     this.items = items;
     this.fileName = fileName;
+    this.activeLine = undefined;
     this.renderList();
+  }
+
+  private activeLine: number | undefined;
+
+  /** 光标跟随：高亮最后一个起点不晚于 line 的条目；条目无变化时不动 DOM。 */
+  highlightLine(line: number): void {
+    let idx = -1;
+    for (let i = 0; i < this.items.length; i++) {
+      if (this.items[i].line > line) break;
+      idx = i;
+    }
+    const itemLine = idx >= 0 ? this.items[idx].line : undefined;
+    if (itemLine === this.activeLine) return;
+    this.activeLine = itemLine;
+    this.listEl
+      .querySelectorAll(".outline-row.active")
+      .forEach((el) => el.classList.remove("active"));
+    if (itemLine === undefined) return;
+    for (const row of this.listEl.querySelectorAll<HTMLElement>(".outline-row")) {
+      if (row.querySelector(".outline-line")?.textContent === String(itemLine)) {
+        row.classList.add("active");
+        row.scrollIntoView({ block: "nearest" });
+        break;
+      }
+    }
   }
 
   private renderList(): void {

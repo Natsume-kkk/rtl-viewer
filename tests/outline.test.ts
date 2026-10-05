@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractOutline } from "../src/model/outline";
+import { extractOutline, itemAtLine, breadcrumbAt } from "../src/model/outline";
 
 describe("文件大纲提取", () => {
   it("Verilog：模块、信号、always、函数按行排序", () => {
@@ -120,5 +120,36 @@ end architecture;`,
     );
     const proc = items.find((i) => i.kind === "process");
     expect(proc?.name).toBe("u_proc: process → s_q");
+  });
+});
+
+describe("大纲光标跟随", () => {
+  const items = extractOutline(
+    `module top(input clk);
+  wire a;
+  always @(posedge clk) begin
+    a <= 1'b0;
+  end
+  always @(*) begin
+  end
+endmodule`,
+    "top.v",
+  );
+  // 行号：module=1, wire=2, always#1=3, always#2=6
+
+  it("itemAtLine：光标落在最后一个起点不晚于该行的条目", () => {
+    expect(itemAtLine(items, 1)?.name).toBe("top");
+    expect(itemAtLine(items, 2)?.name).toBe("a");
+    expect(itemAtLine(items, 4)?.kind).toBe("process"); // always 块内部归到块本身
+    expect(itemAtLine(items, 7)?.line).toBe(6);
+    expect(itemAtLine(items, 0)).toBeUndefined();
+    expect(itemAtLine([], 5)).toBeUndefined();
+  });
+
+  it("breadcrumbAt：模块 › 进程，块外只显示模块", () => {
+    expect(breadcrumbAt(items, 1)).toBe("top");
+    expect(breadcrumbAt(items, 4)).toBe("top › always @(posedge clk) → a");
+    expect(breadcrumbAt(items, 6)).toBe("top › always @(*)");
+    expect(breadcrumbAt([], 3)).toBe("");
   });
 });

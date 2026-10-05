@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { scanStructure } from "../src/parser";
 import { ModuleIndex } from "../src/model";
-import { buildHierarchy } from "../src/model/hierarchy";
+import { buildHierarchy, findInstancesOf } from "../src/model/hierarchy";
 
 function buildFromFiles(
   files: Record<string, string>,
@@ -154,5 +154,31 @@ end architecture;`,
     expect(bufg.kind).toBe("primitive");
     expect(bufg.children).toEqual([]);
     expect(sub.kind).toBe("module");
+  });
+});
+
+describe("模块反向引用（被谁例化）", () => {
+  it("列出所有例化位置，大小写不敏感", () => {
+    const structures = new Map<string, ReturnType<typeof scanStructure>>();
+    for (const [file, src] of Object.entries({
+      "top.v": `module top;
+  sub u_a (.x(1'b0));
+  sub u_b (.x(1'b1));
+endmodule`,
+      "mid.v": `module mid;
+  SUB u_c (.x(1'b0));
+endmodule`,
+      "sub.v": `module sub(input x);
+endmodule`,
+    })) {
+      structures.set(file, scanStructure(src, file));
+    }
+    const sites = findInstancesOf(structures, "sub");
+    expect(sites).toEqual([
+      { parent: "top", file: "top.v", line: 2 },
+      { parent: "top", file: "top.v", line: 3 },
+      { parent: "mid", file: "mid.v", line: 2 },
+    ]);
+    expect(findInstancesOf(structures, "nonexistent")).toEqual([]);
   });
 });

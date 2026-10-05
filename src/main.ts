@@ -5,15 +5,16 @@ import { ModuleIndex } from "./model";
 if (new URLSearchParams(location.search).has("e2e")) {
   await import("./e2e-mock");
 }
-import { buildHierarchy } from "./model/hierarchy";
-import type { Hierarchy, TreeNode } from "./model/hierarchy";
-import { extractOutline, OUTLINE_KIND_LABELS } from "./model/outline";
+import { buildHierarchy, findInstancesOf } from "./model/hierarchy";
+import type { Hierarchy, TreeNode, InstanceSite } from "./model/hierarchy";
+import { extractOutline, breadcrumbAt, OUTLINE_KIND_LABELS } from "./model/outline";
+import type { OutlineItem } from "./model/outline";
 import { searchContents } from "./model/search";
 import { NavHistory } from "./model/history";
 import { scanStructure, parseFile, parseFileDetail, parseXci } from "./parser";
 import type { ModuleInfo, IpInfo, PortInfo, PortConnection } from "./parser";
 import { findSignalDeclLine } from "./model/signals";
-import { scanFolder, readFile, openFolderDialog, fileStates, pathExists, showInFolder } from "./ipc";
+import { scanFolder, readFile, openFolderDialog, fileStates, pathExists, showInFolder, isDirectory } from "./ipc";
 import { initMonaco, monaco } from "./editor/monaco";
 import { TabManager } from "./editor/tabs";
 import { HierarchyTree } from "./ui/tree";
@@ -88,9 +89,13 @@ const { treeRoot: treeRootEl, searchRoot: searchRootEl, outlineRoot: outlineRoot
 // Monaco 初始化（definition provider 通过函数引用最新索引）
 const editor = initMonaco(editorContainer, (name) => state.index.resolve(name));
 
-// E2E 钩子：仅 ?e2e 模式暴露编辑器实例，供自动化验收驱动
+// E2E 钩子：仅 ?e2e 模式暴露编辑器实例与拖放入口，供自动化验收驱动
 if (new URLSearchParams(location.search).has("e2e")) {
-  (window as unknown as Record<string, unknown>).__rtl = { editor, monaco };
+  (window as unknown as Record<string, unknown>).__rtl = {
+    editor,
+    monaco,
+    debugDrop: (paths: string[]) => void handleDroppedPaths(paths),
+  };
 }
 
 const statusbar = new StatusBar(statusbarEl, {
@@ -112,6 +117,17 @@ const tree = new HierarchyTree(treeRootEl, {
     renderTree();
   },
   onOpenFile: (path) => void navigateTo(path),
+  onFindInstances: (name) => {
+    document.getElementById("ref-panel")?.remove();
+    const sites = findInstancesOf(state.structures, name);
+    if (sites.length === 0) {
+      statusbar.hint(`${name} 未被例化`);
+    } else if (sites.length === 1) {
+      void navigateTo(sites[0].file, sites[0].line);
+    } else {
+      showInstancePanel(name, sites);
+    }
+  },
 });
 
 // ---------- 导航历史 ----------
@@ -182,27 +198,47 @@ const outline = new OutlineView(outlineRootEl, {
 });
 
 let outlineTimer: number | undefined;
+/** 当前文件的大纲缓存：面包屑与光标跟随共用，避免光标移动时重复提取。 */
+let currentOutline: OutlineItem[] = [];
+
 function refreshOutline(): void {
   window.clearTimeout(outlineTimer);
   outlineTimer = window.setTimeout(() => {
     const tab = tabs.activeTab;
     if (!tab) {
+      currentOutline = [];
       outline.render([], "");
       return;
     }
-    outline.render(extractOutline(tab.model.getValue(), tab.path || tab.title), tab.title);
+    currentOutline = extractOutline(tab.model.getValue(), tab.path || tab.title);
+    outline.render(currentOutline, tab.title);
+    const line = editor.getPosition()?.lineNumber;
+    if (line) {
+      statusbar.setBreadcrumb(breadcrumbAt(currentOutline, line));
+      outline.highlightLine(line);
+    }
   }, 200);
 }
 
+// 光标跟随：状态栏显示「模块 › 进程」，大纲高亮当前条目
+editor.onDidChangeCursorPosition((e) => {
+  const line = e.position.lineNumber;
+  statusbar.setBreadcrumb(breadcrumbAt(currentOutline, line));
+  outline.highlightLine(line);
+});
+
 // ---------- 全局搜索 ----------
+
+function displayPath(file: string): string {
+  return state.folder && file.startsWith(state.folder + "/")
+    ? file.slice(state.folder.length + 1)
+    : file;
+}
 
 const searchPanel = new SearchPanel(searchRootEl, {
   onSearch: (query, options) => searchContents(state.contents, query, options),
   onOpen: (file, line) => void navigateTo(file, line),
-  displayPath: (file) =>
-    state.folder && file.startsWith(state.folder + "/")
-      ? file.slice(state.folder.length + 1)
-      : file,
+  displayPath,
 });
 
 // ---------- 例化端口映射（悬停 + Ctrl+K 钉住） ----------
@@ -499,6 +535,42 @@ function pinPortMapPanel(
   document.getElementById("main-area")!.appendChild(panel);
 }
 
+/** 「查看例化处」结果面板：多处例化时列出父模块与位置，点击跳转。 */
+function showInstancePanel(name: string, sites: InstanceSite[]): void {
+  document.getElementById("ref-panel")?.remove();
+  const panel = document.createElement("div");
+  panel.id = "ref-panel";
+
+  const head = document.createElement("div");
+  head.className = "ip-panel-head";
+  const title = document.createElement("span");
+  title.textContent = `${name} 被例化于 ${sites.length} 处`;
+  const close = document.createElement("span");
+  close.className = "ip-panel-close";
+  close.textContent = "×";
+  close.addEventListener("click", () => panel.remove());
+  head.append(title, close);
+  panel.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "ip-panel-body";
+  for (const site of sites) {
+    const row = document.createElement("div");
+    row.className = "ref-row";
+    const parent = document.createElement("span");
+    parent.className = "ref-parent";
+    parent.textContent = site.parent;
+    const loc = document.createElement("span");
+    loc.className = "ref-loc";
+    loc.textContent = `${displayPath(site.file)}:${site.line}`;
+    row.append(parent, loc);
+    row.addEventListener("click", () => void navigateTo(site.file, site.line));
+    body.appendChild(row);
+  }
+  panel.appendChild(body);
+  document.getElementById("main-area")!.appendChild(panel);
+}
+
 editor.addAction({
   id: "rtl.pin-portmap",
   label: "例化端口映射",
@@ -542,6 +614,32 @@ editor.addAction({
     },
   });
 }
+
+// 查找引用：选中或光标下的标识符 → 全局搜索（整词），Shift+F12 / 右键菜单。
+editor.addAction({
+  id: "rtl.find-references",
+  label: "查找引用 (Shift+F12)",
+  keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F12],
+  contextMenuGroupId: "navigation",
+  contextMenuOrder: 1,
+  run: () => {
+    const model = editor.getModel();
+    if (!model) return;
+    const sel = editor.getSelection();
+    const selText = sel ? model.getValueInRange(sel) : "";
+    const pos = editor.getPosition();
+    const word = IDENT_RE.test(selText)
+      ? selText
+      : pos
+        ? model.getWordAtPosition(pos)?.word
+        : undefined;
+    if (!word) {
+      statusbar.hint("光标不在标识符上");
+      return;
+    }
+    searchPanel.searchAll(word);
+  },
+});
 
 const tabs = new TabManager(editor, tabbarEl, {  onActiveChange: () => {
     const tab = tabs.activeTab;
@@ -640,6 +738,27 @@ async function openRecent(path: string): Promise<void> {
 }
 
 // ---------- 打开工程 ----------
+
+/** 拖入窗口的路径：是文件夹则打开为工程，否则提示。 */
+async function handleDroppedPaths(paths: string[]): Promise<void> {
+  const dir = paths[0];
+  if (!dir) return;
+  if (await isDirectory(dir)) {
+    await openFolder(dir);
+  } else {
+    statusbar.hint("请拖入源码文件夹");
+  }
+}
+
+// OS 级拖放（Tauri 窗口事件）；纯浏览器 e2e 环境注册失败时静默跳过
+try {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().onDragDropEvent((event) => {
+    if (event.payload.type === "drop") void handleDroppedPaths(event.payload.paths);
+  });
+} catch {
+  // 非 Tauri 环境无窗口事件
+}
 
 async function openProject(): Promise<void> {
   const folder = await openFolderDialog();

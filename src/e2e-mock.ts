@@ -43,6 +43,8 @@ const internals: TauriInternals = {
       }
       case "path_exists":
         return (await fetch(`/__e2e_exists?path=${encodeURIComponent(path)}`)).json();
+      case "is_directory":
+        return true; // e2e 拖放测试固定用 fixture 目录
       case "show_in_folder":
         return null; // e2e 环境不起资源管理器
       // 对话框：选文件夹固定返回 fixture，另存为写到 fixture 下的输出文件

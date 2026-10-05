@@ -181,6 +181,7 @@ describe("HierarchyTree", () => {
       "打开定义",
       "跳到例化点",
       "复制模块名",
+      "查看例化处",
       "复制文件名",
       "复制文件路径",
       "复制所在目录",
@@ -202,7 +203,7 @@ describe("HierarchyTree", () => {
     row.dispatchEvent(
       new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 50, clientY: 60 }),
     );
-    (document.querySelectorAll(".ctx-item")[6] as HTMLElement).click();
+    (document.querySelectorAll(".ctx-item")[7] as HTMLElement).click();
     expect(onRevealFile).toHaveBeenCalledWith("rtl/sub.v");
   });
 

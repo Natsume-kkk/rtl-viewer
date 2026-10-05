@@ -14,6 +14,32 @@ export function isVendorPrimitive(name: string): boolean {
   return PRIMITIVE_RE.test(name);
 }
 
+export interface InstanceSite {
+  /** 例化它的父模块名 */
+  parent: string;
+  file: string;
+  line: number;
+}
+
+/** 反向引用：工程内哪些模块在什么位置例化了指定模块（大小写不敏感）。 */
+export function findInstancesOf(
+  structures: Map<string, ModuleInfo[]>,
+  moduleName: string,
+): InstanceSite[] {
+  const key = moduleName.toLowerCase();
+  const sites: InstanceSite[] = [];
+  for (const modules of structures.values()) {
+    for (const m of modules) {
+      for (const inst of m.instances) {
+        if (inst.module.toLowerCase() === key) {
+          sites.push({ parent: m.name, file: m.file, line: inst.line });
+        }
+      }
+    }
+  }
+  return sites;
+}
+
 export interface TreeNode {
   /** 树内唯一键：例化路径 */
   key: string;

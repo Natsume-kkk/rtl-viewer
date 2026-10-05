@@ -17,6 +17,8 @@ export interface TreeCallbacks {
   onSelectTop?(name: string): void;
   /** 点击约束文件：打开查看 */
   onOpenFile?(path: string): void;
+  /** 右键「查看例化处」：列出工程内例化该模块的位置 */
+  onFindInstances?(moduleName: string): void;
 }
 
 export class HierarchyTree {
@@ -169,6 +171,10 @@ export class HierarchyTree {
         });
       }
       items.push({ label: "复制模块名", action: () => copyText(node.moduleName) });
+      items.push({
+        label: "查看例化处",
+        action: () => this.callbacks.onFindInstances?.(node.moduleName),
+      });
       if (node.file) {
         items.push(...filePathMenuItems(node.file, this.callbacks.onRevealFile));
       }
@@ -238,6 +244,7 @@ export class HierarchyTree {
         showCtxMenu(e.clientX, e.clientY, [
           { label: "打开定义", action: openAction },
           { label: "复制模块名", action: () => copyText(u.name) },
+          { label: "查看例化处", action: () => this.callbacks.onFindInstances?.(u.name) },
           ...filePathMenuItems(u.file, this.callbacks.onRevealFile),
         ]);
       });

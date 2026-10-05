@@ -348,6 +348,42 @@ body.resizing {
   z-index: 10;
 }
 
+#ref-panel {
+  position: absolute;
+  top: 40px;
+  right: 24px;
+  min-width: 280px;
+  max-width: 480px;
+  max-height: 60%;
+  overflow: auto;
+  background: #252526;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  z-index: 10;
+}
+
+.ref-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 4px;
+  cursor: pointer;
+  font-family: Consolas, monospace;
+  white-space: nowrap;
+}
+
+.ref-row:hover {
+  background: #2a2d2e;
+}
+
+.ref-parent {
+  color: #4ec9b0;
+}
+
+.ref-loc {
+  color: var(--fg-dim);
+}
+
 .pm-link {
   color: #4ec9b0;
   cursor: pointer;
@@ -364,6 +400,11 @@ body.resizing {
 
 .status-hint {
   color: #d7ba7d;
+}
+
+.status-breadcrumb {
+  color: var(--fg-dim);
+  font-family: Consolas, monospace;
 }
 
 /* ---------- 选择对话框 ---------- */
@@ -772,6 +813,14 @@ body.resizing {
 
 .outline-row:hover {
   background: #2a2d2e;
+}
+
+.outline-row.active {
+  background: #37373d;
+}
+
+.outline-row.active .outline-name {
+  color: #fff;
 }
 
 .outline-kind {

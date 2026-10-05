@@ -97,6 +97,12 @@ fn path_exists(path: String) -> bool {
     PathBuf::from(&path).exists()
 }
 
+/// 拖放打开前的目录判定。
+#[tauri::command]
+fn is_directory(path: String) -> bool {
+    std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false)
+}
+
 /// 在资源管理器中定位文件（explorer /select）。
 #[tauri::command]
 fn show_in_folder(path: String) -> Result<(), String> {
@@ -224,6 +230,7 @@ fn main() {
             write_file,
             file_states,
             path_exists,
+            is_directory,
             show_in_folder
         ])
         .run(tauri::generate_context!())

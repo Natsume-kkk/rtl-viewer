@@ -31,7 +31,13 @@ export class StatusBar {
   private callbacks: StatusBarCallbacks;
   private menu: HTMLDivElement | null = null;
   private hintEl!: HTMLSpanElement;
+  private bcEl!: HTMLSpanElement;
   private hintTimer: number | undefined;
+
+  /** 面包屑：光标所在模块/进程（大纲联动），无文件时清空。 */
+  setBreadcrumb(text: string): void {
+    this.bcEl.textContent = text;
+  }
 
   /** 瞬态提示（找不到跳转目标等），3 秒后自动消失。 */
   hint(text: string): void {
@@ -60,9 +66,11 @@ export class StatusBar {
 
     const left = document.createElement("div");
     left.className = "status-left";
+    this.bcEl = document.createElement("span");
+    this.bcEl.className = "status-item status-breadcrumb";
     this.hintEl = document.createElement("span");
     this.hintEl.className = "status-item status-hint";
-    left.appendChild(this.hintEl);
+    left.append(this.bcEl, this.hintEl);
     const right = document.createElement("div");
     right.className = "status-right";
     right.append(this.langEl, this.encEl, this.posEl);
@@ -85,6 +93,7 @@ export class StatusBar {
     this.posEl.textContent = lang ? this.posEl.textContent || "行 1, 列 1" : "";
     this.langEl.textContent = lang ?? "";
     this.encEl.textContent = encoding ? (ENCODING_LABELS[encoding] ?? encoding) : "";
+    if (!lang) this.bcEl.textContent = "";
   }
 
   private toggleEncodingMenu(): void {

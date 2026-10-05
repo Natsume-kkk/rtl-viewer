@@ -174,3 +174,29 @@ export function extractOutline(content: string, file: string): OutlineItem[] {
   }
   return items.sort((a, b) => a.line - b.line);
 }
+
+/** 光标所在条目：最后一个起点不晚于该行的符号（输入已按行号排序）。 */
+export function itemAtLine(items: OutlineItem[], line: number): OutlineItem | undefined {
+  let hit: OutlineItem | undefined;
+  for (const it of items) {
+    if (it.line > line) break;
+    hit = it;
+  }
+  return hit;
+}
+
+/** 状态栏位置提示：所在模块 › 所在进程（若有），随光标移动更新。 */
+export function breadcrumbAt(items: OutlineItem[], line: number): string {
+  let module: string | undefined;
+  let process: string | undefined;
+  for (const it of items) {
+    if (it.line > line) break;
+    if (it.kind === "module" || it.kind === "architecture") {
+      module = it.name;
+      process = undefined;
+    } else if (it.kind === "process") {
+      process = it.name;
+    }
+  }
+  return [module, process].filter((s) => s !== undefined).join(" › ");
+}

@@ -37,6 +37,11 @@ export function pathExists(path: string): Promise<boolean> {
   return invoke<boolean>("path_exists", { path });
 }
 
+/** 拖放打开前的目录判定。 */
+export function isDirectory(path: string): Promise<boolean> {
+  return invoke<boolean>("is_directory", { path });
+}
+
 /** 在资源管理器中定位文件。 */
 export function showInFolder(path: string): Promise<void> {
   return invoke<void>("show_in_folder", { path });

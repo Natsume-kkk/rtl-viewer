@@ -67,4 +67,58 @@ end architecture;`,
     expect(() => extractOutline("module m; endmodule", "a.txt")).not.toThrow();
     expect(extractOutline("module m; endmodule", "a.txt")[0].name).toBe("m");
   });
+
+  it("Verilog：always 块带赋值目标（begin/end 与单语句）", () => {
+    const items = extractOutline(
+      `module m(input clk, input d, input en);
+  reg q, r, s;
+  always @(posedge clk) begin
+    if (en) q <= d;
+    r <= q;
+  end
+  always @(negedge clk) s <= q;
+endmodule`,
+      "m.v",
+    );
+    const procs = items.filter((i) => i.kind === "process").map((i) => i.name);
+    expect(procs).toEqual([
+      "always @(posedge clk) → q, r",
+      "always @(negedge clk) → s",
+    ]);
+  });
+
+  it("例化进大纲：inst : module 形式", () => {
+    const items = extractOutline(
+      `module top;
+  sub #(.W(8)) u_sub (.a(a), .b(b));
+  sub u_sub2 (.a(a));
+endmodule`,
+      "top.v",
+    );
+    const insts = items.filter((i) => i.kind === "instance");
+    expect(insts.map((i) => [i.name, i.line])).toEqual([
+      ["u_sub : sub", 2],
+      ["u_sub2 : sub", 3],
+    ]);
+  });
+
+  it("VHDL：process 带赋值目标", () => {
+    const items = extractOutline(
+      `entity top is
+end entity;
+architecture rtl of top is
+  signal s_q, s_d : std_logic;
+begin
+  u_proc: process(clk)
+  begin
+    if rising_edge(clk) then
+      s_q <= s_d;
+    end if;
+  end process;
+end architecture;`,
+      "top.vhd",
+    );
+    const proc = items.find((i) => i.kind === "process");
+    expect(proc?.name).toBe("u_proc: process → s_q");
+  });
 });

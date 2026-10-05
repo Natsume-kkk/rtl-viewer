@@ -7,13 +7,13 @@ if (new URLSearchParams(location.search).has("e2e")) {
 }
 import { buildHierarchy } from "./model/hierarchy";
 import type { Hierarchy, TreeNode } from "./model/hierarchy";
-import { extractOutline } from "./model/outline";
+import { extractOutline, OUTLINE_KIND_LABELS } from "./model/outline";
 import { searchContents } from "./model/search";
 import { NavHistory } from "./model/history";
 import { scanStructure, parseFile, parseFileDetail, parseXci } from "./parser";
 import type { ModuleInfo, IpInfo, PortInfo, PortConnection } from "./parser";
 import { findSignalDeclLine } from "./model/signals";
-import { scanFolder, readFile, openFolderDialog, fileStates, pathExists } from "./ipc";
+import { scanFolder, readFile, openFolderDialog, fileStates, pathExists, showInFolder } from "./ipc";
 import { initMonaco, monaco } from "./editor/monaco";
 import { TabManager } from "./editor/tabs";
 import { HierarchyTree } from "./ui/tree";
@@ -101,7 +101,12 @@ statusbar.attachEditor(editor);
 
 const tree = new HierarchyTree(treeRootEl, {
   onOpen: (node) => void openTreeNode(node),
-  onIpInfo: (node) => void showIpPanel(node),
+  onOpenInst: (node) => {
+    if (node.instFile && node.instLine !== undefined) {
+      void navigateTo(node.instFile, node.instLine);
+    }
+  },
+  onRevealFile: (path) => void showInFolder(path),
   onSelectTop: (name) => {
     state.topName = name;
     renderTree();
@@ -170,6 +175,10 @@ const outline = new OutlineView(outlineRootEl, {
     editor.focus();
     updateNavButtons();
   },
+  onOpenSymbols: () => {
+    editor.focus();
+    editor.trigger("rtl.outline", "editor.action.quickOutline", null);
+  },
 });
 
 let outlineTimer: number | undefined;
@@ -188,8 +197,7 @@ function refreshOutline(): void {
 // ---------- 全局搜索 ----------
 
 const searchPanel = new SearchPanel(searchRootEl, {
-  onSearch: (query, caseSensitive) =>
-    searchContents(state.contents, query, { caseSensitive }),
+  onSearch: (query, options) => searchContents(state.contents, query, options),
   onOpen: (file, line) => void navigateTo(file, line),
   displayPath: (file) =>
     state.folder && file.startsWith(state.folder + "/")
@@ -398,7 +406,40 @@ const hoverProvider: monaco.languages.HoverProvider = {
 monaco.languages.registerHoverProvider("verilog", hoverProvider);
 monaco.languages.registerHoverProvider("vhdl", hoverProvider);
 
-/** 钉住的端口映射面板（Ctrl+K），样式复用 IP 面板。 */
+// ---------- Ctrl+Shift+O 文件符号（与侧栏大纲共用 extractOutline） ----------
+
+const SYMBOL_KINDS: Record<string, monaco.languages.SymbolKind> = {
+  module: monaco.languages.SymbolKind.Module,
+  architecture: monaco.languages.SymbolKind.Namespace,
+  signal: monaco.languages.SymbolKind.Variable,
+  process: monaco.languages.SymbolKind.Method,
+  function: monaco.languages.SymbolKind.Function,
+  instance: monaco.languages.SymbolKind.Struct,
+};
+
+const symbolProvider: monaco.languages.DocumentSymbolProvider = {
+  provideDocumentSymbols(model) {
+    const items = extractOutline(model.getValue(), model.uri.path);
+    const total = model.getLineCount();
+    return items.map((it, idx) => {
+      // 范围延伸到下一个符号起点；同一条目同行（多信号声明）时收敛为单行
+      const next = idx + 1 < items.length ? items[idx + 1].line : total + 1;
+      const endLine = Math.max(it.line, next - 1);
+      return {
+        name: it.name,
+        detail: OUTLINE_KIND_LABELS[it.kind],
+        kind: SYMBOL_KINDS[it.kind] ?? monaco.languages.SymbolKind.Variable,
+        range: new monaco.Range(it.line, 1, endLine, 1),
+        selectionRange: new monaco.Range(it.line, 1, it.line, 1),
+        tags: [],
+      };
+    });
+  },
+};
+monaco.languages.registerDocumentSymbolProvider("verilog", symbolProvider);
+monaco.languages.registerDocumentSymbolProvider("vhdl", symbolProvider);
+
+/** 钉住的端口映射面板（Ctrl+K）。 */
 function pinPortMapPanel(
   instName: string,
   moduleName: string,
@@ -480,6 +521,27 @@ editor.addAction({
     );
   },
 });
+
+// 自动换行切换：Monaco standalone 自带 editor.action.toggleWordWrap（含 Alt+Z），
+// 存在时只补右键菜单入口，不再绑快捷键避免双触发。
+{
+  const builtin = editor.getAction("editor.action.toggleWordWrap");
+  editor.addAction({
+    id: "rtl.toggle-word-wrap",
+    label: "切换自动换行 (Alt+Z)",
+    contextMenuGroupId: "view",
+    contextMenuOrder: 1,
+    ...(builtin ? {} : { keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyZ] }),
+    run: () => {
+      if (builtin) {
+        void builtin.run();
+        return;
+      }
+      const on = editor.getOption(monaco.editor.EditorOption.wordWrap) !== "off";
+      editor.updateOptions({ wordWrap: on ? "off" : "on" });
+    },
+  });
+}
 
 const tabs = new TabManager(editor, tabbarEl, {  onActiveChange: () => {
     const tab = tabs.activeTab;
@@ -812,13 +874,15 @@ monaco.editor.registerEditorOpener({
 });
 
 async function openTreeNode(node: TreeNode): Promise<void> {
-  // 优先跳例化点（父模块中的例化行），看连接关系；顶层/无例化点节点跳定义
-  if (node.instFile && node.instLine !== undefined) {
-    await navigateTo(node.instFile, node.instLine);
+  // 单击进模块定义（直觉操作）；例化点由节点行的 ↩ 图标进入
+  if (node.file) {
+    await navigateTo(node.file, node.line);
     return;
   }
-  if (!node.file) return; // unresolved 节点无定义位置
-  await navigateTo(node.file, node.line);
+  // unresolved 节点无定义位置，退到例化点
+  if (node.instFile && node.instLine !== undefined) {
+    await navigateTo(node.instFile, node.instLine);
+  }
 }
 
 function ensureParsed(path: string, content: string): void {
@@ -829,61 +893,6 @@ function ensureParsed(path: string, content: string): void {
       console.error("parse failed:", path, e);
     }
   }
-}
-
-// ---------- IP 端口面板 ----------
-
-async function showIpPanel(node: TreeNode): Promise<void> {
-  const ip = state.ips.find((i) => i.name.toLowerCase() === node.moduleName.toLowerCase());
-  const { ports, source } = await loadIpPorts(node.moduleName);
-
-  document.getElementById("ip-panel")?.remove();
-  const panel = document.createElement("div");
-  panel.id = "ip-panel";
-
-  const head = document.createElement("div");
-  head.className = "ip-panel-head";
-  const title = document.createElement("span");
-  title.textContent = `◆ ${node.moduleName}`;
-  const close = document.createElement("span");
-  close.className = "ip-panel-close";
-  close.textContent = "×";
-  close.addEventListener("click", () => panel.remove());
-  head.append(title, close);
-  panel.appendChild(head);
-
-  const body = document.createElement("div");
-  body.className = "ip-panel-body";
-  if (ports.length > 0) {
-    const from = document.createElement("div");
-    from.className = "ip-panel-note";
-    from.textContent = `端口来源：${source}`;
-    body.appendChild(from);
-    const table = document.createElement("table");
-    for (const p of ports) {
-      const tr = document.createElement("tr");
-      for (const text of [p.direction ?? "", p.width ?? "", p.name]) {
-        const td = document.createElement("td");
-        td.textContent = text;
-        tr.appendChild(td);
-      }
-      table.appendChild(tr);
-    }
-    body.appendChild(table);
-  } else {
-    const note = document.createElement("div");
-    note.className = "ip-panel-note";
-    note.textContent = "黑盒 IP，未找到端口 stub（.veo/.v）。";
-    body.appendChild(note);
-    if (ip?.vlnv) {
-      const vlnv = document.createElement("div");
-      vlnv.className = "ip-panel-vlnv";
-      vlnv.textContent = ip.vlnv;
-      body.appendChild(vlnv);
-    }
-  }
-  panel.appendChild(body);
-  document.getElementById("main-area")!.appendChild(panel);
 }
 
 // ---------- 分栏拖拽 ----------

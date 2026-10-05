@@ -37,8 +37,7 @@ describe("HierarchyTree", () => {
 
   it("渲染顶层与子节点，IP/unresolved/recursive 标记正确", () => {
     const onOpen = vi.fn();
-    const onIpInfo = vi.fn();
-    const { rootEl, tree } = makeTree({ onOpen, onIpInfo });
+    const { rootEl, tree } = makeTree({ onOpen });
     const h: Hierarchy = {
       tops: [
         node({
@@ -64,10 +63,8 @@ describe("HierarchyTree", () => {
 
     const rows = rootEl.querySelectorAll(".tree-row");
     (rows[1] as HTMLElement).click();
-    expect(onIpInfo).toHaveBeenCalledOnce();
     expect(onOpen).toHaveBeenCalledOnce();
     (rows[2] as HTMLElement).click();
-    expect(onIpInfo).toHaveBeenCalledOnce();
     expect(onOpen).toHaveBeenCalledTimes(2);
   });
 
@@ -105,6 +102,108 @@ describe("HierarchyTree", () => {
     expect(rootEl.querySelector(".tree-unused-title")?.textContent).toBe("约束 (2)");
     rows[0].dispatchEvent(new Event("click", { bubbles: true }));
     expect(onOpenFile).toHaveBeenCalledWith("D:/proj/constraints/pins.xdc");
+  });
+
+  it("有例化点的节点渲染 ↩ 图标，点击触发 onOpenInst 且不冒泡到 onOpen", () => {
+    const onOpen = vi.fn();
+    const onOpenInst = vi.fn();
+    const { rootEl, tree } = makeTree({ onOpen, onOpenInst });
+    const h: Hierarchy = {
+      tops: [
+        node({
+          key: "top",
+          label: "top",
+          moduleName: "top",
+          children: [
+            node({
+              key: "top/u_sub",
+              label: "u_sub",
+              moduleName: "sub",
+              file: "rtl/sub.v",
+              line: 5,
+              instFile: "rtl/top.v",
+              instLine: 24,
+            }),
+          ],
+        }),
+      ],
+      topCandidates: ["top"],
+      unused: [],
+    };
+    tree.render(h);
+    const inst = rootEl.querySelector(".tree-inst") as HTMLElement;
+    expect(inst).toBeTruthy();
+    inst.click();
+    expect(onOpenInst).toHaveBeenCalledWith(
+      expect.objectContaining({ instFile: "rtl/top.v", instLine: 24 }),
+    );
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("右键节点弹出菜单：打开定义/跳例化点/复制/资源管理器定位", () => {
+    const onOpen = vi.fn();
+    const onOpenInst = vi.fn();
+    const onRevealFile = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { rootEl, tree } = makeTree({ onOpen, onOpenInst, onRevealFile });
+    const h: Hierarchy = {
+      tops: [
+        node({
+          key: "top",
+          label: "top",
+          moduleName: "top",
+          children: [
+            node({
+              key: "top/u_sub",
+              label: "u_sub",
+              moduleName: "sub",
+              file: "rtl/sub.v",
+              line: 5,
+              instFile: "rtl/top.v",
+              instLine: 24,
+            }),
+          ],
+        }),
+      ],
+      topCandidates: ["top"],
+      unused: [],
+    };
+    tree.render(h);
+    const row = rootEl.querySelectorAll(".tree-row")[1] as HTMLElement;
+    row.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 50, clientY: 60 }),
+    );
+    const menu = document.querySelector(".ctx-menu") as HTMLElement;
+    expect(menu).toBeTruthy();
+    const items = [...menu.querySelectorAll(".ctx-item")].map((el) => el.textContent);
+    expect(items).toEqual([
+      "打开定义",
+      "跳到例化点",
+      "复制模块名",
+      "复制文件名",
+      "复制文件路径",
+      "复制所在目录",
+      "在资源管理器中显示",
+    ]);
+
+    (menu.querySelectorAll(".ctx-item")[1] as HTMLElement).click();
+    expect(onOpenInst).toHaveBeenCalledWith(
+      expect.objectContaining({ instFile: "rtl/top.v", instLine: 24 }),
+    );
+    expect(document.querySelector(".ctx-menu")).toBeNull();
+
+    row.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 50, clientY: 60 }),
+    );
+    (document.querySelectorAll(".ctx-item")[2] as HTMLElement).click();
+    expect(writeText).toHaveBeenCalledWith("sub");
+
+    row.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 50, clientY: 60 }),
+    );
+    (document.querySelectorAll(".ctx-item")[6] as HTMLElement).click();
+    expect(onRevealFile).toHaveBeenCalledWith("rtl/sub.v");
   });
 
   it("toggle 展开/收起子节点", () => {

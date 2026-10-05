@@ -1,6 +1,7 @@
 import { monaco, langForFile } from "./monaco";
-import { readFile, writeFile, saveFileDialog, confirmDialog, fileStates } from "../ipc";
+import { readFile, writeFile, saveFileDialog, confirmDialog, fileStates, showInFolder } from "../ipc";
 import { choiceDialog } from "../ui/dialog";
+import { filePathMenuItems, showCtxMenu, type MenuItem } from "../ui/menu";
 
 export interface Tab {
   /** 磁盘路径；未命名新文件为空字符串 */
@@ -181,6 +182,33 @@ export class TabManager {
     }
   }
 
+  /** 关闭除 tab 外的所有标签（脏标签逐个确认）。 */
+  async closeOthers(tab: Tab): Promise<void> {
+    for (const t of [...this.tabs]) {
+      if (t !== tab && this.tabs.includes(t)) await this.close(t);
+    }
+  }
+
+  /** 关闭 tab 右侧的所有标签（脏标签逐个确认）。 */
+  async closeRight(tab: Tab): Promise<void> {
+    const idx = this.tabs.indexOf(tab);
+    for (const t of [...this.tabs.slice(idx + 1)]) {
+      if (this.tabs.includes(t)) await this.close(t);
+    }
+  }
+
+  private showTabMenu(tab: Tab, x: number, y: number): void {
+    const items: MenuItem[] = [
+      { label: "关闭", action: () => void this.close(tab) },
+      { label: "关闭其他", action: () => void this.closeOthers(tab) },
+      { label: "关闭右侧", action: () => void this.closeRight(tab) },
+    ];
+    if (tab.path) {
+      items.push(...filePathMenuItems(tab.path, (p) => void showInFolder(p)));
+    }
+    showCtxMenu(x, y, items);
+  }
+
   private async doWrite(tab: Tab, path: string): Promise<boolean> {
     // 保存前检测：磁盘 mtime 与载入时不一致说明外部已修改，禁止静默覆盖
     if (path === tab.path && tab.mtime) {
@@ -248,6 +276,10 @@ export class TabManager {
     this.tabs.push(tab);
     this.renderTab(tab);
     tab.element.addEventListener("click", () => this.activate(tab));
+    tab.element.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      this.showTabMenu(tab, e.clientX, e.clientY);
+    });
     this.barEl.appendChild(tab.element);
     this.activate(tab);
     if (line !== undefined) this.reveal(line);

@@ -106,7 +106,7 @@ describe.skipIf(!existsSync(PROJECT))("CP7 真实工程验收（cameralink 副�
     expect(hAuto.tops[0]?.moduleName).toBe("cameralink_converter_top");
   });
 
-  it("IP 端口可从 stub 提取（与端口面板同候选路径）", () => {
+  it("IP 端口可从 stub 提取（悬停端口映射的候选路径）", () => {
     const cases: { xci: string; expectPorts: string[] }[] = [
       {
         xci: "ip/generated/ip-20261004-111410-ce9f5898/cl_clock_ip/cl_clock_ip.xci",

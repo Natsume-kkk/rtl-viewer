@@ -1,24 +1,26 @@
-import type { FileMatches } from "../model/search";
-import { countMatches } from "../model/search";
+import type { FileMatches, SearchOptions } from "../model/search";
+import { buildAllMatcher, countMatches } from "../model/search";
 
 export interface SearchPanelCallbacks {
-  /** 查询变化（已去抖）；caseSensitive 为 Aa 开关状态 */
-  onSearch(query: string, caseSensitive: boolean): FileMatches[];
+  /** 查询变化（已去抖）；options 为 Aa/整词/正则开关状态 */
+  onSearch(query: string, options: SearchOptions): FileMatches[];
   /** 点击命中行：打开文件并跳转 */
   onOpen(file: string, line: number): void;
   /** 路径转显示用相对路径 */
   displayPath(file: string): string;
 }
 
-/** 侧栏全局搜索面板：输入框 + 大小写开关 + 按文件分组的结果列表。 */
+/** 侧栏全局搜索面板：输入框 + 大小写/整词/正则开关 + 按文件分组的结果列表。 */
 export class SearchPanel {
   private rootEl: HTMLElement;
   private input: HTMLInputElement;
   private caseBtn: HTMLButtonElement;
+  private wordBtn: HTMLButtonElement;
+  private regexBtn: HTMLButtonElement;
   private countEl: HTMLElement;
   private resultsEl: HTMLElement;
   private callbacks: SearchPanelCallbacks;
-  private caseSensitive = false;
+  private options: SearchOptions = {};
   private debounceTimer: number | undefined;
 
   constructor(rootEl: HTMLElement, callbacks: SearchPanelCallbacks) {
@@ -32,11 +34,10 @@ export class SearchPanel {
     this.input.className = "search-input";
     this.input.placeholder = "全工程搜索 (Ctrl+Shift+F)";
     this.input.spellcheck = false;
-    this.caseBtn = document.createElement("button");
-    this.caseBtn.className = "search-case";
-    this.caseBtn.textContent = "Aa";
-    this.caseBtn.title = "区分大小写";
-    bar.append(this.input, this.caseBtn);
+    this.caseBtn = this.toggleButton("Aa", "区分大小写", "caseSensitive");
+    this.wordBtn = this.toggleButton("词", "整词匹配", "wholeWord");
+    this.regexBtn = this.toggleButton(".*", "正则表达式", "useRegex");
+    bar.append(this.input, this.caseBtn, this.wordBtn, this.regexBtn);
 
     this.countEl = document.createElement("div");
     this.countEl.className = "search-count";
@@ -57,11 +58,23 @@ export class SearchPanel {
         this.clear();
       }
     });
-    this.caseBtn.addEventListener("click", () => {
-      this.caseSensitive = !this.caseSensitive;
-      this.caseBtn.classList.toggle("on", this.caseSensitive);
+  }
+
+  private toggleButton(
+    text: string,
+    title: string,
+    key: "caseSensitive" | "wholeWord" | "useRegex",
+  ): HTMLButtonElement {
+    const btn = document.createElement("button");
+    btn.className = "search-case";
+    btn.textContent = text;
+    btn.title = title;
+    btn.addEventListener("click", () => {
+      this.options[key] = !this.options[key];
+      btn.classList.toggle("on", !!this.options[key]);
       this.run();
     });
+    return btn;
   }
 
   /** 聚焦输入框并全选（Ctrl+Shift+F）。 */
@@ -83,17 +96,25 @@ export class SearchPanel {
       this.countEl.textContent = "";
       return;
     }
-    const results = this.callbacks.onSearch(query, this.caseSensitive);
+    if (this.options.useRegex) {
+      try {
+        new RegExp(query);
+      } catch {
+        this.countEl.textContent = "正则表达式无效";
+        return;
+      }
+    }
+    const results = this.callbacks.onSearch(query, { ...this.options });
     const total = countMatches(results);
     this.countEl.textContent =
       total === 0 ? "无结果" : `${total} 个结果，${results.length} 个文件${total >= 500 ? "（已截断）" : ""}`;
-    const q = this.caseSensitive ? query : query.toLowerCase();
+    const highlighter = buildAllMatcher(query, this.options);
     for (const group of results) {
-      this.resultsEl.appendChild(this.renderGroup(group, q));
+      this.resultsEl.appendChild(this.renderGroup(group, highlighter));
     }
   }
 
-  private renderGroup(group: FileMatches, queryLower: string): HTMLElement {
+  private renderGroup(group: FileMatches, highlighter: (line: string) => { index: number; length: number }[]): HTMLElement {
     const box = document.createElement("div");
     box.className = "search-group";
     const head = document.createElement("div");
@@ -111,27 +132,28 @@ export class SearchPanel {
       lineNo.className = "search-line-no";
       lineNo.textContent = String(m.line);
       row.appendChild(lineNo);
-      row.appendChild(this.highlight(m.text, queryLower));
+      row.appendChild(this.highlight(m.text, highlighter));
       row.addEventListener("click", () => this.callbacks.onOpen(group.file, m.line));
       box.appendChild(row);
     }
     return box;
   }
 
-  /** 命中子串高亮（大小写不敏感时按小写定位，保留原文）。 */
-  private highlight(text: string, queryLower: string): HTMLElement {
+  /** 命中高亮：按与搜索相同的语义标记全部命中（正则/整词/大小写一致）。 */
+  private highlight(
+    text: string,
+    highlighter: (line: string) => { index: number; length: number }[],
+  ): HTMLElement {
     const span = document.createElement("span");
     span.className = "search-text";
-    const hay = this.caseSensitive ? text : text.toLowerCase();
     let pos = 0;
-    let idx = hay.indexOf(queryLower);
-    while (idx >= 0 && queryLower.length > 0) {
-      span.appendChild(document.createTextNode(text.slice(pos, idx)));
+    for (const hit of highlighter(text)) {
+      if (hit.index < pos) continue;
+      span.appendChild(document.createTextNode(text.slice(pos, hit.index)));
       const mark = document.createElement("mark");
-      mark.textContent = text.slice(idx, idx + queryLower.length);
+      mark.textContent = text.slice(hit.index, hit.index + hit.length);
       span.appendChild(mark);
-      pos = idx + queryLower.length;
-      idx = hay.indexOf(queryLower, pos);
+      pos = hit.index + hit.length;
     }
     span.appendChild(document.createTextNode(text.slice(pos)));
     return span;

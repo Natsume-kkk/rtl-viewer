@@ -164,6 +164,7 @@ export function initMonaco(container: HTMLElement, resolve: ResolveFn): monaco.e
     minimap: { enabled: true },
     scrollBeyondLastLine: false,
     renderWhitespace: "none",
+    mouseWheelZoom: true,
     tabSize: 4,
   });
   return editor;

@@ -11,7 +11,17 @@ const ENCODING_LABELS: Record<string, string> = {
   utf16le: "UTF-16 LE",
   utf16be: "UTF-16 BE",
   gbk: "GBK",
+  gb18030: "GB18030",
+  big5: "Big5",
+  shift_jis: "Shift-JIS",
+  "euc-kr": "EUC-KR",
+  "windows-1252": "Windows-1252",
 };
+
+/** 重新打开可选编码（按中文 FPGA 工程实用度排序）。 */
+const REOPEN_ENCODINGS = ["utf8", "gbk", "gb18030", "big5", "shift_jis", "euc-kr", "windows-1252", "utf16le", "utf16be"];
+/** 保存可选编码。 */
+const SAVE_ENCODINGS = ["utf8", "utf8-bom", "gbk", "gb18030", "big5", "shift_jis", "euc-kr", "utf16le", "utf16be"];
 
 export class StatusBar {
   private rootEl: HTMLElement;
@@ -89,7 +99,7 @@ export class StatusBar {
     reopenTitle.className = "menu-title";
     reopenTitle.textContent = "以指定编码重新打开";
     menu.appendChild(reopenTitle);
-    for (const enc of ["utf8", "gbk"]) {
+    for (const enc of REOPEN_ENCODINGS) {
       menu.appendChild(this.menuItem(ENCODING_LABELS[enc], () => this.callbacks.onReopen(enc)));
     }
 
@@ -97,7 +107,7 @@ export class StatusBar {
     saveTitle.className = "menu-title";
     saveTitle.textContent = "以指定编码保存";
     menu.appendChild(saveTitle);
-    for (const enc of ["utf8", "gbk", "utf8-bom"]) {
+    for (const enc of SAVE_ENCODINGS) {
       menu.appendChild(this.menuItem(ENCODING_LABELS[enc], () => this.callbacks.onSetSaveEncoding(enc)));
     }
 

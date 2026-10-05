@@ -32,6 +32,34 @@ describe("全局搜索", () => {
     const r = searchContents(contents, "module", { maxMatches: 1 });
     expect(countMatches(r)).toBe(1);
   });
+
+  it("整词匹配：不命中标识符内部，命中独立词", () => {
+    const ww = new Map([
+      ["d.v", { content: "wire i_clk;\nwire clk2;\nwire clk;\nassign clk = i_clk;" }],
+    ]);
+    const r = searchContents(ww, "clk", { wholeWord: true });
+    expect(countMatches(r)).toBe(2);
+    expect(r[0].matches.map((m) => m.line)).toEqual([3, 4]);
+    // 不开启整词时四处全命中
+    expect(countMatches(searchContents(ww, "clk"))).toBe(4);
+  });
+
+  it("正则模式：按正则解释查询串，记录真实命中长度", () => {
+    const rx = new Map([
+      ["e.v", { content: "wire i_sys_clk;\nwire i_clk;\nwire clk;" }],
+    ]);
+    const r = searchContents(rx, "i_.*_clk", { useRegex: true });
+    expect(countMatches(r)).toBe(1);
+    expect(r[0].matches[0].line).toBe(1);
+    expect(r[0].matches[0].length).toBe(9);
+    // 正则 + 大小写敏感
+    const cs = searchContents(rx, "I_.*_CLK", { useRegex: true, caseSensitive: true });
+    expect(countMatches(cs)).toBe(0);
+  });
+
+  it("无效正则返回空结果", () => {
+    expect(searchContents(contents, "clk(", { useRegex: true })).toEqual([]);
+  });
 });
 
 describe("导航历史", () => {

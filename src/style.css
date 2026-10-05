@@ -178,6 +178,22 @@ body.resizing {
   text-overflow: ellipsis;
 }
 
+.tree-inst {
+  flex: none;
+  margin-left: 4px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  visibility: hidden;
+}
+
+.tree-row:hover .tree-inst {
+  visibility: visible;
+}
+
+.tree-inst:hover {
+  color: var(--fg);
+}
+
 .kind-ip .tree-label {
   color: #c586c0;
 }
@@ -317,9 +333,8 @@ body.resizing {
   min-height: 0;
 }
 
-/* ---------- IP 面板 ---------- */
+/* ---------- 端口映射面板 ---------- */
 
-#ip-panel,
 #portmap-panel {
   position: absolute;
   top: 40px;
@@ -430,11 +445,6 @@ body.resizing {
   margin-bottom: 6px;
 }
 
-.ip-panel-vlnv {
-  font-family: Consolas, monospace;
-  color: #4ec9b0;
-}
-
 .ip-panel-body table {
   border-collapse: collapse;
   width: 100%;
@@ -494,6 +504,8 @@ body.resizing {
   border: 1px solid var(--border);
   color: var(--fg);
   min-width: 200px;
+  max-height: 70vh;
+  overflow-y: auto;
   box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.5);
   z-index: 20;
 }
@@ -514,6 +526,20 @@ body.resizing {
 .menu-item:hover {
   background: #094771;
   color: #fff;
+}
+
+.ctx-menu {
+  position: fixed;
+  min-width: 140px;
+  background: #252526;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  z-index: 40;
+}
+
+.ctx-item {
+  white-space: nowrap;
 }
 
 /* ---------- 导航历史按钮 ---------- */
@@ -657,12 +683,71 @@ body.resizing {
   min-height: 0;
 }
 
+.outline.collapsed {
+  max-height: none;
+  height: auto !important;
+}
+
+.outline.collapsed .outline-resizer,
+.outline.collapsed .outline-filter,
+.outline.collapsed .outline-symbols,
+.outline.collapsed .outline-list {
+  display: none;
+}
+
+.outline-resizer {
+  flex: none;
+  height: 4px;
+  margin-top: -2px;
+  cursor: row-resize;
+}
+
+.outline-resizer:hover {
+  background: var(--accent);
+}
+
+.outline-toggle {
+  cursor: pointer;
+  width: 12px;
+  flex: none;
+  user-select: none;
+}
+
+.outline-symbols {
+  cursor: pointer;
+  flex: none;
+  font-size: 13px;
+}
+
+.outline-symbols:hover {
+  color: var(--fg);
+}
+
 .outline-head {
   padding: 3px 8px;
   color: var(--fg-dim);
   font-size: 11px;
   text-transform: uppercase;
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.outline-filter {
+  flex: 1;
+  min-width: 0;
+  background: #3c3c3c;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 2px 6px;
+  font-size: 12px;
+  text-transform: none;
+  outline: none;
+}
+
+.outline-filter:focus {
+  border-color: #007fd4;
 }
 
 .outline-list {

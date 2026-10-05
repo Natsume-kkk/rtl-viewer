@@ -37,6 +37,11 @@ export function pathExists(path: string): Promise<boolean> {
   return invoke<boolean>("path_exists", { path });
 }
 
+/** 在资源管理器中定位文件。 */
+export function showInFolder(path: string): Promise<void> {
+  return invoke<void>("show_in_folder", { path });
+}
+
 export async function openFolderDialog(): Promise<string | null> {
   const selected = await open({ directory: true, title: "选择源码文件夹" });
   return typeof selected === "string" ? selected : null;

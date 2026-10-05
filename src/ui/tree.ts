@@ -1,10 +1,18 @@
 import type { Hierarchy, TreeNode } from "../model/hierarchy";
+import {
+  copyText,
+  filePathMenuItems,
+  showCtxMenu,
+  type MenuItem,
+} from "./menu";
 
 export interface TreeCallbacks {
-  /** 点击节点：打开文件并跳转行 */
+  /** 点击节点：打开模块定义文件并跳转行 */
   onOpen(node: TreeNode): void;
-  /** 点击 IP 节点：显示端口面板 */
-  onIpInfo?(node: TreeNode): void;
+  /** 点击节点的例化点图标：跳到父模块中的例化行 */
+  onOpenInst?(node: TreeNode): void;
+  /** 右键「在资源管理器中显示」 */
+  onRevealFile?(path: string): void;
   /** 多顶层时用户选定顶层模块 */
   onSelectTop?(name: string): void;
   /** 点击约束文件：打开查看 */
@@ -60,6 +68,13 @@ export class HierarchyTree {
       li.textContent = file.split(/[\\/]/).pop() ?? file;
       li.title = file;
       li.addEventListener("click", () => this.callbacks.onOpenFile?.(file));
+      li.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        showCtxMenu(e.clientX, e.clientY, [
+          { label: "打开", action: () => this.callbacks.onOpenFile?.(file) },
+          ...filePathMenuItems(file, this.callbacks.onRevealFile),
+        ]);
+      });
       ul.appendChild(li);
     }
     box.appendChild(ul);
@@ -125,9 +140,39 @@ export class HierarchyTree {
     label.title = node.file ? `${node.file}:${node.line ?? 1}` : node.moduleName;
     row.appendChild(label);
 
+    if (node.instFile && node.instLine !== undefined) {
+      const inst = document.createElement("span");
+      inst.className = "tree-inst";
+      inst.textContent = "↩";
+      inst.title = `跳到父模块中的例化点\n${node.instFile}:${node.instLine}`;
+      inst.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.callbacks.onOpenInst?.(node);
+      });
+      row.appendChild(inst);
+    }
+
     row.addEventListener("click", () => {
-      if (node.kind === "ip") this.callbacks.onIpInfo?.(node);
       this.callbacks.onOpen(node);
+    });
+
+    row.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const items: MenuItem[] = [];
+      if (node.file) {
+        items.push({ label: "打开定义", action: () => this.callbacks.onOpen(node) });
+      }
+      if (node.instFile && node.instLine !== undefined) {
+        items.push({
+          label: "跳到例化点",
+          action: () => this.callbacks.onOpenInst?.(node),
+        });
+      }
+      items.push({ label: "复制模块名", action: () => copyText(node.moduleName) });
+      if (node.file) {
+        items.push(...filePathMenuItems(node.file, this.callbacks.onRevealFile));
+      }
+      showCtxMenu(e.clientX, e.clientY, items);
     });
 
     li.appendChild(row);
@@ -176,6 +221,25 @@ export class HierarchyTree {
           recursive: false,
           children: [],
         });
+      });
+      li.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        const openAction = () =>
+          this.callbacks.onOpen({
+            key: `unused/${u.name}`,
+            label: u.name,
+            moduleName: u.name,
+            kind: "module",
+            file: u.file,
+            line: u.line,
+            recursive: false,
+            children: [],
+          });
+        showCtxMenu(e.clientX, e.clientY, [
+          { label: "打开定义", action: openAction },
+          { label: "复制模块名", action: () => copyText(u.name) },
+          ...filePathMenuItems(u.file, this.callbacks.onRevealFile),
+        ]);
       });
       ul.appendChild(li);
     }

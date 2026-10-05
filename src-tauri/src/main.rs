@@ -97,6 +97,17 @@ fn path_exists(path: String) -> bool {
     PathBuf::from(&path).exists()
 }
 
+/// 在资源管理器中定位文件（explorer /select）。
+#[tauri::command]
+fn show_in_folder(path: String) -> Result<(), String> {
+    std::process::Command::new("explorer")
+        .arg("/select,")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("explorer failed: {e}"))?;
+    Ok(())
+}
+
 pub fn decode(bytes: &[u8]) -> (String, &'static str) {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return (
@@ -143,14 +154,17 @@ pub fn encode(content: &str, encoding: &str) -> Result<Vec<u8>, String> {
             }
             Ok(v)
         }
-        "gbk" => {
-            let (cow, _, had_errors) = encoding_rs::GBK.encode(content);
+        other => {
+            let enc = encoding_rs::Encoding::for_label(other.as_bytes())
+                .ok_or_else(|| format!("unsupported encoding: {other}"))?;
+            let (cow, _, had_errors) = enc.encode(content);
             if had_errors {
-                return Err("内容包含 GBK 无法表示的字符，请改用 UTF-8 保存".to_owned());
+                return Err(format!(
+                    "内容包含 {other} 无法表示的字符，请改用 UTF-8 保存"
+                ));
             }
             Ok(cow.into_owned())
         }
-        other => Err(format!("unsupported encoding: {other}")),
     }
 }
 
@@ -169,8 +183,11 @@ fn decode_as(bytes: &[u8], encoding: &str) -> Result<(String, String), String> {
             .map_err(|_| format!("文件内容不是有效的 UTF-8: {encoding}")),
         "utf16le" => Ok((encoding_rs::UTF_16LE.decode(body).0.into_owned(), name)),
         "utf16be" => Ok((encoding_rs::UTF_16BE.decode(body).0.into_owned(), name)),
-        "gbk" => Ok((encoding_rs::GBK.decode(body).0.into_owned(), name)),
-        other => Err(format!("unsupported encoding: {other}")),
+        other => {
+            let enc = encoding_rs::Encoding::for_label(other.as_bytes())
+                .ok_or_else(|| format!("unsupported encoding: {other}"))?;
+            Ok((enc.decode(body).0.into_owned(), name))
+        }
     }
 }
 
@@ -206,7 +223,8 @@ fn main() {
             read_file,
             write_file,
             file_states,
-            path_exists
+            path_exists,
+            show_in_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running rtl-viewer");
@@ -258,6 +276,18 @@ mod tests {
     #[test]
     fn gbk_unrepresentable_errors() {
         assert!(encode("emoji \u{1F600}", "gbk").is_err());
+    }
+
+    #[test]
+    fn cjk_encodings_roundtrip() {
+        // encoding_rs 标签体系：GB18030/Big5/Shift-JIS/EUC-KR 编解码往返
+        let bytes = encode("中文注释", "gb18030").unwrap();
+        assert_eq!(decode_as(&bytes, "gb18030").unwrap().0, "中文注释");
+        let bytes = encode("繁體中文", "big5").unwrap();
+        assert_eq!(decode_as(&bytes, "big5").unwrap().0, "繁體中文");
+        assert!(encode("emoji \u{1F600}", "shift_jis").is_err()); // JIS 无 emoji
+        assert!(encode("中文", "windows-1252").is_err());
+        assert!(decode_as(b"abc", "x-unknown-enc").is_err());
     }
 
     #[test]

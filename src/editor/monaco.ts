@@ -7,7 +7,7 @@ self.MonacoEnvironment = {
   getWorker: () => new EditorWorker(),
 };
 
-const VERILOG_KEYWORDS = [
+export const VERILOG_KEYWORDS = [
   "module", "endmodule", "input", "output", "inout", "wire", "reg", "logic",
   "always", "always_ff", "always_comb", "always_latch", "assign", "if", "else",
   "case", "casez", "casex", "default", "endcase", "begin", "end", "generate",
@@ -22,7 +22,7 @@ const VERILOG_OPERATORS = [
   "and", "nand", "nor", "not", "xnor", "xor", "buf",
 ];
 
-const VHDL_KEYWORDS = [
+export const VHDL_KEYWORDS = [
   "entity", "architecture", "port", "signal", "variable", "constant", "process",
   "begin", "end", "if", "then", "else", "elsif", "case", "when", "others",
   "loop", "for", "while", "generate", "component", "map", "generic", "library",

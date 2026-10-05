@@ -16,6 +16,7 @@ import type { ModuleInfo, IpInfo, PortInfo, PortConnection } from "./parser";
 import { findSignalDeclLine } from "./model/signals";
 import { scanFolder, readFile, openFolderDialog, fileStates, pathExists, showInFolder, isDirectory } from "./ipc";
 import { initMonaco, createEditor, monaco } from "./editor/monaco";
+import { registerCompletionProviders } from "./editor/completion";
 import { TabManager } from "./editor/tabs";
 import type { TabEvents } from "./editor/tabs";
 import { HierarchyTree } from "./ui/tree";
@@ -449,6 +450,12 @@ const hoverProvider: monaco.languages.HoverProvider = {
 };
 monaco.languages.registerHoverProvider("verilog", hoverProvider);
 monaco.languages.registerHoverProvider("vhdl", hoverProvider);
+
+// 补全：当前文件信号、语法关键字、模块名（选中时懒解析端口出例化骨架）
+registerCompletionProviders({
+  allDefs: () => state.index.allDefs(),
+  modulePorts,
+});
 
 // ---------- Ctrl+Shift+O 文件符号（与侧栏大纲共用 extractOutline） ----------
 

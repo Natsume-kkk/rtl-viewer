@@ -52,9 +52,9 @@ const internals: TauriInternals = {
         return FIXTURE;
       case "plugin:dialog|save":
         return `${FIXTURE}/e2e-out.v`;
-      case "plugin:dialog|confirm":
+      // plugin-dialog 的 confirm() 底层走 message 命令并比对结果 === 'Ok'
       case "plugin:dialog|message":
-        return true;
+        return "Ok";
       default:
         throw new Error(`e2e mock: unhandled command ${cmd}`);
     }

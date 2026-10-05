@@ -8,6 +8,8 @@ export interface Tab {
   path: string;
   title: string;
   model: monaco.editor.ITextModel;
+  /** model 的 uri 字符串，共享 model 存储的键 */
+  uriKey: string;
   encoding: string;
   dirty: boolean;
   /** 载入/上次保存时的磁盘 mtime，用于外部变更检测；0 表示未知 */
@@ -17,15 +19,47 @@ export interface Tab {
   element: HTMLLIElement;
 }
 
+/**
+ * 共享 model 存储（按 uri 引用计数）：分屏两侧打开同一文件时共用同一 model，
+ * 编辑实时互通，避免双 model 内容分裂。
+ */
+const modelStore = new Map<string, { model: monaco.editor.ITextModel; refs: number }>();
+
+function acquireModel(uriKey: string, content: string, lang: string): monaco.editor.ITextModel {
+  const hit = modelStore.get(uriKey);
+  if (hit) {
+    hit.refs += 1;
+    return hit.model;
+  }
+  const model = monaco.editor.createModel(content, lang, monaco.Uri.parse(uriKey));
+  modelStore.set(uriKey, { model, refs: 1 });
+  return model;
+}
+
+function releaseModel(uriKey: string): void {
+  const entry = modelStore.get(uriKey);
+  if (!entry) return;
+  entry.refs -= 1;
+  if (entry.refs <= 0) {
+    entry.model.dispose();
+    modelStore.delete(uriKey);
+  }
+}
+
 export interface TabEvents {
   /** 活动标签变化（含编码、语言，用于状态栏刷新） */
   onActiveChange(): void;
   /** 文件从磁盘读取/写回后回调（用于刷新解析缓存与层级树） */
   onFileReloaded(path: string, content: string, encoding: string, mtime: number): void;
   onFileSaved(path: string, content: string, encoding: string, mtime: number): void;
+  /** 标签右键菜单的附加项（如「在另一侧视图打开」），插在关闭项之后 */
+  tabMenuExtra?(tab: Tab): MenuItem[];
 }
 
 export class TabManager {
+  /** 所有实例（分屏各编辑组一个），用于跨组同步同路径标签状态 */
+  private static managers = new Set<TabManager>();
+
   private editor: monaco.editor.IStandaloneCodeEditor;
   private barEl: HTMLElement;
   private events: TabEvents;
@@ -39,6 +73,7 @@ export class TabManager {
     this.editor = editor;
     this.barEl = barEl;
     this.events = events;
+    TabManager.managers.add(this);
     this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void this.save();
     });
@@ -46,6 +81,10 @@ export class TabManager {
 
   get activeTab(): Tab | null {
     return this.active;
+  }
+
+  get count(): number {
+    return this.tabs.length;
   }
 
   findTab(path: string): Tab | undefined {
@@ -99,6 +138,7 @@ export class TabManager {
       this.renderTab(tab);
       this.events.onFileReloaded(tab.path, content, encoding, mtime);
       this.events.onActiveChange();
+      this.syncPeers(tab);
     } catch (e) {
       await confirmDialog(`重新打开失败：${String(e)}`);
     }
@@ -170,7 +210,7 @@ export class TabManager {
     this.tabs.splice(idx, 1);
     tab.element.remove();
     this.viewStates.delete(tab.model);
-    tab.model.dispose();
+    releaseModel(tab.uriKey);
     if (this.active === tab) {
       this.active = null;
       const next = this.tabs[Math.min(idx, this.tabs.length - 1)];
@@ -203,10 +243,26 @@ export class TabManager {
       { label: "关闭其他", action: () => void this.closeOthers(tab) },
       { label: "关闭右侧", action: () => void this.closeRight(tab) },
     ];
+    items.push(...(this.events.tabMenuExtra?.(tab) ?? []));
     if (tab.path) {
       items.push(...filePathMenuItems(tab.path, (p) => void showInFolder(p)));
     }
     showCtxMenu(x, y, items);
+  }
+
+  /** 保存/重打开后同步其他组同路径标签的状态（共享 model，脏标记需一致）。 */
+  private syncPeers(tab: Tab): void {
+    if (!tab.path) return;
+    for (const m of TabManager.managers) {
+      if (m === this) continue;
+      const peer = m.findTab(tab.path);
+      if (!peer) continue;
+      peer.dirty = tab.dirty;
+      peer.encoding = tab.encoding;
+      peer.mtime = tab.mtime;
+      peer.externalChanged = tab.externalChanged;
+      m.renderTab(peer);
+    }
   }
 
   private async doWrite(tab: Tab, path: string): Promise<boolean> {
@@ -249,18 +305,19 @@ export class TabManager {
     tab.mtime = mtime;
     this.renderTab(tab);
     this.events.onFileSaved(path, tab.model.getValue(), tab.encoding, mtime);
+    this.syncPeers(tab);
     return true;
   }
 
   private createTab(path: string, title: string, content: string, encoding: string, mtime: number, line?: number): void {
-    const uri = path
-      ? monaco.Uri.parse(`file:///${path}`)
-      : monaco.Uri.parse(`inmemory:///${title}`);
-    const model = monaco.editor.createModel(content, langForFile(path), uri);
+    const uriKey = path ? `file:///${path}` : `inmemory:///${title}`;
+    // 同路径跨组共享 model（分屏双视图编辑同步）；未命名文件 uri 唯一不共享
+    const model = acquireModel(uriKey, content, langForFile(path));
     const tab: Tab = {
       path,
       title,
       model,
+      uriKey,
       encoding,
       dirty: false,
       mtime,

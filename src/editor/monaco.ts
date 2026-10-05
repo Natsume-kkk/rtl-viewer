@@ -152,11 +152,19 @@ function registerDefinitionProvider(resolve: ResolveFn): void {
   monaco.languages.registerDefinitionProvider("vhdl", provider);
 }
 
-export function initMonaco(container: HTMLElement, resolve: ResolveFn): monaco.editor.IStandaloneCodeEditor {
+let registered = false;
+
+function registerOnce(resolve: ResolveFn): void {
+  if (registered) return;
+  registered = true;
   registerVerilog();
   registerVhdl();
   registerDefinitionProvider(resolve);
-  const editor = monaco.editor.create(container, {
+}
+
+/** 新建一个编辑器实例（分屏的第二视图用）；语言与 provider 须已通过 initMonaco 注册。 */
+export function createEditor(container: HTMLElement): monaco.editor.IStandaloneCodeEditor {
+  return monaco.editor.create(container, {
     theme: "vs-dark",
     automaticLayout: true,
     fontSize: 13,
@@ -167,7 +175,11 @@ export function initMonaco(container: HTMLElement, resolve: ResolveFn): monaco.e
     mouseWheelZoom: true,
     tabSize: 4,
   });
-  return editor;
+}
+
+export function initMonaco(container: HTMLElement, resolve: ResolveFn): monaco.editor.IStandaloneCodeEditor {
+  registerOnce(resolve);
+  return createEditor(container);
 }
 
 export { monaco };

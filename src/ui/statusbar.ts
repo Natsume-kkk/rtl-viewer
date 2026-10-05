@@ -88,6 +88,11 @@ export class StatusBar {
     });
   }
 
+  /** 切换编辑组时直接设置位置显示（光标事件不触发）。 */
+  setPosition(text: string): void {
+    this.posEl.textContent = text;
+  }
+
   /** active 为 null 表示无打开文件 */
   update(lang: string | null, encoding: string | null): void {
     this.posEl.textContent = lang ? this.posEl.textContent || "行 1, 列 1" : "";

@@ -15,8 +15,9 @@ import { scanStructure, parseFile, parseFileDetail, parseXci } from "./parser";
 import type { ModuleInfo, IpInfo, PortInfo, PortConnection } from "./parser";
 import { findSignalDeclLine } from "./model/signals";
 import { scanFolder, readFile, openFolderDialog, fileStates, pathExists, showInFolder, isDirectory } from "./ipc";
-import { initMonaco, monaco } from "./editor/monaco";
+import { initMonaco, createEditor, monaco } from "./editor/monaco";
 import { TabManager } from "./editor/tabs";
+import type { TabEvents } from "./editor/tabs";
 import { HierarchyTree } from "./ui/tree";
 import { StatusBar } from "./ui/statusbar";
 import { OutlineView } from "./ui/outline";
@@ -69,7 +70,7 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   openWrap.append(openBtn, recentBtn);
   const newBtn = document.createElement("button");
   newBtn.textContent = "新建文件";
-  newBtn.addEventListener("click", () => tabs.newFile());
+  newBtn.addEventListener("click", () => activeGroup().tabs.newFile());
   bar.append(openWrap, newBtn);
   const progress = document.createElement("div");
   progress.id = "progress";
@@ -86,23 +87,28 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
 
 const { treeRoot: treeRootEl, searchRoot: searchRootEl, outlineRoot: outlineRootEl } = initSidebar();
 
-// Monaco 初始化（definition provider 通过函数引用最新索引）
+// Monaco 初始化（definition provider 通过函数引用最新索引）；editor2 为分屏第二组
 const editor = initMonaco(editorContainer, (name) => state.index.resolve(name));
+const editor2 = createEditor(document.getElementById("editor-container-2")!);
 
 // E2E 钩子：仅 ?e2e 模式暴露编辑器实例与拖放入口，供自动化验收驱动
 if (new URLSearchParams(location.search).has("e2e")) {
-  (window as unknown as Record<string, unknown>).__rtl = {
-    editor,
+  const rtl: Record<string, unknown> = {
     monaco,
     debugDrop: (paths: string[]) => void handleDroppedPaths(paths),
+    splitOther: () => void openInOtherGroup(),
   };
+  Object.defineProperty(rtl, "editor", { get: () => activeGroup().editor });
+  Object.defineProperty(rtl, "tabs", { get: () => activeGroup().tabs });
+  (window as unknown as Record<string, unknown>).__rtl = rtl;
 }
 
 const statusbar = new StatusBar(statusbarEl, {
-  onReopen: (enc) => void tabs.reopenWithEncoding(enc),
-  onSetSaveEncoding: (enc) => tabs.setSaveEncoding(enc),
+  onReopen: (enc) => void activeGroup().tabs.reopenWithEncoding(enc),
+  onSetSaveEncoding: (enc) => activeGroup().tabs.setSaveEncoding(enc),
 });
 statusbar.attachEditor(editor);
+statusbar.attachEditor(editor2);
 
 const tree = new HierarchyTree(treeRootEl, {
   onOpen: (node) => void openTreeNode(node),
@@ -135,9 +141,10 @@ const tree = new HierarchyTree(treeRootEl, {
 const history = new NavHistory();
 
 function currentPos(): { path: string; line: number } | undefined {
-  const tab = tabs.activeTab;
+  const g = activeGroup();
+  const tab = g.tabs.activeTab;
   if (!tab?.path) return undefined;
-  return { path: tab.path, line: editor.getPosition()?.lineNumber ?? 1 };
+  return { path: tab.path, line: g.editor.getPosition()?.lineNumber ?? 1 };
 }
 
 /** 工程内跳转统一入口：记录当前位置到历史，再打开目标位置。 */
@@ -186,14 +193,16 @@ const outline = new OutlineView(outlineRootEl, {
   onJump: (line) => {
     const cur = currentPos();
     if (cur) history.push(cur);
-    editor.revealLineInCenter(line);
-    editor.setPosition({ lineNumber: line, column: 1 });
-    editor.focus();
+    const ed = activeGroup().editor;
+    ed.revealLineInCenter(line);
+    ed.setPosition({ lineNumber: line, column: 1 });
+    ed.focus();
     updateNavButtons();
   },
   onOpenSymbols: () => {
-    editor.focus();
-    editor.trigger("rtl.outline", "editor.action.quickOutline", null);
+    const ed = activeGroup().editor;
+    ed.focus();
+    ed.trigger("rtl.outline", "editor.action.quickOutline", null);
   },
 });
 
@@ -204,7 +213,8 @@ let currentOutline: OutlineItem[] = [];
 function refreshOutline(): void {
   window.clearTimeout(outlineTimer);
   outlineTimer = window.setTimeout(() => {
-    const tab = tabs.activeTab;
+    const g = activeGroup();
+    const tab = g.tabs.activeTab;
     if (!tab) {
       currentOutline = [];
       outline.render([], "");
@@ -212,7 +222,7 @@ function refreshOutline(): void {
     }
     currentOutline = extractOutline(tab.model.getValue(), tab.path || tab.title);
     outline.render(currentOutline, tab.title);
-    const line = editor.getPosition()?.lineNumber;
+    const line = g.editor.getPosition()?.lineNumber;
     if (line) {
       statusbar.setBreadcrumb(breadcrumbAt(currentOutline, line));
       outline.highlightLine(line);
@@ -220,12 +230,7 @@ function refreshOutline(): void {
   }, 200);
 }
 
-// 光标跟随：状态栏显示「模块 › 进程」，大纲高亮当前条目
-editor.onDidChangeCursorPosition((e) => {
-  const line = e.position.lineNumber;
-  statusbar.setBreadcrumb(breadcrumbAt(currentOutline, line));
-  outline.highlightLine(line);
-});
+// 光标跟随在 wireEditor 中按组注册：状态栏显示「模块 › 进程」，大纲高亮当前条目
 
 // ---------- 全局搜索 ----------
 
@@ -363,10 +368,13 @@ async function buildPortMapRows(
   return rows;
 }
 
-/** 打开中的标签页用当前缓冲区（含未保存修改），否则用扫描缓存。 */
+/** 打开中的标签页用当前缓冲区（含未保存修改），否则用扫描缓存。两组标签都查。 */
 function fileContent(file: string): string | undefined {
-  const tab = tabs.findTab(file);
-  return tab ? tab.model.getValue() : state.contents.get(file)?.content;
+  for (const g of groups) {
+    const tab = g.tabs.findTab(file);
+    if (tab) return tab.model.getValue();
+  }
+  return state.contents.get(file)?.content;
 }
 
 function gotoSignalDecl(file: string, name: string): void {
@@ -571,96 +579,234 @@ function showInstancePanel(name: string, sites: InstanceSite[]): void {
   document.getElementById("main-area")!.appendChild(panel);
 }
 
-editor.addAction({
-  id: "rtl.pin-portmap",
-  label: "例化端口映射",
-  keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
-  run: () => {
-    const model = editor.getModel();
-    const pos = editor.getPosition();
-    const word = model && pos ? model.getWordAtPosition(pos) : null;
-    const hit =
-      model && pos && word
-        ? findInstanceAt(detailForModel(model), word.word, pos.lineNumber)
-        : undefined;
-    if (!model || !hit) {
-      statusbar.hint("光标不在例化名上");
-      return;
-    }
-    const inst = hit.inst;
-    void buildPortMapRows(inst.module, inst.connections ?? []).then((rows) =>
-      pinPortMapPanel(inst.inst, inst.module, rows, pathFromUri(model.uri)),
-    );
-  },
-});
-
-// 自动换行切换：Monaco standalone 自带 editor.action.toggleWordWrap（含 Alt+Z），
-// 存在时只补右键菜单入口，不再绑快捷键避免双触发。
-{
-  const builtin = editor.getAction("editor.action.toggleWordWrap");
-  editor.addAction({
-    id: "rtl.toggle-word-wrap",
-    label: "切换自动换行 (Alt+Z)",
-    contextMenuGroupId: "view",
-    contextMenuOrder: 1,
-    ...(builtin ? {} : { keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyZ] }),
-    run: () => {
-      if (builtin) {
-        void builtin.run();
-        return;
-      }
-      const on = editor.getOption(monaco.editor.EditorOption.wordWrap) !== "off";
-      editor.updateOptions({ wordWrap: on ? "off" : "on" });
-    },
+/** 每个编辑器实例的接线：焦点切组、光标跟随（两组各一份，闭包内 ed 即本组编辑器）。 */
+function wireEditor(ed: monaco.editor.IStandaloneCodeEditor, idx: number): void {
+  ed.onDidFocusEditorText(() => focusGroup(idx));
+  ed.onDidChangeCursorPosition((e) => {
+    if (idx !== activeGroupIdx) return;
+    const line = e.position.lineNumber;
+    statusbar.setBreadcrumb(breadcrumbAt(currentOutline, line));
+    outline.highlightLine(line);
   });
 }
 
-// 查找引用：选中或光标下的标识符 → 全局搜索（整词），Shift+F12 / 右键菜单。
-editor.addAction({
-  id: "rtl.find-references",
-  label: "查找引用 (Shift+F12)",
-  keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F12],
-  contextMenuGroupId: "navigation",
-  contextMenuOrder: 1,
-  run: () => {
-    const model = editor.getModel();
-    if (!model) return;
-    const sel = editor.getSelection();
-    const selText = sel ? model.getValueInRange(sel) : "";
-    const pos = editor.getPosition();
-    const word = IDENT_RE.test(selText)
-      ? selText
-      : pos
-        ? model.getWordAtPosition(pos)?.word
-        : undefined;
-    if (!word) {
-      statusbar.hint("光标不在标识符上");
-      return;
-    }
-    searchPanel.searchAll(word);
-  },
-});
+/**
+ * 编辑器动作全局注册（monaco.editor.addEditorAction，只注册一次）：
+ * run 收到的 ed 是当前聚焦的编辑器实例，天然适配分屏；
+ * 不能用 ed.addAction 在两组各注册同 id 动作，会让按键分发失效。
+ */
+function registerEditorActions(): void {
+  monaco.editor.addEditorAction({
+    id: "rtl.pin-portmap",
+    label: "例化端口映射",
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
+    run: (ed) => {
+      const model = ed.getModel();
+      const pos = ed.getPosition();
+      const word = model && pos ? model.getWordAtPosition(pos) : null;
+      const hit =
+        model && pos && word
+          ? findInstanceAt(detailForModel(model), word.word, pos.lineNumber)
+          : undefined;
+      if (!model || !hit) {
+        statusbar.hint("光标不在例化名上");
+        return;
+      }
+      const inst = hit.inst;
+      void buildPortMapRows(inst.module, inst.connections ?? []).then((rows) =>
+        pinPortMapPanel(inst.inst, inst.module, rows, pathFromUri(model.uri)),
+      );
+    },
+  });
 
-const tabs = new TabManager(editor, tabbarEl, {  onActiveChange: () => {
-    const tab = tabs.activeTab;
-    if (!tab) {
-      statusbar.update(null, null);
-      refreshOutline();
-      return;
-    }
-    const lang = tab.model.getLanguageId();
-    statusbar.update(lang, tab.encoding);
+  // 自动换行切换：Monaco standalone 自带 editor.action.toggleWordWrap（含 Alt+Z），
+  // 存在时只补右键菜单入口，不再绑快捷键避免双触发。
+  {
+    const builtin = editor.getAction("editor.action.toggleWordWrap");
+    monaco.editor.addEditorAction({
+      id: "rtl.toggle-word-wrap",
+      label: "切换自动换行 (Alt+Z)",
+      contextMenuGroupId: "view",
+      contextMenuOrder: 1,
+      ...(builtin ? {} : { keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyZ] }),
+      run: (ed) => {
+        const act = ed.getAction("editor.action.toggleWordWrap");
+        if (act) {
+          void act.run();
+          return;
+        }
+        const on = ed.getOption(monaco.editor.EditorOption.wordWrap) !== "off";
+        ed.updateOptions({ wordWrap: on ? "off" : "on" });
+      },
+    });
+  }
+
+  // 查找引用：选中或光标下的标识符 → 全局搜索（整词），Shift+F12 / 右键菜单。
+  monaco.editor.addEditorAction({
+    id: "rtl.find-references",
+    label: "查找引用 (Shift+F12)",
+    keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F12],
+    contextMenuGroupId: "navigation",
+    contextMenuOrder: 1,
+    run: (ed) => {
+      const model = ed.getModel();
+      if (!model) return;
+      const sel = ed.getSelection();
+      const selText = sel ? model.getValueInRange(sel) : "";
+      const pos = ed.getPosition();
+      const word = IDENT_RE.test(selText)
+        ? selText
+        : pos
+          ? model.getWordAtPosition(pos)?.word
+          : undefined;
+      if (!word) {
+        statusbar.hint("光标不在标识符上");
+        return;
+      }
+      searchPanel.searchAll(word);
+    },
+  });
+
+  // 分屏：当前文件在另一侧视图打开（共享 model，编辑互通）。
+  monaco.editor.addEditorAction({
+    id: "rtl.split-other",
+    label: "在另一侧视图打开 (Ctrl+\\)",
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Backslash],
+    contextMenuGroupId: "view",
+    contextMenuOrder: 0,
+    run: () => void openInOtherGroup(),
+  });
+}
+
+// ---------- 编辑组（分屏：最多左右两组，同文件共享 model） ----------
+
+interface EditorGroup {
+  editor: monaco.editor.IStandaloneCodeEditor;
+  tabs: TabManager;
+}
+
+let splitVisible = false;
+let activeGroupIdx = 0;
+
+function makeTabEvents(idx: number): TabEvents {
+  return {
+    onActiveChange: () => {
+      if (idx === 1 && groups[1].tabs.count === 0) collapseSplit();
+      if (idx === activeGroupIdx) syncChrome();
+    },
+    onFileReloaded: (path, content, encoding, mtime) => {
+      state.contents.set(path, { content, encoding, mtime });
+      updateStructure(path, content);
+    },
+    onFileSaved: (path, content, encoding, mtime) => {
+      state.contents.set(path, { content, encoding, mtime });
+      updateStructure(path, content);
+    },
+    tabMenuExtra: (tab) => {
+      if (!tab.path) return [];
+      const other = idx === 0 ? 1 : 0;
+      return [
+        {
+          label: splitVisible ? "在另一侧视图打开" : "向右拆分视图",
+          action: () => void openProjectFile(tab.path, undefined, other),
+        },
+      ];
+    },
+  };
+}
+
+const groups: EditorGroup[] = [
+  { editor, tabs: new TabManager(editor, tabbarEl, makeTabEvents(0)) },
+  {
+    editor: editor2,
+    tabs: new TabManager(editor2, document.getElementById("tabbar-2")!, makeTabEvents(1)),
+  },
+];
+wireEditor(editor, 0);
+wireEditor(editor2, 1);
+registerEditorActions();
+
+function activeGroup(): EditorGroup {
+  return groups[activeGroupIdx];
+}
+
+function focusGroup(idx: number): void {
+  if (idx === activeGroupIdx) return;
+  activeGroupIdx = idx;
+  syncChrome();
+}
+
+/** 同步状态栏/大纲等外围 UI 到当前活动组。 */
+function syncChrome(): void {
+  const g = activeGroup();
+  const tab = g.tabs.activeTab;
+  if (!tab) {
+    statusbar.update(null, null);
     refreshOutline();
-  },
-  onFileReloaded: (path, content, encoding, mtime) => {
-    state.contents.set(path, { content, encoding, mtime });
-    updateStructure(path, content);
-  },
-  onFileSaved: (path, content, encoding, mtime) => {
-    state.contents.set(path, { content, encoding, mtime });
-    updateStructure(path, content);
-  },
-});
+    return;
+  }
+  statusbar.update(tab.model.getLanguageId(), tab.encoding);
+  const pos = g.editor.getPosition();
+  if (pos) statusbar.setPosition(`行 ${pos.lineNumber}, 列 ${pos.column}`);
+  refreshOutline();
+}
+
+function ensureSplit(): void {
+  if (splitVisible) return;
+  splitVisible = true;
+  document.getElementById("group-2")!.hidden = false;
+  document.getElementById("group-splitter")!.hidden = false;
+}
+
+function collapseSplit(): void {
+  if (!splitVisible) return;
+  splitVisible = false;
+  document.getElementById("group-2")!.hidden = true;
+  document.getElementById("group-splitter")!.hidden = true;
+  document.getElementById("group-1")!.style.flex = "";
+  if (activeGroupIdx === 1) {
+    activeGroupIdx = 0;
+    syncChrome();
+  }
+}
+
+/** 当前文件在另一侧视图打开（Ctrl+\ / 编辑器右键）。 */
+async function openInOtherGroup(): Promise<void> {
+  const src = activeGroup();
+  const tab = src.tabs.activeTab;
+  if (!tab?.path) {
+    statusbar.hint("当前没有已保存的文件");
+    return;
+  }
+  const line = src.editor.getPosition()?.lineNumber;
+  await openProjectFile(tab.path, line, activeGroupIdx === 0 ? 1 : 0);
+}
+
+/** 两组间的宽度分隔条拖拽。 */
+function initGroupSplitter(): void {
+  const splitter = document.getElementById("group-splitter")!;
+  splitter.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    const g1 = document.getElementById("group-1")!;
+    const mainArea = document.getElementById("main-area")!;
+    const startX = e.clientX;
+    const startWidth = g1.getBoundingClientRect().width;
+    document.body.classList.add("resizing");
+    const onMove = (ev: MouseEvent) => {
+      const total = mainArea.getBoundingClientRect().width;
+      const width = Math.min(Math.max(startWidth + ev.clientX - startX, 200), total - 200);
+      g1.style.flex = `0 0 ${width}px`;
+    };
+    const onUp = () => {
+      document.body.classList.remove("resizing");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+initGroupSplitter();
 
 function updateStructure(path: string, content: string): void {
   if (!state.folder) return;
@@ -862,16 +1008,19 @@ async function pollExternalChanges(): Promise<void> {
       }
       try {
         const fresh = await readFile(file);
-        const tab = tabs.findTab(file);
-        if (tab && !tab.dirty) {
-          // 静默重载：onFileReloaded 事件会同步缓存与结构
-          tabs.reloadFromDisk(file, fresh.content, fresh.encoding, fresh.mtime);
+        const openGroups = groups.filter((g) => g.tabs.findTab(file));
+        const anyDirty = openGroups.some((g) => g.tabs.findTab(file)!.dirty);
+        if (openGroups.length > 0 && !anyDirty) {
+          // 静默重载：onFileReloaded 事件会同步缓存与结构；共享 model 的组逐个刷新标签状态
+          for (const g of openGroups) {
+            g.tabs.reloadFromDisk(file, fresh.content, fresh.encoding, fresh.mtime);
+          }
           statusbar.hint(`${file.split("/").pop() ?? file} 已被外部修改，已重新加载`);
         } else {
           cached.content = fresh.content;
           cached.encoding = fresh.encoding;
           cached.mtime = fresh.mtime;
-          if (tab) tabs.markExternalChanged(file, true);
+          for (const g of openGroups) g.tabs.markExternalChanged(file, true);
           updateStructure(file, fresh.content);
         }
       } catch (e) {
@@ -885,8 +1034,9 @@ async function pollExternalChanges(): Promise<void> {
 
 /** 文件在磁盘被删除：打开中的标签保留缓冲区并打 ⚠，未打开的从索引移除。 */
 function handleExternalDelete(file: string): void {
-  if (tabs.findTab(file)) {
-    tabs.markExternalChanged(file, true);
+  const openGroups = groups.filter((g) => g.tabs.findTab(file));
+  if (openGroups.length > 0) {
+    for (const g of openGroups) g.tabs.markExternalChanged(file, true);
     return;
   }
   state.contents.delete(file);
@@ -946,7 +1096,7 @@ async function rescanFolderDiff(): Promise<void> {
   }
   const conSet = new Set(userCon);
   for (const file of state.constraints) {
-    if (!conSet.has(file) && !tabs.findTab(file)) state.contents.delete(file);
+    if (!conSet.has(file) && !groups.some((g) => g.tabs.findTab(file))) state.contents.delete(file);
   }
   if (
     userCon.length !== state.constraints.length ||
@@ -963,14 +1113,18 @@ async function rescanFolderDiff(): Promise<void> {
 
 // ---------- 树节点打开 ----------
 
-/** 打开工程内文件并跳转行：优先用扫描缓存，未缓存则读盘。树节点与编辑器跳转共用。 */
-async function openProjectFile(file: string, line?: number): Promise<void> {
+/** 打开工程内文件并跳转行：优先用扫描缓存，未缓存则读盘。树节点与编辑器跳转共用。
+ *  targetIdx 指定目标编辑组（分屏「在另一侧打开」），缺省为当前活动组。 */
+async function openProjectFile(file: string, line?: number, targetIdx?: number): Promise<void> {
+  const idx = targetIdx ?? activeGroupIdx;
+  if (idx === 1) ensureSplit();
+  const g = groups[idx];
   const cached = state.contents.get(file);
   if (cached) {
-    tabs.openContent(file, cached.content, cached.encoding, cached.mtime, line);
+    g.tabs.openContent(file, cached.content, cached.encoding, cached.mtime, line);
     ensureParsed(file, cached.content);
   } else {
-    await tabs.openFile(file, line);
+    await g.tabs.openFile(file, line);
     const after = state.contents.get(file);
     if (after) ensureParsed(file, after.content);
   }

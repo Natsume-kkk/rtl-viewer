@@ -57,6 +57,21 @@ endmodule`,
     expect(h.unused.map((u) => u.name)).toEqual(["b"]);
   });
 
+  it("未使用只含未被任何模块例化的定义，被其他顶层收纳的模块不列入", () => {
+    const h = buildFromFiles(
+      {
+        "a.v": `module a; leaf u (.x(1'b0)); endmodule`,
+        "leaf.v": `module leaf(input x); endmodule`,
+        "tb_top.v": `module tb_top; env u_env (); endmodule`,
+        "env.v": `module env; endmodule`,
+      },
+      [],
+      "a",
+    );
+    // env 被 tb_top 例化（被其他顶层收纳），不进未使用；tb_top 自身无人例化，保留
+    expect(h.unused.map((u) => u.name)).toEqual(["tb_top"]);
+  });
+
   it("测试台候选向内解包出 DUT 顶层", () => {
     const h = buildFromFiles({
       "tb_top.v": `module tb_top; big u_b (.x(1'b0)); endmodule`,

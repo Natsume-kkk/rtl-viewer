@@ -286,18 +286,45 @@ body.resizing {
 #main-area {
   grid-area: main;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   overflow: hidden;
   position: relative;
 }
 
-#tabbar {
+.editor-group {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* author 的 display:flex 会压过 UA 的 [hidden]，显式补回隐藏语义 */
+.editor-group[hidden],
+#group-splitter[hidden] {
+  display: none;
+}
+
+#group-splitter {
+  width: 4px;
+  flex: none;
+  cursor: col-resize;
+  background: var(--border);
+}
+
+#group-splitter:hover {
+  background: var(--accent);
+}
+
+.tabbar {
   list-style: none;
   display: flex;
   background: var(--bg-tab);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
   flex: none;
+  margin: 0;
+  padding: 0;
 }
 
 .tab {
@@ -328,7 +355,7 @@ body.resizing {
   background: #555;
 }
 
-#editor-container {
+.editor-container {
   flex: 1;
   min-height: 0;
 }

@@ -10,8 +10,15 @@
       <aside id="sidebar"></aside>
       <div id="splitter"></div>
       <main id="main-area">
-        <ul id="tabbar"></ul>
-        <div id="editor-container"></div>
+        <div class="editor-group" id="group-1">
+          <ul id="tabbar" class="tabbar"></ul>
+          <div id="editor-container" class="editor-container"></div>
+        </div>
+        <div id="group-splitter" hidden></div>
+        <div class="editor-group" id="group-2" hidden>
+          <ul id="tabbar-2" class="tabbar"></ul>
+          <div id="editor-container-2" class="editor-container"></div>
+        </div>
       </main>
       <footer id="statusbar"></footer>
     </div>

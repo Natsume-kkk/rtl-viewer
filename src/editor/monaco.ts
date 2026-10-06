@@ -7,34 +7,118 @@ self.MonacoEnvironment = {
   getWorker: () => new EditorWorker(),
 };
 
+// 关键字清单与分组对齐 Notepad++ 官方 langs.xml 的 Verilog/VHDL 段
+// （剔除原文中 case?、converse、privat 等明显拼写错误的条目）：
+// 浅色主题为 Notepad++ 默认配色，深色主题为 VSCode Dark+ 配色。
+// 导出的 VERILOG_KEYWORDS / VHDL_KEYWORDS 是全量并集，供 completion.ts 补全使用。
+
+// Verilog instre1：全部关键字（Notepad++ 中染蓝加粗；and/or/nand 等也在其中）
 export const VERILOG_KEYWORDS = [
-  "module", "endmodule", "input", "output", "inout", "wire", "reg", "logic",
-  "always", "always_ff", "always_comb", "always_latch", "assign", "if", "else",
-  "case", "casez", "casex", "default", "endcase", "begin", "end", "generate",
-  "endgenerate", "genvar", "for", "while", "parameter", "localparam", "function",
-  "endfunction", "task", "endtask", "initial", "posedge", "negedge", "or",
-  "typedef", "enum", "struct", "union", "packed", "interface", "endinterface",
-  "package", "endpackage", "import", "return", "integer", "real", "time",
-  "signed", "unsigned", "bit", "byte", "int", "tri", "supply0", "supply1",
+  "accept_on", "alias", "always", "always_comb", "always_ff", "always_latch",
+  "and", "assert", "assign", "assume", "attribute", "automatic", "before",
+  "begin", "bind", "bins", "binsof", "bit", "break", "buf", "bufif0", "bufif1",
+  "byte", "case", "casex", "casez", "cell", "chandle", "checker", "class",
+  "clocking", "cmos", "config", "const", "constraint", "context", "continue",
+  "cover", "covergroup", "coverpoint", "cross", "deassign", "default",
+  "defparam", "design", "disable", "dist", "do", "edge", "else", "end",
+  "endattribute", "endcase", "endchecker", "endclass", "endclocking",
+  "endconfig", "endfunction", "endgenerate", "endgroup", "endinterface",
+  "endmodule", "endpackage", "endprimitive", "endprogram", "endproperty",
+  "endsequence", "endspecify", "endtable", "endtask", "enum", "event",
+  "eventually", "expect", "export", "extends", "extern", "final", "first_match",
+  "for", "force", "foreach", "forever", "fork", "forkjoin", "function",
+  "generate", "genvar", "global", "highz0", "highz1", "if", "iff", "ifnone",
+  "ignore_bins", "illegal_bins", "implements", "implies", "import", "incdir",
+  "include", "initial", "inout", "input", "inside", "instance", "int",
+  "integer", "interconnect", "interface", "intersect", "join", "join_any",
+  "join_none", "large", "let", "liblist", "library", "local", "localparam",
+  "logic", "longint", "macromodule", "matches", "medium", "modport", "module",
+  "nand", "negedge", "nettype", "new", "nexttime", "nmos", "nor",
+  "noshowcancelled", "not", "notif0", "notif1", "null", "or", "output",
+  "package", "packed", "parameter", "pmos", "posedge", "primitive", "priority",
+  "program", "property", "protected", "pull0", "pull1", "pulldown", "pullup",
+  "pulsestyle_ondetect", "pulsestyle_onevent", "pure", "rand", "randc",
+  "randcase", "randsequence", "rcmos", "real", "realtime", "ref", "reg",
+  "reject_on", "release", "repeat", "restrict", "return", "rnmos", "rpmos",
+  "rtran", "rtranif0", "rtranif1", "scalared", "sequence", "shortint",
+  "shortreal", "showcancelled", "signed", "small", "soft", "solve", "specify",
+  "specparam", "static", "string", "strong", "strong0", "strong1", "struct",
+  "super", "supply0", "supply1", "sync_accept_on", "sync_reject_on", "s_always",
+  "s_eventually", "s_nexttime", "s_until", "s_until_with", "table", "tagged",
+  "task", "this", "throughout", "time", "timeprecision", "timeunit", "tran",
+  "tranif0", "tranif1", "tri", "tri0", "tri1", "triand", "trior", "trireg",
+  "type", "typedef", "union", "unique", "unique0", "unsigned", "until",
+  "until_with", "untyped", "use", "var", "vectored", "virtual", "void", "wait",
+  "wait_order", "wand", "weak", "weak0", "weak1", "while", "wildcard", "wire",
+  "with", "within", "wor", "xnor", "xor",
 ];
 
-const VERILOG_OPERATORS = [
-  "and", "nand", "nor", "not", "xnor", "xor", "buf",
+// VHDL instre1：语句关键字（Notepad++ 中染蓝加粗）
+const VHDL_INSTRUCTIONS = [
+  "access", "after", "alias", "all", "architecture", "array", "assert",
+  "attribute", "begin", "block", "body", "buffer", "bus", "case", "component",
+  "configuration", "constant", "disconnect", "downto", "else", "elsif", "end",
+  "entity", "exit", "file", "for", "force", "function", "generate", "generic",
+  "group", "guarded", "if", "impure", "in", "index", "inertial", "inout", "is",
+  "label", "library", "linkage", "literal", "loop", "map", "new", "next",
+  "null", "of", "on", "open", "others", "out", "package", "port", "postponed",
+  "procedure", "process", "pure", "range", "record", "register", "reject",
+  "report", "return", "select", "severity", "shared", "signal", "subtype",
+  "then", "to", "transport", "type", "unaffected", "units", "until", "use",
+  "variable", "wait", "when", "while", "with", "assume", "assume_guarantee",
+  "context", "cover", "default", "fairness", "parameter", "property",
+  "protect", "protected", "reflect", "release", "restrict", "restrict_guarantee",
+  "sequence", "strong", "value", "view", "vmode", "vprop", "vunit",
+];
+
+// VHDL instre2：标准操作符（Notepad++ 中染青蓝加粗）
+const VHDL_STD_OPERATORS = [
+  "abs", "and", "mod", "nand", "nor", "not", "or", "rem", "rol", "ror", "sla",
+  "sll", "sra", "srl", "xnor", "xor",
+];
+
+// VHDL type1：属性（Notepad++ 中染紫蓝加粗、米色底）；range/value 在 instre1 优先，不重复收录
+const VHDL_ATTRIBUTES = [
+  "left", "right", "low", "high", "ascending", "image", "pos", "val", "succ",
+  "pred", "leftof", "rightof", "base", "reverse_range", "length", "delayed",
+  "stable", "quiet", "transaction", "event", "active", "last_event",
+  "last_active", "last_value", "driving", "driving_value", "simple_name",
+  "path_name", "instance_name", "minimum", "maximum",
+];
+
+// VHDL type2：标准函数（Notepad++ 中染亮蓝加粗）
+const VHDL_STD_FUNCTIONS = [
+  "now", "readline", "read", "writeline", "write", "endfile", "resolved",
+  "to_bit", "to_bitvector", "to_stdulogic", "to_stdlogicvector",
+  "to_stdulogicvector", "to_x01", "to_x01z", "to_ux01", "rising_edge",
+  "falling_edge", "is_x", "shift_left", "shift_right", "rotate_left",
+  "rotate_right", "resize", "to_integer", "to_unsigned", "to_signed",
+  "to_string", "to_bstring", "to_binarystring", "to_ostring", "to_octalstring",
+  "to_hstring", "to_hexstring", "std_match", "to_01",
+];
+
+// VHDL type3：标准包（Notepad++ 中染棕红）
+const VHDL_STD_PACKAGES = [
+  "std", "ieee", "work", "standard", "textio", "std_logic_1164",
+  "std_logic_arith", "std_logic_misc", "std_logic_signed", "std_logic_textio",
+  "std_logic_unsigned", "numeric_bit", "numeric_std", "math_complex",
+  "math_real", "vital_primitives", "vital_timing",
+];
+
+// VHDL type4：标准类型（Notepad++ 中染紫）
+const VHDL_STD_TYPES = [
+  "boolean", "boolean_vector", "bit", "character", "severity_level", "integer",
+  "integer_vector", "real", "real_vector", "time", "time_vector",
+  "delay_length", "natural", "positive", "string", "bit_vector",
+  "file_open_kind", "file_open_status", "line", "text", "side", "width",
+  "std_ulogic", "std_ulogic_vector", "std_logic", "std_logic_vector", "x01",
+  "x01z", "ux01", "ux01z", "unsigned", "signed", "unresolved_unsigned",
+  "unresolved_signed", "u_unsigned", "u_signed",
 ];
 
 export const VHDL_KEYWORDS = [
-  "entity", "architecture", "port", "signal", "variable", "constant", "process",
-  "begin", "end", "if", "then", "else", "elsif", "case", "when", "others",
-  "loop", "for", "while", "generate", "component", "map", "generic", "library",
-  "use", "package", "body", "is", "of", "in", "out", "inout", "buffer", "type",
-  "subtype", "record", "array", "std_logic", "std_logic_vector", "rising_edge",
-  "falling_edge", "function", "procedure", "return", "wait", "until", "downto",
-  "to", "integer", "natural", "boolean", "all", "configuration",
-];
-
-const VHDL_OPERATORS = [
-  "and", "or", "not", "nand", "nor", "xor", "xnor", "mod", "rem", "abs", "sll",
-  "srl", "sla", "sra", "rol", "ror",
+  ...VHDL_INSTRUCTIONS, ...VHDL_STD_OPERATORS, ...VHDL_ATTRIBUTES,
+  ...VHDL_STD_FUNCTIONS, ...VHDL_STD_PACKAGES, ...VHDL_STD_TYPES,
 ];
 
 function registerVerilog(): void {
@@ -50,7 +134,6 @@ function registerVerilog(): void {
   monaco.languages.setMonarchTokensProvider("verilog", {
     defaultToken: "",
     keywords: VERILOG_KEYWORDS,
-    operators: VERILOG_OPERATORS,
     tokenizer: {
       root: [
         [/\/\/.*$/, "comment"],
@@ -59,10 +142,11 @@ function registerVerilog(): void {
         [/"/, "string", "@string"],
         [/\d*'[bodhBODH][0-9a-fA-FxzXZ_?]+/, "number.hex"],
         [/\d[\d_]*\.?\d*([eE][+-]?\d+)?/, "number"],
+        // 系统任务 $display/$finish 等：Notepad++ 默认未配置样式（黑色），深色下按 VSCode 函数色
+        [/\$[a-zA-Z_]\w*/, "systemtask"],
         [/[a-zA-Z_$][\w$]*/, {
           cases: {
             "@keywords": "keyword",
-            "@operators": "keyword.operator",
             "@default": "identifier",
           },
         }],
@@ -96,8 +180,12 @@ function registerVhdl(): void {
   monaco.languages.setMonarchTokensProvider("vhdl", {
     defaultToken: "",
     ignoreCase: true,
-    keywords: VHDL_KEYWORDS,
-    operators: VHDL_OPERATORS,
+    instructions: VHDL_INSTRUCTIONS,
+    stdOperators: VHDL_STD_OPERATORS,
+    attributes: VHDL_ATTRIBUTES,
+    stdFunctions: VHDL_STD_FUNCTIONS,
+    stdPackages: VHDL_STD_PACKAGES,
+    stdTypes: VHDL_STD_TYPES,
     tokenizer: {
       root: [
         [/--.*$/, "comment"],
@@ -107,8 +195,12 @@ function registerVhdl(): void {
         [/\d[\d_]*\.?\d*([eE][+-]?\d+)?/, "number"],
         [/[a-zA-Z_]\w*/, {
           cases: {
-            "@keywords": "keyword",
-            "@operators": "keyword.operator",
+            "@instructions": "keyword",
+            "@stdOperators": "keyword.operator",
+            "@attributes": "attribute",
+            "@stdFunctions": "stdfunction",
+            "@stdPackages": "stdpackage",
+            "@stdTypes": "type",
             "@default": "identifier",
           },
         }],
@@ -152,8 +244,9 @@ function registerDefinitionProvider(resolve: ResolveFn): void {
   monaco.languages.registerDefinitionProvider("vhdl", provider);
 }
 
-// 色值照录设计令牌 sources/tokens.css（design-agent/outputs/rtl-viewer-meridian），
-// defineTheme 需要字面 hex，不能引用 CSS 变量
+// defineTheme 需要字面 hex，不能引用 CSS 变量。
+// meridian-dark 沿用 VSCode Dark+ 色板；meridian-light 按需求采用
+// Notepad++ 默认配色（官方 stylers.xml），与 meridian 设计令牌脱钩
 const MERIDIAN_DARK: monaco.editor.IStandaloneThemeData = {
   base: "vs-dark",
   inherit: true,
@@ -171,6 +264,10 @@ const MERIDIAN_DARK: monaco.editor.IStandaloneThemeData = {
     { token: "operator", foreground: "d6d9dd" },
     { token: "type", foreground: "4ec9b0" },
     { token: "variable", foreground: "4ec9b0" },
+    { token: "attribute", foreground: "4ec9b0" },
+    { token: "stdpackage", foreground: "4ec9b0" },
+    { token: "stdfunction", foreground: "dcdcaa" },
+    { token: "systemtask", foreground: "dcdcaa" },
   ],
   colors: {
     "editor.background": "#16191d",
@@ -198,29 +295,35 @@ const MERIDIAN_DARK: monaco.editor.IStandaloneThemeData = {
 const MERIDIAN_LIGHT: monaco.editor.IStandaloneThemeData = {
   base: "vs",
   inherit: true,
+  // Notepad++ 默认配色（官方 stylers.xml 的 VHDL/Verilog 段）
   rules: [
-    { token: "comment", foreground: "3a7a30" },
-    { token: "keyword", foreground: "0451a5" },
-    { token: "keyword.operator", foreground: "0451a5" },
-    { token: "keyword.directive", foreground: "8734b0" },
-    { token: "string", foreground: "a31515" },
-    { token: "string.escape", foreground: "a31515" },
-    { token: "number", foreground: "098658" },
-    { token: "number.hex", foreground: "098658" },
-    { token: "identifier", foreground: "24292f" },
-    { token: "delimiter", foreground: "24292f" },
-    { token: "operator", foreground: "24292f" },
-    { token: "type", foreground: "267f99" },
-    { token: "variable", foreground: "267f99" },
+    { token: "", foreground: "000000" },
+    { token: "comment", foreground: "008000" },
+    { token: "keyword", foreground: "0000FF", fontStyle: "bold" },
+    { token: "keyword.operator", foreground: "0080C0", fontStyle: "bold" },
+    { token: "keyword.directive", foreground: "804000" },
+    { token: "attribute", foreground: "8080FF", background: "FFFFCC", fontStyle: "bold" },
+    { token: "stdfunction", foreground: "0080FF", fontStyle: "bold" },
+    { token: "stdpackage", foreground: "800000" },
+    { token: "type", foreground: "8000FF" },
+    { token: "variable", foreground: "8000FF" },
+    { token: "string", foreground: "808080" },
+    { token: "string.escape", foreground: "808080" },
+    { token: "number", foreground: "FF8000" },
+    { token: "number.hex", foreground: "FF8000" },
+    { token: "identifier", foreground: "000000" },
+    { token: "systemtask", foreground: "000000" },
+    { token: "delimiter", foreground: "000080", fontStyle: "bold" },
+    { token: "operator", foreground: "000080", fontStyle: "bold" },
   ],
   colors: {
     "editor.background": "#ffffff",
-    "editor.foreground": "#24292f",
-    "editorLineNumber.foreground": "#9aa1a9",
-    "editorLineNumber.activeForeground": "#5b636c",
-    "editor.lineHighlightBackground": "#0000000a",
-    "editor.selectionBackground": "#add6ff",
-    "editorCursor.foreground": "#24292f",
+    "editor.foreground": "#000000",
+    "editorLineNumber.foreground": "#808080",
+    "editorLineNumber.activeForeground": "#000000",
+    "editor.lineHighlightBackground": "#e8e8ff66",
+    "editor.selectionBackground": "#c0c0c0",
+    "editorCursor.foreground": "#000000",
     "editorWhitespace.foreground": "#dde0e5",
     "editorIndentGuide.background1": "#dde0e5",
     "editorBracketMatch.border": "#c3c9d1",

@@ -152,6 +152,101 @@ function registerDefinitionProvider(resolve: ResolveFn): void {
   monaco.languages.registerDefinitionProvider("vhdl", provider);
 }
 
+// 色值照录设计令牌 sources/tokens.css（design-agent/outputs/rtl-viewer-meridian），
+// defineTheme 需要字面 hex，不能引用 CSS 变量
+const MERIDIAN_DARK: monaco.editor.IStandaloneThemeData = {
+  base: "vs-dark",
+  inherit: true,
+  rules: [
+    { token: "comment", foreground: "6a9955" },
+    { token: "keyword", foreground: "569cd6" },
+    { token: "keyword.operator", foreground: "569cd6" },
+    { token: "keyword.directive", foreground: "c586c0" },
+    { token: "string", foreground: "ce9178" },
+    { token: "string.escape", foreground: "ce9178" },
+    { token: "number", foreground: "b5cea8" },
+    { token: "number.hex", foreground: "b5cea8" },
+    { token: "identifier", foreground: "d6d9dd" },
+    { token: "delimiter", foreground: "d6d9dd" },
+    { token: "operator", foreground: "d6d9dd" },
+    { token: "type", foreground: "4ec9b0" },
+    { token: "variable", foreground: "4ec9b0" },
+  ],
+  colors: {
+    "editor.background": "#16191d",
+    "editor.foreground": "#d6d9dd",
+    "editorLineNumber.foreground": "#5b636c",
+    "editorLineNumber.activeForeground": "#969da5",
+    "editor.lineHighlightBackground": "#ffffff0b",
+    "editor.selectionBackground": "#264f7899",
+    "editorCursor.foreground": "#d6d9dd",
+    "editorWhitespace.foreground": "#2d333a",
+    "editorIndentGuide.background1": "#2d333a",
+    "editorBracketMatch.border": "#3d454e",
+    "editorWidget.background": "#282e35",
+    "editorHoverWidget.background": "#282e35",
+    "editorWidget.border": "#3d454e",
+    "editorHoverWidget.border": "#3d454e",
+    "minimap.background": "#16191d",
+    "editorOverviewRuler.border": "#00000000",
+    "scrollbarSlider.background": "#ffffff24",
+    "scrollbarSlider.hoverBackground": "#ffffff3d",
+    "scrollbarSlider.activeBackground": "#ffffff3d",
+  },
+};
+
+const MERIDIAN_LIGHT: monaco.editor.IStandaloneThemeData = {
+  base: "vs",
+  inherit: true,
+  rules: [
+    { token: "comment", foreground: "3a7a30" },
+    { token: "keyword", foreground: "0451a5" },
+    { token: "keyword.operator", foreground: "0451a5" },
+    { token: "keyword.directive", foreground: "8734b0" },
+    { token: "string", foreground: "a31515" },
+    { token: "string.escape", foreground: "a31515" },
+    { token: "number", foreground: "098658" },
+    { token: "number.hex", foreground: "098658" },
+    { token: "identifier", foreground: "24292f" },
+    { token: "delimiter", foreground: "24292f" },
+    { token: "operator", foreground: "24292f" },
+    { token: "type", foreground: "267f99" },
+    { token: "variable", foreground: "267f99" },
+  ],
+  colors: {
+    "editor.background": "#ffffff",
+    "editor.foreground": "#24292f",
+    "editorLineNumber.foreground": "#9aa1a9",
+    "editorLineNumber.activeForeground": "#5b636c",
+    "editor.lineHighlightBackground": "#0000000a",
+    "editor.selectionBackground": "#add6ff",
+    "editorCursor.foreground": "#24292f",
+    "editorWhitespace.foreground": "#dde0e5",
+    "editorIndentGuide.background1": "#dde0e5",
+    "editorBracketMatch.border": "#c3c9d1",
+    "editorWidget.background": "#ffffff",
+    "editorHoverWidget.background": "#ffffff",
+    "editorWidget.border": "#c3c9d1",
+    "editorHoverWidget.border": "#c3c9d1",
+    "minimap.background": "#ffffff",
+    "editorOverviewRuler.border": "#00000000",
+    "scrollbarSlider.background": "#0000002e",
+    "scrollbarSlider.hoverBackground": "#0000004d",
+    "scrollbarSlider.activeBackground": "#0000004d",
+  },
+};
+
+export function setEditorTheme(theme: "dark" | "light"): void {
+  monaco.editor.setTheme(theme === "light" ? "meridian-light" : "meridian-dark");
+}
+
+monaco.editor.defineTheme("meridian-dark", MERIDIAN_DARK);
+monaco.editor.defineTheme("meridian-light", MERIDIAN_LIGHT);
+
+function editorThemeName(): string {
+  return document.documentElement.dataset.theme === "light" ? "meridian-light" : "meridian-dark";
+}
+
 let registered = false;
 
 function registerOnce(resolve: ResolveFn): void {
@@ -165,7 +260,7 @@ function registerOnce(resolve: ResolveFn): void {
 /** 新建一个编辑器实例（分屏的第二视图用）；语言与 provider 须已通过 initMonaco 注册。 */
 export function createEditor(container: HTMLElement): monaco.editor.IStandaloneCodeEditor {
   return monaco.editor.create(container, {
-    theme: "vs-dark",
+    theme: editorThemeName(),
     automaticLayout: true,
     fontSize: 13,
     fontFamily: "'Cascadia Code', 'JetBrains Mono', Consolas, monospace",

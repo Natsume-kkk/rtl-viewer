@@ -1,4 +1,5 @@
 import type { Hierarchy, TreeNode } from "../model/hierarchy";
+import { setIcon } from "./icons";
 import {
   copyText,
   filePathMenuItems,
@@ -29,13 +30,12 @@ export class HierarchyTree {
   constructor(rootEl: HTMLElement, callbacks: TreeCallbacks) {
     this.rootEl = rootEl;
     this.callbacks = callbacks;
+    this.renderPanelHead({ tops: [], topCandidates: [], unused: [] });
   }
 
   render(h: Hierarchy, constraints: string[] = []): void {
     this.rootEl.textContent = "";
-    if (h.topCandidates.length > 1) {
-      this.renderTopSwitch(h.topCandidates, h.tops[0]?.moduleName);
-    }
+    this.renderPanelHead(h);
     if (h.tops.length === 0) {
       const empty = document.createElement("div");
       empty.className = "tree-empty";
@@ -83,27 +83,33 @@ export class HierarchyTree {
     this.rootEl.appendChild(box);
   }
 
-  /** 多顶层候选时的切换下拉，当前自动识别/已选顶层为选中项。 */
-  private renderTopSwitch(candidates: string[], current: string | undefined): void {
-    const box = document.createElement("div");
-    box.className = "top-switch";
-    const label = document.createElement("span");
-    label.className = "top-switch-label";
-    label.textContent = "顶层";
-    const sel = document.createElement("select");
-    sel.className = "top-select";
-    const names =
-      current && !candidates.includes(current) ? [current, ...candidates] : candidates;
-    for (const name of names) {
-      const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = name;
-      sel.appendChild(opt);
+  /** 面板头：「层级」标题常驻；多顶层候选时右端放切换下拉，当前自动识别/已选顶层为选中项。 */
+  private renderPanelHead(h: Hierarchy): void {
+    const head = document.createElement("div");
+    head.className = "panel-head";
+    const title = document.createElement("span");
+    title.textContent = "层级";
+    head.appendChild(title);
+    if (h.topCandidates.length > 1) {
+      const spacer = document.createElement("span");
+      spacer.className = "spacer";
+      const sel = document.createElement("select");
+      sel.className = "top-select";
+      const current = h.tops[0]?.moduleName;
+      const candidates = h.topCandidates;
+      const names =
+        current && !candidates.includes(current) ? [current, ...candidates] : candidates;
+      for (const name of names) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      }
+      if (current) sel.value = current;
+      sel.addEventListener("change", () => this.callbacks.onSelectTop?.(sel.value));
+      head.append(spacer, sel);
     }
-    if (current) sel.value = current;
-    sel.addEventListener("change", () => this.callbacks.onSelectTop?.(sel.value));
-    box.append(label, sel);
-    this.rootEl.appendChild(box);
+    this.rootEl.appendChild(head);
   }
 
   private renderNode(node: TreeNode, depth: number): HTMLLIElement {
@@ -117,7 +123,7 @@ export class HierarchyTree {
 
     const toggle = document.createElement("span");
     toggle.className = "tree-toggle";
-    toggle.textContent = hasChildren ? (isOpen ? "▾" : "▸") : "";
+    if (hasChildren) setIcon(toggle, isOpen ? "chevron-down" : "chevron-right");
     toggle.addEventListener("click", (e) => {
       e.stopPropagation();
       if (!hasChildren) return;
@@ -129,10 +135,12 @@ export class HierarchyTree {
 
     const label = document.createElement("span");
     label.className = "tree-label";
-    let prefix = "";
-    if (node.kind === "ip") prefix = "◆ ";
-    else if (node.kind === "unresolved") prefix = "? ";
-    label.textContent = prefix + node.label;
+    if (node.kind === "ip" || node.kind === "unresolved") {
+      const mark = document.createElement("span");
+      setIcon(mark, node.kind === "ip" ? "ip-diamond" : "unresolved");
+      label.appendChild(mark);
+    }
+    label.appendChild(document.createTextNode(node.label));
     if (node.recursive) {
       const mark = document.createElement("span");
       mark.className = "tree-recursive";
@@ -145,7 +153,7 @@ export class HierarchyTree {
     if (node.instFile && node.instLine !== undefined) {
       const inst = document.createElement("span");
       inst.className = "tree-inst";
-      inst.textContent = "↩";
+      setIcon(inst, "jump-inst");
       inst.title = `跳到父模块中的例化点\n${node.instFile}:${node.instLine}`;
       inst.addEventListener("click", (e) => {
         e.stopPropagation();

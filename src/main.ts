@@ -24,6 +24,8 @@ import { StatusBar } from "./ui/statusbar";
 import { OutlineView } from "./ui/outline";
 import { SearchPanel } from "./ui/search";
 import { RecentMenu } from "./ui/recent";
+import { initTheme } from "./ui/theme";
+import { setIcon } from "./ui/icons";
 
 interface CachedFile {
   content: string;
@@ -58,11 +60,12 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   const openWrap = document.createElement("span");
   openWrap.className = "open-wrap";
   const openBtn = document.createElement("button");
+  openBtn.className = "btn btn-primary";
   openBtn.textContent = "打开文件夹";
   openBtn.addEventListener("click", () => void openProject());
   const recentBtn = document.createElement("button");
-  recentBtn.className = "recent-btn";
-  recentBtn.textContent = "▾";
+  recentBtn.className = "btn btn-primary recent-btn";
+  setIcon(recentBtn, "chevron-down");
   recentBtn.title = "最近打开的工程 (Ctrl+R)";
   recentBtn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -70,6 +73,7 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   });
   openWrap.append(openBtn, recentBtn);
   const newBtn = document.createElement("button");
+  newBtn.className = "btn btn-ghost";
   newBtn.textContent = "新建文件";
   newBtn.addEventListener("click", () => activeGroup().tabs.newFile());
   bar.append(openWrap, newBtn);
@@ -89,6 +93,7 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
 const { treeRoot: treeRootEl, searchRoot: searchRootEl, outlineRoot: outlineRootEl } = initSidebar();
 
 // Monaco 初始化（definition provider 通过函数引用最新索引）；editor2 为分屏第二组
+initTheme();
 const editor = initMonaco(editorContainer, (name) => state.index.resolve(name));
 const editor2 = createEditor(document.getElementById("editor-container-2")!);
 
@@ -172,12 +177,12 @@ function navForward(): void {
 
 const navBackBtn = document.createElement("li");
 navBackBtn.className = "nav-btn";
-navBackBtn.textContent = "←";
+setIcon(navBackBtn, "arrow-left");
 navBackBtn.title = "后退 (Alt+←)";
 navBackBtn.addEventListener("click", navBack);
 const navFwdBtn = document.createElement("li");
 navFwdBtn.className = "nav-btn";
-navFwdBtn.textContent = "→";
+setIcon(navFwdBtn, "arrow-right");
 navFwdBtn.title = "前进 (Alt+→)";
 navFwdBtn.addEventListener("click", navForward);
 tabbarEl.prepend(navBackBtn, navFwdBtn);
@@ -507,7 +512,7 @@ function pinPortMapPanel(
   title.textContent = `${instName} : ${moduleName}`;
   const close = document.createElement("span");
   close.className = "ip-panel-close";
-  close.textContent = "×";
+  setIcon(close, "close");
   close.addEventListener("click", () => panel.remove());
   head.append(title, close);
   panel.appendChild(head);
@@ -562,7 +567,7 @@ function showInstancePanel(name: string, sites: InstanceSite[]): void {
   title.textContent = `${name} 被例化于 ${sites.length} 处`;
   const close = document.createElement("span");
   close.className = "ip-panel-close";
-  close.textContent = "×";
+  setIcon(close, "close");
   close.addEventListener("click", () => panel.remove());
   head.append(title, close);
   panel.appendChild(head);
@@ -1011,7 +1016,7 @@ function startWatcher(): void {
   watchTimer = window.setInterval(() => void pollExternalChanges(), 4000);
 }
 
-/** 轮询已索引文件的 mtime：干净标签静默重载，脏标签打 ⚠，未打开的增量重扫；每 4 轮 diff 一次目录增删。 */
+/** 轮询已索引文件的 mtime：干净标签静默重载，脏标签打警示徽章，未打开的增量重扫；每 4 轮 diff 一次目录增删。 */
 async function pollExternalChanges(): Promise<void> {
   if (!state.folder || document.hidden) return;
   const files = [...state.contents.keys()];
@@ -1058,7 +1063,7 @@ async function pollExternalChanges(): Promise<void> {
   if (watchPollCount % 4 === 1) await rescanFolderDiff();
 }
 
-/** 文件在磁盘被删除：打开中的标签保留缓冲区并打 ⚠，未打开的从索引移除。 */
+/** 文件在磁盘被删除：打开中的标签保留缓冲区并打警示徽章，未打开的从索引移除。 */
 function handleExternalDelete(file: string): void {
   const openGroups = groups.filter((g) => g.tabs.findTab(file));
   if (openGroups.length > 0) {
@@ -1173,7 +1178,7 @@ monaco.editor.registerEditorOpener({
 });
 
 async function openTreeNode(node: TreeNode): Promise<void> {
-  // 单击进模块定义（直觉操作）；例化点由节点行的 ↩ 图标进入
+  // 单击进模块定义（直觉操作）；例化点由节点行的跳例化图标进入
   if (node.file) {
     await navigateTo(node.file, node.line);
     return;

@@ -55,11 +55,13 @@ describe("HierarchyTree", () => {
       unused: [],
     };
     tree.render(h);
-    const labels = [...rootEl.querySelectorAll(".tree-label")].map((el) => el.textContent);
-    expect(labels[0]).toBe("top");
-    expect(labels).toContain("◆ u_ip");
-    expect(labels).toContain("? u_m");
-    expect(labels.some((t) => t?.includes("(recursive)"))).toBe(true);
+    const labels = [...rootEl.querySelectorAll(".tree-label")];
+    expect(labels[0].textContent).toBe("top");
+    const ipLabel = labels.find((el) => el.textContent === "u_ip");
+    expect(ipLabel?.querySelector(".icon-ip-diamond svg")).toBeTruthy();
+    const unLabel = labels.find((el) => el.textContent === "u_m");
+    expect(unLabel?.querySelector(".icon-unresolved svg")).toBeTruthy();
+    expect(labels.some((t) => t.textContent?.includes("(recursive)"))).toBe(true);
 
     const rows = rootEl.querySelectorAll(".tree-row");
     (rows[1] as HTMLElement).click();
@@ -104,7 +106,7 @@ describe("HierarchyTree", () => {
     expect(onOpenFile).toHaveBeenCalledWith("D:/proj/constraints/pins.xdc");
   });
 
-  it("有例化点的节点渲染 ↩ 图标，点击触发 onOpenInst 且不冒泡到 onOpen", () => {
+  it("有例化点的节点渲染跳例化图标，点击触发 onOpenInst 且不冒泡到 onOpen", () => {
     const onOpen = vi.fn();
     const onOpenInst = vi.fn();
     const { rootEl, tree } = makeTree({ onOpen, onOpenInst });
@@ -133,6 +135,8 @@ describe("HierarchyTree", () => {
     tree.render(h);
     const inst = rootEl.querySelector(".tree-inst") as HTMLElement;
     expect(inst).toBeTruthy();
+    expect(inst.classList.contains("icon-jump-inst")).toBe(true);
+    expect(inst.querySelector("svg")).toBeTruthy();
     inst.click();
     expect(onOpenInst).toHaveBeenCalledWith(
       expect.objectContaining({ instFile: "rtl/top.v", instLine: 24 }),
@@ -223,7 +227,13 @@ describe("HierarchyTree", () => {
     };
     tree.render(h);
     expect(rootEl.querySelectorAll(".tree-label")).toHaveLength(2);
-    (rootEl.querySelector(".tree-toggle") as HTMLElement).click();
+    const toggles = rootEl.querySelectorAll(".tree-toggle");
+    // 顶层初始展开为 chevron-down；无子节点的行不渲染 toggle 图标
+    expect(toggles[0].classList.contains("icon-chevron-down")).toBe(true);
+    expect((toggles[1] as HTMLElement).querySelector("svg")).toBeNull();
+    (toggles[0] as HTMLElement).click();
     expect(rootEl.querySelectorAll(".tree-label")).toHaveLength(1);
+    // 收起后重渲染为 chevron-right
+    expect(rootEl.querySelector(".tree-toggle")!.classList.contains("icon-chevron-right")).toBe(true);
   });
 });

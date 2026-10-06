@@ -1,61 +1,38 @@
-// 生成 32x32 纯色 PNG 并封装为 ICO（Windows 资源需要），无第三方依赖。
-import { deflateSync } from "node:zlib";
-import { mkdirSync, writeFileSync } from "node:fs";
+// 将 src-tauri/icons/png/ 下的多尺寸 PNG 封装为多尺寸 ICO（Windows 资源需要），无第三方依赖。
+// PNG 由 src-tauri/icons/brand.svg（meridian 设计源：design-agent outputs/rtl-viewer-meridian/assets/brand/）
+// 经浏览器按 16/24/32/48/64/128/256 透明背景渲染产出；修改 brand.svg 后需重新渲染 PNG 再运行本脚本。
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SIZE = 32;
-const RGBA = [0x3b, 0x82, 0xf6, 0xff];
+const pngDir = join(dirname(fileURLToPath(import.meta.url)), "..", "src-tauri", "icons", "png");
+const sizes = [16, 24, 32, 48, 64, 128, 256];
 
-const crcTable = Array.from({ length: 256 }, (_, n) => {
-  let c = n;
-  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  return c >>> 0;
+const images = sizes.map((size) => {
+  const file = join(pngDir, `${size}.png`);
+  return { size, data: readFileSync(file) };
 });
-function crc32(buf) {
-  let c = 0xffffffff;
-  for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-function chunk(type, data) {
-  const out = Buffer.alloc(12 + data.length);
-  out.writeUInt32BE(data.length, 0);
-  out.write(type, 4, "ascii");
-  data.copy(out, 8);
-  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
-  return out;
-}
 
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(SIZE, 0);
-ihdr.writeUInt32BE(SIZE, 4);
-ihdr[8] = 8; // bit depth
-ihdr[9] = 6; // color type RGBA
-const raw = Buffer.alloc(SIZE * (SIZE * 4 + 1));
-for (let y = 0; y < SIZE; y++) {
-  const row = y * (SIZE * 4 + 1);
-  for (let x = 0; x < SIZE; x++) raw.set(RGBA, row + 1 + x * 4);
-}
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  chunk("IHDR", ihdr),
-  chunk("IDAT", deflateSync(raw)),
-  chunk("IEND", Buffer.alloc(0)),
-]);
+const headerSize = 6 + images.length * 16;
+const ico = Buffer.alloc(headerSize + images.reduce((n, i) => n + i.data.length, 0));
+ico.writeUInt16LE(0, 0); // reserved
+ico.writeUInt16LE(1, 2); // type: icon
+ico.writeUInt16LE(images.length, 4);
+let offset = headerSize;
+images.forEach((img, i) => {
+  const e = 6 + i * 16;
+  ico[e] = img.size >= 256 ? 0 : img.size; // 256 记为 0
+  ico[e + 1] = img.size >= 256 ? 0 : img.size;
+  ico[e + 2] = 0; // palette
+  ico[e + 3] = 0; // reserved
+  ico.writeUInt16LE(1, e + 4); // planes
+  ico.writeUInt16LE(32, e + 6); // bpp
+  ico.writeUInt32LE(img.data.length, e + 8);
+  ico.writeUInt32LE(offset, e + 12);
+  img.data.copy(ico, offset);
+  offset += img.data.length;
+});
 
-const ico = Buffer.alloc(22 + png.length);
-ico.writeUInt16LE(0, 0);
-ico.writeUInt16LE(1, 2);
-ico.writeUInt16LE(1, 4);
-ico[6] = SIZE;
-ico[7] = SIZE;
-ico.writeUInt16LE(1, 10);
-ico.writeUInt16LE(32, 12);
-ico.writeUInt32LE(png.length, 14);
-ico.writeUInt32LE(22, 18);
-png.copy(ico, 22);
-
-const out = join(dirname(fileURLToPath(import.meta.url)), "..", "src-tauri", "icons", "icon.ico");
-mkdirSync(dirname(out), { recursive: true });
+const out = join(pngDir, "..", "icon.ico");
 writeFileSync(out, ico);
-console.log(`icon written: ${out} (${ico.length} bytes)`);
+console.log(`icon written: ${out} (${ico.length} bytes, ${images.length} sizes)`);

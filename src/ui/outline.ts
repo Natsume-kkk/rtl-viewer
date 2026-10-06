@@ -1,5 +1,6 @@
 import type { OutlineItem } from "../model/outline";
 import { OUTLINE_KIND_LABELS } from "../model/outline";
+import { setIcon } from "./icons";
 
 export interface OutlineCallbacks {
   /** 点击大纲项：跳转当前文件指定行 */
@@ -52,7 +53,7 @@ export class OutlineView {
 
     const symbolsBtn = document.createElement("span");
     symbolsBtn.className = "outline-symbols";
-    symbolsBtn.textContent = "⊙";
+    setIcon(symbolsBtn, "outline");
     symbolsBtn.title = "符号搜索 (Ctrl+Shift+O)";
     symbolsBtn.addEventListener("click", () => this.callbacks.onOpenSymbols?.());
 
@@ -72,7 +73,7 @@ export class OutlineView {
 
   private setCollapsed(collapsed: boolean): void {
     this.rootEl.classList.toggle("collapsed", collapsed);
-    this.toggleEl.textContent = collapsed ? "▸" : "▾";
+    setIcon(this.toggleEl, collapsed ? "chevron-right" : "chevron-down");
     localStorage.setItem(LS_COLLAPSED, collapsed ? "1" : "0");
   }
 

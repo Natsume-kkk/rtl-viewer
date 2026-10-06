@@ -1,7 +1,9 @@
+import { setIcon } from "./icons";
+
 export interface RecentMenuCallbacks {
   /** 点击某个最近工程 */
   onPick(path: string): void;
-  /** 点行尾 × 移除条目 */
+  /** 点行尾移除按钮删除条目 */
   onRemove(path: string): void;
 }
 
@@ -68,7 +70,7 @@ export class RecentMenu {
       });
       const remove = document.createElement("span");
       remove.className = "recent-remove";
-      remove.textContent = "×";
+      setIcon(remove, "close");
       remove.title = "从列表移除";
       remove.addEventListener("click", () => {
         this.callbacks.onRemove(path);

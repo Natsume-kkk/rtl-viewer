@@ -1,4 +1,6 @@
 import type monacoNs from "monaco-editor";
+import { currentTheme, toggleTheme } from "./theme";
+import { setIcon } from "./icons";
 
 export interface StatusBarCallbacks {
   onReopen(encoding: string): void;
@@ -28,6 +30,7 @@ export class StatusBar {
   private posEl: HTMLSpanElement;
   private langEl: HTMLSpanElement;
   private encEl: HTMLSpanElement;
+  private themeEl: HTMLButtonElement;
   private callbacks: StatusBarCallbacks;
   private menu: HTMLDivElement | null = null;
   private hintEl!: HTMLSpanElement;
@@ -63,6 +66,15 @@ export class StatusBar {
       e.stopPropagation();
       this.toggleEncodingMenu();
     });
+    this.themeEl = document.createElement("button");
+    this.themeEl.className = "status-item clickable";
+    this.themeEl.id = "theme-toggle";
+    this.syncThemeToggle();
+    this.themeEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleTheme();
+      this.syncThemeToggle();
+    });
 
     const left = document.createElement("div");
     left.className = "status-left";
@@ -73,12 +85,18 @@ export class StatusBar {
     left.append(this.bcEl, this.hintEl);
     const right = document.createElement("div");
     right.className = "status-right";
-    right.append(this.langEl, this.encEl, this.posEl);
+    right.append(this.themeEl, this.langEl, this.encEl, this.posEl);
     this.rootEl.append(left, right);
 
     document.addEventListener("click", () => this.closeMenu());
 
     this.update(null, null);
+  }
+
+  private syncThemeToggle(): void {
+    const dark = currentTheme() === "dark";
+    setIcon(this.themeEl, dark ? "moon" : "sun");
+    this.themeEl.title = dark ? "切换到浅色主题" : "切换到深色主题";
   }
 
   attachEditor(editor: monacoNs.editor.IStandaloneCodeEditor, isActive: () => boolean = () => true): void {

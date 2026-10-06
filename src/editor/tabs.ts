@@ -1,6 +1,7 @@
 import { monaco, langForFile } from "./monaco";
 import { readFile, writeFile, saveFileDialog, confirmDialog, fileStates, showInFolder } from "../ipc";
 import { choiceDialog } from "../ui/dialog";
+import { setIcon } from "../ui/icons";
 import { filePathMenuItems, showCtxMenu, type MenuItem } from "../ui/menu";
 
 export interface Tab {
@@ -14,7 +15,7 @@ export interface Tab {
   dirty: boolean;
   /** 载入/上次保存时的磁盘 mtime，用于外部变更检测；0 表示未知 */
   mtime: number;
-  /** 磁盘已被外部修改（脏标签上的 ⚠ 徽章） */
+  /** 磁盘已被外部修改（脏标签上的警示徽章） */
   externalChanged: boolean;
   element: HTMLLIElement;
   /** model 内容变化监听器，close/迁移 model 时必须 dispose，否则关闭后仍挂在共享 model 上 */
@@ -390,11 +391,23 @@ export class TabManager {
     tab.element.className = "tab";
     const label = document.createElement("span");
     label.className = "tab-label";
-    label.textContent = (tab.dirty ? "*" : "") + (tab.externalChanged ? "⚠ " : "") + tab.title;
+    if (tab.dirty) {
+      const dirty = document.createElement("span");
+      dirty.className = "dirty";
+      dirty.textContent = "*";
+      label.appendChild(dirty);
+    }
+    if (tab.externalChanged) {
+      const ext = document.createElement("span");
+      ext.className = "external";
+      setIcon(ext, "warning");
+      label.append(ext, document.createTextNode(" "));
+    }
+    label.appendChild(document.createTextNode(tab.title));
     label.title = tab.externalChanged ? "磁盘文件已被外部修改" : tab.path || "未保存";
     const close = document.createElement("span");
     close.className = "tab-close";
-    close.textContent = "×";
+    setIcon(close, "close");
     close.title = "关闭";
     close.addEventListener("click", (e) => {
       e.stopPropagation();

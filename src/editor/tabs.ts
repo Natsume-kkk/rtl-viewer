@@ -17,6 +17,8 @@ export interface Tab {
   /** 磁盘已被外部修改（脏标签上的 ⚠ 徽章） */
   externalChanged: boolean;
   element: HTMLLIElement;
+  /** model 内容变化监听器，close/迁移 model 时必须 dispose，否则关闭后仍挂在共享 model 上 */
+  contentListener?: monaco.IDisposable;
 }
 
 /**
@@ -99,7 +101,14 @@ export class TabManager {
       if (line !== undefined) this.reveal(line);
       return;
     }
-    const { content, encoding, mtime } = await readFile(path);
+    let file;
+    try {
+      file = await readFile(path);
+    } catch (e) {
+      await confirmDialog(`打开失败：${String(e)}`);
+      return;
+    }
+    const { content, encoding, mtime } = file;
     this.createTab(path, basename(path), content, encoding, mtime, line);
     this.events.onFileReloaded(path, content, encoding, mtime);
   }
@@ -158,6 +167,8 @@ export class TabManager {
     this.renderTab(tab);
     if (viewing && pos) this.editor.setPosition(pos);
     this.events.onFileReloaded(path, content, encoding, mtime);
+    // setValue 触发的是共享 model 的监听器，对侧同路径标签会被误标脏，同步修正
+    this.syncPeers(tab);
     return true;
   }
 
@@ -191,10 +202,21 @@ export class TabManager {
     if (!target) return false;
     const ok = await this.doWrite(tab, target);
     if (ok && !tab.path) {
+      // Monaco 不允许改 model.uri：用新 uri 重建 model 并迁移内容。
+      // 否则 uriKey 停留在 inmemory:///，另一组按新路径打开会建第二个 model，两组内容分裂。
+      const oldKey = tab.uriKey;
+      const oldModel = tab.model;
+      const newModel = acquireModel(`file:///${target}`, oldModel.getValue(), langForFile(target));
       tab.path = target;
       tab.title = basename(target);
-      const lang = langForFile(target);
-      if (lang !== "plaintext") monaco.editor.setModelLanguage(tab.model, lang);
+      tab.model = newModel;
+      tab.uriKey = `file:///${target}`;
+      this.watchContent(tab, newModel);
+      this.viewStates.set(newModel, this.viewStates.get(oldModel) ?? null);
+      this.viewStates.delete(oldModel);
+      if (this.active === tab) this.editor.setModel(newModel);
+      // 放在 editor 切走之后：refs 归零会 dispose 旧 model（撤销栈随之丢弃，可接受）
+      releaseModel(oldKey);
       this.renderTab(tab);
       this.events.onActiveChange();
     }
@@ -209,6 +231,7 @@ export class TabManager {
     const idx = this.tabs.indexOf(tab);
     this.tabs.splice(idx, 1);
     tab.element.remove();
+    tab.contentListener?.dispose();
     this.viewStates.delete(tab.model);
     releaseModel(tab.uriKey);
     if (this.active === tab) {
@@ -219,6 +242,13 @@ export class TabManager {
         this.editor.setModel(null);
         this.events.onActiveChange();
       }
+    }
+  }
+
+  /** 关闭所有标签（脏标签逐个确认；取消确认的标签保留）。切换工程前调用。 */
+  async closeAll(): Promise<void> {
+    for (const t of [...this.tabs]) {
+      if (this.tabs.includes(t)) await this.close(t);
     }
   }
 
@@ -268,7 +298,14 @@ export class TabManager {
   private async doWrite(tab: Tab, path: string): Promise<boolean> {
     // 保存前检测：磁盘 mtime 与载入时不一致说明外部已修改，禁止静默覆盖
     if (path === tab.path && tab.mtime) {
-      const [current] = await fileStates([tab.path]);
+      let current: number | null | undefined;
+      try {
+        [current] = await fileStates([tab.path]);
+      } catch (e) {
+        // 无法确认磁盘状态时中止保存，避免静默覆盖外部修改
+        await confirmDialog(`保存失败：无法读取磁盘状态（${String(e)}）`);
+        return false;
+      }
       if (current && current !== tab.mtime) {
         const choice = await choiceDialog(
           `「${tab.title}」在磁盘上已被外部修改。`,
@@ -309,6 +346,17 @@ export class TabManager {
     return true;
   }
 
+  /** 在 model 上挂脏标记监听（先清旧监听，共享 model 关闭/迁移时不得残留）。 */
+  private watchContent(tab: Tab, model: monaco.editor.ITextModel): void {
+    tab.contentListener?.dispose();
+    tab.contentListener = model.onDidChangeContent(() => {
+      if (!tab.dirty) {
+        tab.dirty = true;
+        this.renderTab(tab);
+      }
+    });
+  }
+
   private createTab(path: string, title: string, content: string, encoding: string, mtime: number, line?: number): void {
     const uriKey = path ? `file:///${path}` : `inmemory:///${title}`;
     // 同路径跨组共享 model（分屏双视图编辑同步）；未命名文件 uri 唯一不共享
@@ -324,12 +372,7 @@ export class TabManager {
       externalChanged: false,
       element: document.createElement("li"),
     };
-    model.onDidChangeContent(() => {
-      if (!tab.dirty) {
-        tab.dirty = true;
-        this.renderTab(tab);
-      }
-    });
+    this.watchContent(tab, model);
     this.tabs.push(tab);
     this.renderTab(tab);
     tab.element.addEventListener("click", () => this.activate(tab));

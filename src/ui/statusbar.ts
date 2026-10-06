@@ -81,8 +81,9 @@ export class StatusBar {
     this.update(null, null);
   }
 
-  attachEditor(editor: monacoNs.editor.IStandaloneCodeEditor): void {
+  attachEditor(editor: monacoNs.editor.IStandaloneCodeEditor, isActive: () => boolean = () => true): void {
     editor.onDidChangeCursorPosition(() => {
+      if (!isActive()) return;
       const pos = editor.getPosition();
       if (pos) this.posEl.textContent = `行 ${pos.lineNumber}, 列 ${pos.column}`;
     });

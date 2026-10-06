@@ -30,15 +30,46 @@ function skipBalanced(s: string, i: number): number {
   return -1;
 }
 
-/** 去掉行注释，保留长度和换行。 */
+/** 去掉注释与字符串内容，保留长度和换行。跟踪字符串状态（`""` 为转义引号），支持 VHDL-2008 块注释。 */
 export function stripVhdlComments(src: string): string {
   const out = src.split("");
   let i = 0;
   while (i < src.length) {
-    if (src[i] === "-" && src[i + 1] === "-") {
+    const c = src[i];
+    if (c === "-" && src[i + 1] === "-") {
       let j = i;
       while (j < src.length && src[j] !== "\n") out[j++] = " ";
       i = j;
+    } else if (c === "/" && src[i + 1] === "*") {
+      let j = i;
+      while (j < src.length && !(src[j] === "*" && src[j + 1] === "/")) {
+        if (src[j] !== "\n") out[j] = " ";
+        j++;
+      }
+      if (j < src.length) {
+        out[j] = " ";
+        out[j + 1] = " ";
+        j += 2;
+      }
+      i = j;
+    } else if (c === '"') {
+      out[i] = " ";
+      let j = i + 1;
+      while (j < src.length) {
+        if (src[j] === '"') {
+          if (src[j + 1] === '"') {
+            out[j] = " ";
+            out[j + 1] = " ";
+            j += 2;
+            continue;
+          }
+          break;
+        }
+        if (src[j] !== "\n") out[j] = " ";
+        j++;
+      }
+      if (j < src.length) out[j] = " ";
+      i = j + 1;
     } else {
       i++;
     }
@@ -72,7 +103,7 @@ function parseVhdlPorts(portListSrc: string): PortInfo[] {
       ports.push({
         name: rawName.trim(),
         direction: m[2].toLowerCase(),
-        width: widthMatch ? `${type} ` : undefined,
+        width: widthMatch ? type : undefined,
       });
     }
   }
@@ -130,12 +161,23 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
     /([A-Za-z_]\w*)\s*:\s*(?:entity\s+(?:(\w+)\s*\.\s*)?(\w+)(?:\s*\(\s*\w+\s*\))?|component\s+(\w+)|(\w+))\s+(?:generic\s+map|port\s+map)/gi;
   const archRe = /\barchitecture\s+(\w+)\s+of\s+([A-Za-z_]\w*)\s+is\b/gi;
   while ((m = archRe.exec(stripped))) {
-    const owner = byName.get(m[2].toLowerCase());
     const archEnd = findEnd(stripped, archRe.lastIndex, "architecture", m[1]);
     const body = stripped.slice(archRe.lastIndex, archEnd);
     const bodyStart = archRe.lastIndex;
     archRe.lastIndex = archEnd;
-    if (!owner) continue;
+    // architecture 与 entity 分文件时本文件找不到 entity：保留例化，归属 architecture
+    // 语句中的 entity 名，由 model 层按名归并到对应模块定义
+    let owner = byName.get(m[2].toLowerCase());
+    if (!owner) {
+      owner = {
+        name: m[2],
+        file,
+        line: lineAt(lineStarts, m.index),
+        ports: [],
+        instances: [],
+      };
+      byName.set(m[2].toLowerCase(), owner);
+    }
     let im: RegExpExecArray | null;
     instRe.lastIndex = 0;
     while ((im = instRe.exec(body))) {
@@ -147,8 +189,20 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
         line: lineAt(lineStarts, bodyStart + im.index),
       };
       if (withConn) {
-        // port map 可能跟在 generic map 之后，从例化名起向后找第一个 port map (
-        const pm = /\bport\s+map\s*\(/i.exec(body.slice(im.index));
+        // port map 可能跟在 generic map 之后，但搜索不得越过本例化语句终点
+        // （balanced 括号扫描后深度 0 的 ';'），否则会错抓下一个例化的 port map
+        let stmtEnd = body.length;
+        let depth = 0;
+        for (let k = im.index; k < body.length; k++) {
+          const ch = body[k];
+          if (ch === "(") depth++;
+          else if (ch === ")") depth--;
+          else if (ch === ";" && depth === 0) {
+            stmtEnd = k;
+            break;
+          }
+        }
+        const pm = /\bport\s+map\s*\(/i.exec(body.slice(im.index, stmtEnd));
         if (pm) {
           const open = im.index + pm.index + pm[0].length - 1;
           const close = skipBalanced(body, open);

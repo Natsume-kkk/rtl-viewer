@@ -18,21 +18,38 @@ struct ScanResult {
     con: Vec<String>,
 }
 
+/** 目录递归深度上限：junction/硬链接环等异常结构的兜底，避免栈溢出崩进程。 */
+const MAX_WALK_DEPTH: usize = 64;
+
 fn walk(dir: &Path, out: &mut ScanResult) {
+    walk_depth(dir, out, 0);
+}
+
+fn walk_depth(dir: &Path, out: &mut ScanResult, depth: usize) {
+    if depth >= MAX_WALK_DEPTH {
+        return;
+    }
     let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
+        // 不跟随符号链接/junction：环状链接会导致无限递归，一律跳过
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if path.is_dir() {
+        if meta.is_dir() {
             if name.starts_with('.')
                 || SKIP_DIRS.contains(&name)
                 || GENERATED_DIR_SUFFIXES.iter().any(|s| name.ends_with(s))
             {
                 continue;
             }
-            walk(&path, out);
+            walk_depth(&path, out, depth + 1);
         } else {
             let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
             if HDL_EXTS.contains(&ext.as_str()) {
@@ -107,8 +124,7 @@ fn is_directory(path: String) -> bool {
 #[tauri::command]
 fn show_in_folder(path: String) -> Result<(), String> {
     std::process::Command::new("explorer")
-        .arg("/select,")
-        .arg(&path)
+        .arg(format!("/select,{}", path.replace('/', "\\")))
         .spawn()
         .map_err(|e| format!("explorer failed: {e}"))?;
     Ok(())
@@ -121,6 +137,14 @@ pub fn decode(bytes: &[u8]) -> (String, &'static str) {
             "utf8-bom",
         );
     }
+    // UTF-32 BOM 必须先于 UTF-16 嗅探：FF FE 00 00 会被 UTF-16LE 抢先命中解出乱码。
+    // UTF-32 不支持解码，剥离 BOM 后落到下方严格 UTF-8 / GBK 兜底。
+    let bytes = if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) || bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF])
+    {
+        &bytes[4..]
+    } else {
+        bytes
+    };
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let (s, _, _) = encoding_rs::UTF_16LE.decode(&bytes[2..]);
         return (s.into_owned(), "utf16le");
@@ -214,10 +238,29 @@ fn read_file(path: String, encoding: Option<String>) -> Result<FileContent, Stri
     })
 }
 
+/// 原子写：先写同目录临时文件并落盘，再 rename 覆盖目标；失败清理临时文件，原文件不受影响。
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp_name = path.as_os_str().to_owned();
+    tmp_name.push(".rtlviewer-tmp");
+    let tmp = PathBuf::from(tmp_name);
+    let result = (|| -> std::io::Result<()> {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
 #[tauri::command]
 fn write_file(path: String, content: String, encoding: String) -> Result<u64, String> {
     let bytes = encode(&content, &encoding)?;
-    fs::write(&path, bytes).map_err(|e| format!("write {path} failed: {e}"))?;
+    atomic_write(Path::new(&path), &bytes).map_err(|e| format!("write {path} failed: {e}"))?;
     Ok(mtime_ms(&path))
 }
 
@@ -380,5 +423,95 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         let new_mtime = write_file(path, "module m2;\n".to_owned(), "utf8".to_owned()).unwrap();
         assert!(new_mtime >= read.mtime);
+    }
+
+    /// UTF-32 BOM 不得被误判为 UTF-16（FF FE 00 00 会先命中 UTF-16LE 前缀）。
+    /// UTF-32 不支持解码，剥离 BOM 后走 UTF-8/GBK 兜底。
+    #[test]
+    fn utf32_bom_not_misread_as_utf16() {
+        // UTF-32LE BOM + "ab" 的 UTF-32LE 编码
+        let le = [
+            0xFF, 0xFE, 0x00, 0x00, 0x61, 0x00, 0x00, 0x00, 0x62, 0x00, 0x00, 0x00,
+        ];
+        let (_, enc) = decode(&le);
+        assert_ne!(enc, "utf16le");
+        // UTF-32BE BOM
+        let be = [0x00, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x00, 0x61];
+        let (_, enc) = decode(&be);
+        assert_ne!(enc, "utf16be");
+        assert_ne!(enc, "utf16le");
+        // UTF-16LE BOM 不受影响
+        let b16 = [0xFF, 0xFE, 0x61, 0x00];
+        let (s, enc) = decode(&b16);
+        assert_eq!(enc, "utf16le");
+        assert_eq!(s, "a");
+    }
+
+    /// 原子写：正常写回后无临时文件残留。
+    #[test]
+    fn atomic_write_leaves_no_tmp() {
+        let path = temp_file("atomic.v", b"module a;\n");
+        write_file(path.clone(), "module b;\n".to_owned(), "utf8".to_owned()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"module b;\n");
+        assert!(!PathBuf::from(format!("{path}.rtlviewer-tmp")).exists());
+    }
+
+    /// 原子写失败（目标是目录，rename 必失败）：报错且临时文件被清理。
+    #[test]
+    fn atomic_write_failure_cleans_tmp() {
+        let dir = std::env::temp_dir().join(format!("rtl-viewer-test-{}", std::process::id()));
+        let target = dir.join("as_dir.v");
+        fs::create_dir_all(&target).unwrap();
+        let target_str = target.to_string_lossy().into_owned();
+        let result = write_file(target_str.clone(), "module x;".to_owned(), "utf8".to_owned());
+        assert!(result.is_err());
+        // 目标仍是目录，未被截断成文件
+        assert!(target.is_dir());
+        assert!(!PathBuf::from(format!("{target_str}.rtlviewer-tmp")).exists());
+    }
+
+    /// walk 深度上限：超过 MAX_WALK_DEPTH 的层级不递归、不崩溃。
+    #[test]
+    fn walk_depth_limit() {
+        let root = std::env::temp_dir().join(format!("rtl-viewer-deep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        // 浅层（深度内）与深层（深度外）各放一个 HDL 文件
+        let mut shallow = root.clone();
+        for _ in 0..10 {
+            shallow.push("d");
+        }
+        let mut deep = root.clone();
+        for _ in 0..(MAX_WALK_DEPTH + 10) {
+            deep.push("d");
+        }
+        fs::create_dir_all(&shallow).unwrap();
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(shallow.join("shallow.v"), b"module s;\n").unwrap();
+        fs::write(deep.join("deep.v"), b"module d;\n").unwrap();
+        let mut out = ScanResult { hdl: vec![], xci: vec![], con: vec![] };
+        walk(&root, &mut out);
+        assert_eq!(out.hdl.len(), 1);
+        assert!(out.hdl[0].ends_with("shallow.v"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// walk 不跟随符号链接：目录自环不会无限递归。无权限创建符号链接时优雅跳过。
+    #[test]
+    #[cfg(windows)]
+    fn walk_skips_symlink_cycle() {
+        let root = std::env::temp_dir().join(format!("rtl-viewer-sym-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("real.v"), b"module m;\n").unwrap();
+        if std::os::windows::fs::symlink_dir(&root, root.join("sub").join("loop")).is_err() {
+            // 非管理员且未开开发者模式时无法创建符号链接，跳过本测试
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        let mut out = ScanResult { hdl: vec![], xci: vec![], con: vec![] };
+        walk(&root, &mut out);
+        assert_eq!(out.hdl.len(), 1);
+        assert!(out.hdl[0].ends_with("real.v"));
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -144,8 +144,14 @@ export function buildHierarchy(
   const structByModule = new Map<string, ModuleInfo>();
   for (const modules of structures.values()) {
     for (const m of modules) {
-      if (!structByModule.has(m.name.toLowerCase())) {
-        structByModule.set(m.name.toLowerCase(), m);
+      const key = m.name.toLowerCase();
+      const existing = structByModule.get(key);
+      if (!existing) {
+        structByModule.set(key, m);
+      } else if (existing.instances.length === 0 && m.instances.length > 0) {
+        // VHDL entity 与 architecture 分文件：entity 结构先占位（无例化），
+        // 孤儿 architecture 结构的例化边按名归并进来，定义位置仍取 entity
+        structByModule.set(key, { ...existing, instances: m.instances });
       }
     }
   }

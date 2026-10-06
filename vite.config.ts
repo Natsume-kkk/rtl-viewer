@@ -9,11 +9,18 @@ import { join } from "node:path";
  */
 function e2eFsPlugin(): Plugin {
   const SKIP_DIRS = new Set(["node_modules", "target", "dist"]);
+  // 与 Rust 端 GENERATED_DIR_SUFFIXES 一致：EDA 生成目录不扫描
+  const GENERATED_DIR_SUFFIXES = [".runs", ".sim", ".cache", ".hw", ".gen", ".ip_user_files"];
   const HDL_RE = /\.(v|sv|vh|svh|vhd|vhdl)$/i;
 
   function walk(dir: string, out: { hdl: string[]; xci: string[]; con: string[] }): void {
     for (const name of readdirSync(dir)) {
-      if (name.startsWith(".") || SKIP_DIRS.has(name)) continue;
+      if (
+        name.startsWith(".") ||
+        SKIP_DIRS.has(name) ||
+        GENERATED_DIR_SUFFIXES.some((s) => name.endsWith(s))
+      )
+        continue;
       const p = join(dir, name).replace(/\\/g, "/");
       if (statSync(p).isDirectory()) {
         walk(p, out);
@@ -137,6 +144,14 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    headers: {
+      // 与 src-tauri/tauri.conf.json 的 csp 保持同步（dev 额外放行 HMR websocket），
+      // 使浏览器 dev/e2e 环境与生产 webview 的 CSP 行为一致，问题提前暴露。
+      "Content-Security-Policy":
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; " +
+        "connect-src 'self' ws://localhost:1420; object-src 'none'; base-uri 'none'",
+    },
   },
   build: {
     outDir: "dist",

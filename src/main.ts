@@ -108,8 +108,8 @@ const statusbar = new StatusBar(statusbarEl, {
   onReopen: (enc) => void activeGroup().tabs.reopenWithEncoding(enc),
   onSetSaveEncoding: (enc) => activeGroup().tabs.setSaveEncoding(enc),
 });
-statusbar.attachEditor(editor);
-statusbar.attachEditor(editor2);
+statusbar.attachEditor(editor, () => activeGroupIdx === 0);
+statusbar.attachEditor(editor2, () => activeGroupIdx === 1);
 
 const tree = new HierarchyTree(treeRootEl, {
   onOpen: (node) => void openTreeNode(node),
@@ -586,9 +586,14 @@ function showInstancePanel(name: string, sites: InstanceSite[]): void {
   document.getElementById("main-area")!.appendChild(panel);
 }
 
-/** 每个编辑器实例的接线：焦点切组、光标跟随（两组各一份，闭包内 ed 即本组编辑器）。 */
+/** 每个编辑器实例的接线：焦点切组、内容/光标跟随（两组各一份，闭包内 ed 即本组编辑器）。 */
 function wireEditor(ed: monaco.editor.IStandaloneCodeEditor, idx: number): void {
   ed.onDidFocusEditorText(() => focusGroup(idx));
+  // 共享 model 时两组编辑器都会收到内容事件，只让活动组触发大纲刷新
+  ed.onDidChangeModelContent(() => {
+    if (idx !== activeGroupIdx) return;
+    refreshOutline();
+  });
   ed.onDidChangeCursorPosition((e) => {
     if (idx !== activeGroupIdx) return;
     const line = e.position.lineNumber;
@@ -817,6 +822,8 @@ initGroupSplitter();
 
 function updateStructure(path: string, content: string): void {
   if (!state.folder) return;
+  // 只索引当前工程内的文件：换工程后残留旧标签的保存/重载不得写入新索引（Windows 路径大小写不敏感）
+  if (!path.toLowerCase().startsWith(state.folder.toLowerCase() + "/")) return;
   state.structures.set(path, scanStructure(content, path));
   state.parsed.delete(path);
   rebuildIndex();
@@ -918,7 +925,12 @@ async function openProject(): Promise<void> {
   if (folder) await openFolder(folder);
 }
 
+/** 扫描代际：每次 openFolder 递增，进行中的旧扫描据此中止，防止跨工程污染 state。 */
+let scanGeneration = 0;
+
 async function openFolder(folder: string): Promise<void> {
+  const gen = ++scanGeneration;
+  for (const g of groups) await g.tabs.closeAll();
   state.folder = folder;
   addRecent(folder);
   state.topName = undefined;
@@ -927,12 +939,16 @@ async function openFolder(folder: string): Promise<void> {
   state.parsed.clear();
   state.ips = [];
   state.constraints = [];
+  // 端口缓存按工程失效：换工程后同名 IP（clk_wiz_0 等）不得沿用旧定义
+  ipPortsCache.clear();
+  detailCache.clear();
   history.clear();
   updateNavButtons();
   searchPanel.clear();
 
   setProgress("扫描文件…");
   const { hdl, xci, con } = await scanFolder(folder);
+  if (gen !== scanGeneration) return;
   // IP 生成目录（.xci 所在目录树）内的文件不进索引，stub/约束仅按需查看
   const xciDirs = xci.map((f) => f.slice(0, f.lastIndexOf("/")));
   const isIpGenerated = (file: string) =>
@@ -943,6 +959,7 @@ async function openFolder(folder: string): Promise<void> {
   const hdlFiles = hdl.filter((f) => !isIpGenerated(f));
   let done = 0;
   for (const file of hdlFiles) {
+    if (gen !== scanGeneration) return;
     try {
       const { content, encoding, mtime } = await readFile(file);
       state.contents.set(file, { content, encoding, mtime });
@@ -958,6 +975,7 @@ async function openFolder(folder: string): Promise<void> {
   }
 
   for (const file of xci) {
+    if (gen !== scanGeneration) return;
     try {
       const { content } = await readFile(file);
       state.ips.push(parseXci(content, file));
@@ -968,6 +986,7 @@ async function openFolder(folder: string): Promise<void> {
 
   // 约束文件读入缓存：全局搜索覆盖、点击即开、外部变更监视生效
   for (const file of state.constraints) {
+    if (gen !== scanGeneration) return;
     try {
       const { content, encoding, mtime } = await readFile(file);
       state.contents.set(file, { content, encoding, mtime });
@@ -1217,5 +1236,3 @@ window.addEventListener("keydown", (e) => {
     recentMenu.toggle();
   }
 });
-
-editor.onDidChangeModelContent(() => refreshOutline());

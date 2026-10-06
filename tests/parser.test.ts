@@ -242,6 +242,33 @@ endmodule
     expect(mods[0].ports.map((p) => p.name)).toEqual(["clk", "rst_n", "q"]);
   });
 
+  it("ANSI 端口逗号连写时，无方向项继承最近的方向与宽度", () => {
+    const src = `module top(
+  input clk, rst_n,
+  input [7:0] a, b,
+  output reg [3:0] x,
+                 y,
+  input c, output d,
+  input wire [15:0] e, f
+);
+endmodule
+`;
+    const ports = parseFile(src, "top.v")[0].ports;
+    expect(ports.map((p) => [p.name, p.direction, p.width])).toEqual([
+      ["clk", "input", undefined],
+      ["rst_n", "input", undefined],
+      ["a", "input", "[7:0]"],
+      ["b", "input", "[7:0]"],
+      ["x", "output", "[3:0]"],
+      ["y", "output", "[3:0]"],
+      ["c", "input", undefined],
+      // 显式方向重新开始：d 不继承 c 项之前的宽度
+      ["d", "output", undefined],
+      ["e", "input", "[15:0]"],
+      ["f", "input", "[15:0]"],
+    ]);
+  });
+
   it("module 名与端口表之间的属性不干扰端口与例化解析", () => {
     const src = `(* keep = "true" *) module top (* dont_touch = "yes" *) (input clk);
   leaf u_l (.x(clk));
@@ -314,6 +341,68 @@ end architecture;
       ["sub_mod", "u_g"],
       ["old_mod", "u_c"],
     ]);
+  });
+
+  it("只有 generic map 的例化不错抓下一个例化的 port map", () => {
+    const src = `entity top is end entity;
+architecture rtl of top is
+begin
+  u1 : entity work.sub_mod
+    generic map (W => 8);
+  u2 : entity work.other
+    port map (clk => clk);
+end architecture;
+`;
+    const mods = parseFileDetail(src, "top.vhd");
+    const [i1, i2] = mods[0].instances;
+    expect(i1.inst).toBe("u1");
+    expect(i1.connections).toBeUndefined();
+    expect(i1.endLine).toBeUndefined();
+    expect(i2.inst).toBe("u2");
+    expect(i2.connections).toEqual([{ port: "clk", expr: "clk", line: 7 }]);
+    expect(i2.endLine).toBe(7);
+  });
+
+  it("architecture 与 entity 分文件时，例化保留并归属 entity 名", () => {
+    const src = `architecture rtl of top is
+begin
+  u_sub : entity work.sub_mod port map (clk => clk);
+end architecture;
+`;
+    const mods = parseFile(src, "top_rtl.vhd");
+    expect(mods).toHaveLength(1);
+    expect(mods[0].name).toBe("top");
+    expect(mods[0].file).toBe("top_rtl.vhd");
+    expect(mods[0].instances.map((i) => [i.module, i.inst])).toEqual([["sub_mod", "u_sub"]]);
+  });
+
+  it("字符串内容（含 -- 与伪例化文本）与 VHDL-2008 块注释不参与扫描", () => {
+    const src = `entity top is end entity;
+architecture rtl of top is
+begin
+  report "-------- u_fake : entity work.sub_mod port map (clk => clk);";
+  /* u_blk : entity work.sub_mod port map (clk => clk);
+     entity fake_ent is */
+  u_real : entity work.sub_mod port map (clk => clk);
+end architecture;
+`;
+    const mods = parseFile(src, "t.vhd");
+    expect(mods.map((m) => m.name)).toEqual(["top"]);
+    expect(mods[0].instances.map((i) => i.inst)).toEqual(["u_real"]);
+    expect(mods[0].instances[0].line).toBe(7);
+  });
+
+  it("vector 端口 width 无尾随空格，标量端口无 width", () => {
+    const src = `entity e is
+  port (
+    q : out std_logic_vector(7 downto 0);
+    s : in std_logic
+  );
+end entity;
+`;
+    const ports = parseFile(src, "e.vhd")[0].ports;
+    expect(ports[0].width).toBe("std_logic_vector(7 downto 0)");
+    expect(ports[1].width).toBeUndefined();
   });
 });
 

@@ -171,6 +171,31 @@ end architecture;`,
     expect(bufg.children).toEqual([]);
     expect(sub.kind).toBe("module");
   });
+
+  it("VHDL entity 与 architecture 分文件时例化边不丢失", () => {
+    const files = {
+      "top.vhd": `entity top is end entity;`,
+      "top_rtl.vhd": `architecture rtl of top is
+begin
+  u_sub : entity work.sub_mod port map (clk => '0');
+end architecture;`,
+      "sub.vhd": `entity sub_mod is end entity;
+architecture rtl of sub_mod is
+begin
+end architecture;`,
+    };
+    // entity 文件先扫描：空例化的 entity 结构先占位，architecture 结构的例化边仍须归并
+    const h1 = buildFromFiles(files);
+    expect(h1.tops[0].moduleName).toBe("top");
+    expect(h1.tops[0].children.map((c) => c.moduleName)).toEqual(["sub_mod"]);
+    // architecture 文件先扫描：例化边同样保留
+    const h2 = buildFromFiles({
+      "top_rtl.vhd": files["top_rtl.vhd"],
+      "top.vhd": files["top.vhd"],
+      "sub.vhd": files["sub.vhd"],
+    });
+    expect(h2.tops[0].children.map((c) => c.moduleName)).toEqual(["sub_mod"]);
+  });
 });
 
 describe("模块反向引用（被谁例化）", () => {

@@ -1,3 +1,4 @@
+$ErrorActionPreference = 'Stop'
 $env:CARGO_HOME = 'D:\workspace\toolchains\rust\cargo'
 $env:RUSTUP_HOME = 'D:\workspace\toolchains\rust\rustup'
 $env:PATH = 'D:\workspace\toolchains\rust\cargo\bin;' + $env:PATH

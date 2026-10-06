@@ -20,7 +20,7 @@ const KEYWORDS = new Set([
   "trireg", "scalared", "vectored", "strong0", "strong1", "weak0", "weak1",
   "deassign", "disable", "force", "release", "fork", "join", "join_any",
   "join_none", "wait", "event", "int", "bit", "byte", "shortint", "longint",
-  "shortreal", "string", "void", "type", "ref", "inout",
+  "shortreal", "string", "void", "type", "ref",
 ]);
 
 function skipWs(s: string, i: number): number {
@@ -144,17 +144,26 @@ function parsePortList(portListSrc: string): PortInfo[] {
     }
   }
   if (cur.trim()) entries.push(cur);
+  // ANSI 端口允许逗号连写省略方向：`input [7:0] a, b`。无方向项继承最近一个
+  // 显式方向项的方向与宽度；显式方向项重新开始（`input a, output b` 的 b 不继承宽度）。
+  let lastDir: string | undefined;
+  let lastWidth: string | undefined;
   for (const entry of entries) {
     const dirMatch = /\b(input|output|inout)\b/.exec(entry);
     const widthMatch = /\[[^\]]*\]/.exec(entry);
     const idents = entry.match(/[A-Za-z_]\w*/g) ?? [];
     const name = idents[idents.length - 1];
     if (!name || KEYWORDS.has(name)) continue;
-    ports.push({
-      name,
-      direction: dirMatch?.[1],
-      width: widthMatch?.[0],
-    });
+    let direction = dirMatch?.[1];
+    let width = widthMatch?.[0];
+    if (direction !== undefined) {
+      lastDir = direction;
+      lastWidth = width;
+    } else {
+      direction = lastDir;
+      width = width ?? lastWidth;
+    }
+    ports.push({ name, direction, width });
   }
   return ports;
 }

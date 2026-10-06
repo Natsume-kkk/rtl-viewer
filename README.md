@@ -50,8 +50,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Release.ps1
 ## 目录
 
 ```text
-src/         前端：parser/（HDL 解析）、model/（索引、层级树、搜索、导航历史、大纲提取）、editor/（Monaco 与标签页）、ui/（树、搜索面板、大纲、状态栏）
+src/         前端：parser/（HDL 解析）、model/（索引、层级树、搜索、导航历史、大纲、信号声明定位）、editor/（Monaco、标签页、代码补全）、ui/（树、搜索面板、大纲、状态栏、对话框、右键菜单、最近工程）
 src-tauri/   Rust 后端
-tests/       Vitest 测试（含真实工程验收 tests/acceptance-cp7.test.ts，夹具在 .tmp，不入库）
+tests/       Vitest 测试（含真实工程验收：tests/acceptance-cp7.test.ts 夹具在 .tmp 不入库；tests/acceptance-real-projects.test.ts 依赖本机绝对路径工程，路径缺失时自动跳过）
 scripts/     构建辅助（Build-Release.ps1、Invoke-Cargo.ps1、make-icon.mjs）
 ```

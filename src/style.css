@@ -75,9 +75,9 @@
   --border-subtle: #dde0e5;
   --border-strong: #c3c9d1;
 
-  --fg: #24292f;
-  --fg-secondary: #5b636c;
-  --fg-faint: #8b929b;
+  --fg: #3b3b3b;
+  --fg-secondary: #616161;
+  --fg-faint: #767676;
 
   --accent: #0b5cad;
   --accent-emphasis: #0b5cad;
@@ -95,11 +95,11 @@
   --sem-error: #cf222e;
 
   --mark-bg: #ffdf9e;
-  --mark-fg: #24292f;
+  --mark-fg: #3b3b3b;
 
   --editor-line-highlight: rgba(0, 0, 0, 0.04);
   --editor-selection: #add6ff;
-  --editor-gutter-fg: #9aa1a9;
+  --editor-gutter-fg: #6e7681;
 
   --scrollbar-thumb: rgba(0, 0, 0, 0.18);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);

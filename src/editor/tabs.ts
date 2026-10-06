@@ -1,6 +1,6 @@
 import { monaco, langForFile } from "./monaco";
-import { readFile, writeFile, saveFileDialog, confirmDialog, fileStates, showInFolder } from "../ipc";
-import { choiceDialog } from "../ui/dialog";
+import { readFile, writeFile, saveFileDialog, fileStates, showInFolder } from "../ipc";
+import { appAlert, appConfirm, choiceDialog } from "../ui/dialog";
 import { setIcon } from "../ui/icons";
 import { filePathMenuItems, showCtxMenu, type MenuItem } from "../ui/menu";
 
@@ -106,7 +106,7 @@ export class TabManager {
     try {
       file = await readFile(path);
     } catch (e) {
-      await confirmDialog(`打开失败：${String(e)}`);
+      await appAlert(`打开失败：${String(e)}`);
       return;
     }
     const { content, encoding, mtime } = file;
@@ -134,7 +134,7 @@ export class TabManager {
   async reopenWithEncoding(encoding: string): Promise<void> {
     const tab = this.active;
     if (!tab) return;
-    if (tab.dirty && !(await confirmDialog("当前修改未保存，重新打开将丢弃修改，继续？"))) {
+    if (tab.dirty && !(await appConfirm("当前修改未保存，重新打开将丢弃修改，继续？"))) {
       return;
     }
     if (!tab.path) return; // 未命名文件无盘可读
@@ -150,7 +150,7 @@ export class TabManager {
       this.events.onActiveChange();
       this.syncPeers(tab);
     } catch (e) {
-      await confirmDialog(`重新打开失败：${String(e)}`);
+      await appAlert(`重新打开失败：${String(e)}`);
     }
   }
 
@@ -226,7 +226,7 @@ export class TabManager {
 
   async close(tab: Tab): Promise<void> {
     if (tab.dirty) {
-      const ok = await confirmDialog(`「${tab.title}」有未保存的修改，关闭将丢弃，继续？`);
+      const ok = await appConfirm(`「${tab.title}」有未保存的修改，关闭将丢弃，继续？`);
       if (!ok) return;
     }
     const idx = this.tabs.indexOf(tab);
@@ -304,7 +304,7 @@ export class TabManager {
         [current] = await fileStates([tab.path]);
       } catch (e) {
         // 无法确认磁盘状态时中止保存，避免静默覆盖外部修改
-        await confirmDialog(`保存失败：无法读取磁盘状态（${String(e)}）`);
+        await appAlert(`保存失败：无法读取磁盘状态（${String(e)}）`);
         return false;
       }
       if (current && current !== tab.mtime) {
@@ -324,7 +324,7 @@ export class TabManager {
             this.events.onFileReloaded(tab.path, content, encoding, mtime);
             this.events.onActiveChange();
           } catch (e) {
-            await confirmDialog(`重新加载失败：${String(e)}`);
+            await appAlert(`重新加载失败：${String(e)}`);
           }
           return false;
         }
@@ -335,7 +335,7 @@ export class TabManager {
     try {
       mtime = await writeFile(path, tab.model.getValue(), tab.encoding);
     } catch (e) {
-      await confirmDialog(`保存失败：${String(e)}`);
+      await appAlert(`保存失败：${String(e)}`);
       return false;
     }
     tab.dirty = false;

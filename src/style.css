@@ -679,7 +679,7 @@ body.resizing {
   font-family: var(--font-mono);
 }
 
-/* ---------- 选择对话框 ---------- */
+/* ---------- 选择对话框（经典直角扁平样式，对齐 Notepad++ 观感） ---------- */
 
 .choice-overlay {
   position: fixed;
@@ -696,7 +696,7 @@ body.resizing {
   max-width: 480px;
   background: var(--surface-overlay);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
+  border-radius: 0;
   box-shadow: var(--shadow-overlay);
   padding: 14px 16px;
 }
@@ -716,25 +716,20 @@ body.resizing {
   background: var(--surface-raised);
   color: var(--fg);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
+  border-radius: 0;
   height: 24px;
   padding: 0 12px;
   cursor: pointer;
   font-size: var(--fs-body);
 }
 
+/* 主按钮不填色，仅用 accent 边框标识默认动作（经典消息框观感） */
 .choice-buttons button.primary {
-  background: var(--accent-emphasis);
-  color: var(--on-accent);
   border-color: var(--accent-emphasis);
 }
 
 .choice-buttons button:hover {
   background: var(--surface-hover);
-}
-
-.choice-buttons button.primary:hover {
-  background: var(--accent-emphasis-hover);
 }
 
 .ip-panel-head {

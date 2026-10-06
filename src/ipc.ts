@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open, save, confirm } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 export interface ScanResult {
   hdl: string[];
@@ -61,8 +61,4 @@ export function saveFileDialog(defaultPath?: string): Promise<string | null> {
       { name: "All", extensions: ["*"] },
     ],
   });
-}
-
-export function confirmDialog(message: string): Promise<boolean> {
-  return confirm(message, { title: "rtl-viewer", kind: "warning" });
 }

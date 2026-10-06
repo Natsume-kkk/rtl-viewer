@@ -58,9 +58,14 @@ vi.mock("../src/ipc", () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
   saveFileDialog: vi.fn(),
-  confirmDialog: vi.fn(),
   fileStates: vi.fn(),
   showInFolder: vi.fn(),
+}));
+
+vi.mock("../src/ui/dialog", () => ({
+  choiceDialog: vi.fn(),
+  appConfirm: vi.fn(),
+  appAlert: vi.fn(),
 }));
 
 function makeEditor() {
@@ -89,15 +94,17 @@ async function setup() {
   vi.clearAllMocks();
   vi.resetModules();
   const ipc = await import("../src/ipc");
+  const dialog = await import("../src/ui/dialog");
   const { TabManager } = await import("../src/editor/tabs");
   const mocks = {
     readFile: vi.mocked(ipc.readFile),
     writeFile: vi.mocked(ipc.writeFile),
     saveFileDialog: vi.mocked(ipc.saveFileDialog),
-    confirmDialog: vi.mocked(ipc.confirmDialog),
+    appConfirm: vi.mocked(dialog.appConfirm),
+    appAlert: vi.mocked(dialog.appAlert),
     fileStates: vi.mocked(ipc.fileStates),
   };
-  mocks.confirmDialog.mockResolvedValue(true);
+  mocks.appConfirm.mockResolvedValue(true);
   const make = () =>
     new TabManager(
       makeEditor() as unknown as ConstructorParameters<typeof TabManager>[0],
@@ -199,12 +206,12 @@ describe("TabManager", () => {
     expect(t0.dirty).toBe(true);
   });
 
-  it("M4: readFile 失败时 openFile 不抛出，经 confirmDialog 提示且不建标签", async () => {
+  it("M4: readFile 失败时 openFile 不抛出，经 appAlert 提示且不建标签", async () => {
     const { make, mocks } = await setup();
     mocks.readFile.mockRejectedValue(new Error("gone"));
     const tm = make();
     await expect(tm.openFile("D:/p/gone.v")).resolves.toBeUndefined();
-    expect(mocks.confirmDialog).toHaveBeenCalledWith(expect.stringContaining("打开失败"));
+    expect(mocks.appAlert).toHaveBeenCalledWith(expect.stringContaining("打开失败"));
     expect(tm.count).toBe(0);
   });
 
@@ -218,7 +225,7 @@ describe("TabManager", () => {
 
     mocks.fileStates.mockRejectedValue(new Error("io"));
     await expect(tm.save()).resolves.toBe(false);
-    expect(mocks.confirmDialog).toHaveBeenCalledWith(expect.stringContaining("保存失败"));
+    expect(mocks.appAlert).toHaveBeenCalledWith(expect.stringContaining("保存失败"));
     expect(mocks.writeFile).not.toHaveBeenCalled();
     expect(tab.dirty).toBe(true);
   });

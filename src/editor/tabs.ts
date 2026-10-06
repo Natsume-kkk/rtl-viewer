@@ -28,6 +28,10 @@ export interface Tab {
  */
 const modelStore = new Map<string, { model: monaco.editor.ITextModel; refs: number }>();
 
+// 模块级计数：分屏各编辑组各持一个 TabManager，实例字段会让两组都从 untitled-1 开始，
+// uriKey 相同导致误共享 model，两组新建文件内容互相串扰
+let untitledSeq = 0;
+
 function acquireModel(uriKey: string, content: string, lang: string): monaco.editor.ITextModel {
   const hit = modelStore.get(uriKey);
   if (hit) {
@@ -68,7 +72,6 @@ export class TabManager {
   private events: TabEvents;
   private tabs: Tab[] = [];
   private active: Tab | null = null;
-  private untitledCount = 0;
   /** 打开中的每个标签的视图状态（光标、滚动位置） */
   private viewStates = new Map<monaco.editor.ITextModel, monaco.editor.ICodeEditorViewState | null>();
 
@@ -126,8 +129,8 @@ export class TabManager {
   }
 
   newFile(): void {
-    this.untitledCount += 1;
-    this.createTab("", `untitled-${this.untitledCount}`, "", "utf8", 0);
+    untitledSeq += 1;
+    this.createTab("", `untitled-${untitledSeq}`, "", "utf8", 0);
   }
 
   /** 以指定编码重新读取当前文件并替换内容。 */
@@ -230,6 +233,7 @@ export class TabManager {
       if (!ok) return;
     }
     const idx = this.tabs.indexOf(tab);
+    if (idx < 0) return; // 标签已被关闭（双击关闭按钮等重复触发），splice(-1) 会误删末尾标签
     this.tabs.splice(idx, 1);
     tab.element.remove();
     tab.contentListener?.dispose();
@@ -323,6 +327,7 @@ export class TabManager {
             this.renderTab(tab);
             this.events.onFileReloaded(tab.path, content, encoding, mtime);
             this.events.onActiveChange();
+            this.syncPeers(tab);
           } catch (e) {
             await appAlert(`重新加载失败：${String(e)}`);
           }

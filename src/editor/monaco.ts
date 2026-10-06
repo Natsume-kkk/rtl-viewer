@@ -1,4 +1,84 @@
-import * as monaco from "monaco-editor";
+// 按需引入：不走 monaco-editor 整包入口（editor.main 会带上全部语言定义、
+// css/html/json/ts 语言服务和 LSP 客户端，约 11 MB 永不加载的 chunk 进 exe）。
+// 下面清单 = editor.main.js 的编辑器贡献部分（版本升级 monaco 时需同步核对）。
+import * as monaco from "monaco-editor/editor/editor.api";
+import "monaco-editor/editor/contrib/anchorSelect/browser/anchorSelect";
+import "monaco-editor/editor/contrib/bracketMatching/browser/bracketMatching";
+import "monaco-editor/editor/contrib/caretOperations/browser/transpose";
+import "monaco-editor/editor/contrib/clipboard/browser/clipboard";
+import "monaco-editor/editor/contrib/codeAction/browser/codeActionContributions";
+import "monaco-editor/editor/browser/widget/codeEditor/codeEditorWidget";
+import "monaco-editor/editor/contrib/codelens/browser/codelensController";
+import "monaco-editor/editor/contrib/colorPicker/browser/colorPickerContribution";
+import "monaco-editor/editor/contrib/comment/browser/comment";
+import "monaco-editor/editor/contrib/contextmenu/browser/contextmenu";
+import "monaco-editor/editor/contrib/cursorUndo/browser/cursorUndo";
+import "monaco-editor/editor/browser/widget/diffEditor/diffEditor.contribution";
+import "monaco-editor/editor/contrib/diffEditorBreadcrumbs/browser/contribution";
+import "monaco-editor/editor/contrib/dnd/browser/dnd";
+import "monaco-editor/editor/contrib/documentSymbols/browser/documentSymbols";
+import "monaco-editor/editor/contrib/dropOrPasteInto/browser/dropIntoEditorContribution";
+import "monaco-editor/features/find/register";
+import "monaco-editor/editor/contrib/floatingMenu/browser/floatingMenu.contribution";
+import "monaco-editor/editor/contrib/folding/browser/folding";
+import "monaco-editor/editor/contrib/fontZoom/browser/fontZoom";
+import "monaco-editor/editor/contrib/format/browser/formatActions";
+import "monaco-editor/editor/contrib/gotoError/browser/gotoError";
+import "monaco-editor/editor/standalone/browser/quickAccess/standaloneGotoLineQuickAccess";
+import "monaco-editor/editor/contrib/gotoSymbol/browser/link/goToDefinitionAtPosition";
+import "monaco-editor/editor/contrib/gpu/browser/gpuActions";
+import "monaco-editor/editor/contrib/hover/browser/hoverContribution";
+import "monaco-editor/editor/contrib/indentation/browser/indentation";
+import "monaco-editor/editor/contrib/inlayHints/browser/inlayHintsContribution";
+import "monaco-editor/editor/contrib/inlineCompletions/browser/inlineCompletions.contribution";
+import "monaco-editor/editor/contrib/inlineProgress/browser/inlineProgress";
+import "monaco-editor/editor/contrib/inPlaceReplace/browser/inPlaceReplace";
+import "monaco-editor/editor/contrib/insertFinalNewLine/browser/insertFinalNewLine";
+import "monaco-editor/editor/standalone/browser/inspectTokens/inspectTokens";
+import "monaco-editor/editor/standalone/browser/iPadShowKeyboard/iPadShowKeyboard";
+import "monaco-editor/editor/contrib/lineSelection/browser/lineSelection";
+import "monaco-editor/editor/contrib/linesOperations/browser/linesOperations";
+import "monaco-editor/editor/contrib/linkedEditing/browser/linkedEditing";
+import "monaco-editor/editor/contrib/links/browser/links";
+import "monaco-editor/editor/contrib/longLinesHelper/browser/longLinesHelper";
+import "monaco-editor/editor/contrib/middleScroll/browser/middleScroll.contribution";
+import "monaco-editor/editor/contrib/multicursor/browser/multicursor";
+import "monaco-editor/editor/contrib/parameterHints/browser/parameterHints";
+import "monaco-editor/editor/contrib/placeholderText/browser/placeholderText.contribution";
+import "monaco-editor/editor/standalone/browser/quickAccess/standaloneCommandsQuickAccess";
+import "monaco-editor/editor/standalone/browser/quickAccess/standaloneHelpQuickAccess";
+import "monaco-editor/editor/standalone/browser/quickAccess/standaloneGotoSymbolQuickAccess";
+import "monaco-editor/editor/contrib/readOnlyMessage/browser/contribution";
+import "monaco-editor/editor/standalone/browser/referenceSearch/standaloneReferenceSearch";
+import "monaco-editor/editor/contrib/rename/browser/rename";
+import "monaco-editor/editor/contrib/sectionHeaders/browser/sectionHeaders";
+import "monaco-editor/editor/contrib/semanticTokens/browser/viewportSemanticTokens";
+import "monaco-editor/editor/contrib/smartSelect/browser/smartSelect";
+import "monaco-editor/editor/contrib/snippet/browser/snippetController2";
+import "monaco-editor/editor/contrib/stickyScroll/browser/stickyScrollContribution";
+import "monaco-editor/editor/contrib/suggest/browser/suggestInlineCompletions";
+import "monaco-editor/editor/standalone/browser/toggleHighContrast/toggleHighContrast";
+import "monaco-editor/editor/contrib/toggleTabFocusMode/browser/toggleTabFocusMode";
+import "monaco-editor/editor/contrib/tokenization/browser/tokenization";
+import "monaco-editor/editor/contrib/unicodeHighlighter/browser/unicodeHighlighter";
+import "monaco-editor/editor/contrib/unusualLineTerminators/browser/unusualLineTerminators";
+import "monaco-editor/editor/contrib/wordHighlighter/browser/wordHighlighter";
+import "monaco-editor/editor/contrib/wordOperations/browser/wordOperations";
+import "monaco-editor/editor/contrib/wordPartOperations/browser/wordPartOperations";
+import "monaco-editor/editor/browser/coreCommands";
+import "monaco-editor/editor/contrib/caretOperations/browser/caretOperations";
+import "monaco-editor/editor/contrib/dropOrPasteInto/browser/copyPasteContribution";
+import "monaco-editor/editor/contrib/find/browser/findController";
+import "monaco-editor/editor/contrib/gotoSymbol/browser/goToCommands";
+import "monaco-editor/editor/contrib/gotoError/browser/markerSelectionStatus";
+import "monaco-editor/editor/contrib/semanticTokens/browser/documentSemanticTokens";
+import "monaco-editor/editor/contrib/suggest/browser/suggestController";
+import "monaco-editor/editor/common/standaloneStrings";
+// 约束文件（xdc/sdc）高亮复用 tcl 语言定义；其余语言定义一律不打进包里
+import "monaco-editor/languages/definitions/tcl/register";
+// codicon 图标字体的 CSS；exports 映射（./* → ./esm/vs/*.js）无法指向 .css，走相对路径
+import "../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.css";
+import "../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon-modifiers.css";
 // monaco-editor 0.57 的 exports 映射未开放深层 esm 路径，改用直接文件路径引入 worker
 import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
 import type { ModuleDef } from "../model";
@@ -128,7 +208,8 @@ function registerVerilog(): void {
     brackets: [["(", ")"], ["[", "]"], ["begin", "end"]],
     autoClosingPairs: [
       { open: "(", close: ")" }, { open: "[", close: "]" },
-      { open: '"', close: '"' }, { open: "'", close: "'", notIn: ["string", "comment"] },
+      { open: '"', close: '"' },
+      // `'` 不配对：Verilog 里是 4'hF 这类数字字面量的分隔符，自动补全会干扰输入
     ],
   });
   monaco.languages.setMonarchTokensProvider("verilog", {
@@ -140,7 +221,8 @@ function registerVerilog(): void {
         [/\/\*/, "comment", "@comment"],
         [/`\w+/, "keyword.directive"],
         [/"/, "string", "@string"],
-        [/\d*'[bodhBODH][0-9a-fA-FxzXZ_?]+/, "number.hex"],
+        [/\d*'s?[bodhBODH][0-9a-fA-FxzXZ_?]+/, "number.hex"],
+        [/'[01xXzZ](?![\w$])/, "number.hex"], // SV 无基数字面量 '0/'1/'x/'z
         [/\d[\d_]*\.?\d*([eE][+-]?\d+)?/, "number"],
         // 系统任务 $display/$finish 等：Notepad++ 默认未配置样式（黑色），深色下按 VSCode 函数色
         [/\$[a-zA-Z_]\w*/, "systemtask"],

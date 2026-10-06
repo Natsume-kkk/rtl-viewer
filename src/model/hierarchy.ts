@@ -179,6 +179,7 @@ export function buildHierarchy(
     ancestors: Set<string>,
   ): TreeNode => {
     const def = index.resolve(moduleName);
+    const lower = moduleName.toLowerCase();
     const node: TreeNode = {
       key,
       label,
@@ -186,22 +187,28 @@ export function buildHierarchy(
       kind: def ? (def.isIp ? "ip" : "module") : isVendorPrimitive(moduleName) ? "primitive" : "unresolved",
       file: def?.file,
       line: def?.line,
-      recursive: false,
+      recursive: ancestors.has(lower),
       children: [],
     };
-    const lower = moduleName.toLowerCase();
-    if (ancestors.has(lower)) {
-      node.recursive = true;
-      return node;
-    }
+    if (node.recursive) return node;
     const struct = structByModule.get(lower);
-    if (!struct) return node;
+    if (!struct || struct.instances.length === 0) return node;
+    // children 懒构建：getter 首次访问时才物化直接子节点（子节点的 children 同样懒）。
+    // 菱形复用高的工程例化路径数随深度指数增长，全量展开会组合爆炸；
+    // UI 只渲染展开的行，懒构建让成本随实际访问的层级走。
     const nextAncestors = new Set(ancestors).add(lower);
-    node.children = struct.instances.map((inst) => {
-      const child = buildNode(inst.module, inst.inst, `${key}/${inst.inst}`, nextAncestors);
-      child.instFile = struct.file;
-      child.instLine = inst.line;
-      return child;
+    let built: TreeNode[] | undefined;
+    Object.defineProperty(node, "children", {
+      enumerable: true,
+      get: () => {
+        built ??= struct.instances.map((inst) => {
+          const child = buildNode(inst.module, inst.inst, `${key}/${inst.inst}`, nextAncestors);
+          child.instFile = struct.file;
+          child.instLine = inst.line;
+          return child;
+        });
+        return built;
+      },
     });
     return node;
   };

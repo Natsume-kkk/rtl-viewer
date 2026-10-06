@@ -42,8 +42,15 @@ function verilogAlwaysTargets(lines: string[], startIdx: number): string[] {
     // 单语句 always（无 begin）：只看紧跟的第一条赋值
     if (i === startIdx && !/\bbegin\b/.test(text)) {
       const rest = text.replace(/^\s*always(?:_ff|_comb|_latch)?\s*@\s*\([^)]*\)/, "");
-      const single = rest.match(ASSIGN_LHS_RE) ?? lines[i + 1]?.match(ASSIGN_LHS_RE);
-      if (single) targets.push(single[1]);
+      const single = rest.match(ASSIGN_LHS_RE);
+      if (single) {
+        targets.push(single[1]);
+        break;
+      }
+      // begin 独占下一行：交给下方 begin/end 深度扫描，不当单语句处理
+      if (lines[i + 1] && /\bbegin\b/.test(lines[i + 1])) continue;
+      const next = lines[i + 1]?.match(ASSIGN_LHS_RE);
+      if (next) targets.push(next[1]);
       break;
     }
     const am = text.match(ASSIGN_LHS_RE);

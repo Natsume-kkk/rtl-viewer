@@ -1,9 +1,9 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseXci, scanStructure } from "../src/parser";
 import { ModuleIndex } from "../src/model";
 import { buildHierarchy, type Hierarchy, type TreeNode } from "../src/model/hierarchy";
+import { decode, walk } from "./helpers/fs-scan";
 
 /**
  * 主人真实工程验收（只读，不修改工程内任何内容）：
@@ -15,39 +15,8 @@ const P1 = "D:/work/fpga/12xsensor/CMV50000_100/z7_test/project_5_det_rst";
 const P2 =
   "D:/work/fpga/611/GDCX_ZHGL_S_2.03_time_check_download/GDCX_ZHGL_S_2.03_time_check_download";
 
-/** 与 Rust 端 scan_folder 同规则。 */
-const SKIP_DIRS = new Set(["node_modules", "target", "dist"]);
-const GENERATED_DIR_SUFFIXES = [".runs", ".sim", ".cache", ".hw", ".gen", ".ip_user_files"];
-const HDL_RE = /\.(v|sv|vh|svh|vhd|vhdl)$/i;
-
-function walk(dir: string, out: { hdl: string[]; xci: string[] }): void {
-  for (const name of readdirSync(dir)) {
-    if (name.startsWith(".") || SKIP_DIRS.has(name)) continue;
-    if (GENERATED_DIR_SUFFIXES.some((s) => name.endsWith(s))) continue;
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) {
-      walk(p, out);
-      continue;
-    }
-    if (HDL_RE.test(name)) out.hdl.push(p.replace(/\\/g, "/"));
-    else if (/\.xci$/i.test(name)) out.xci.push(p.replace(/\\/g, "/"));
-  }
-}
-
-/** 与 Rust 端 read_file 同策略：BOM → 严格 UTF-8 → GBK 兜底。 */
-function decode(buf: Buffer): { content: string; encoding: string } {
-  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
-    return { content: buf.subarray(3).toString("utf8"), encoding: "utf8-bom" };
-  }
-  try {
-    return { content: new TextDecoder("utf-8", { fatal: true }).decode(buf), encoding: "utf8" };
-  } catch {
-    return { content: new TextDecoder("gbk").decode(buf), encoding: "gbk" };
-  }
-}
-
 function build(root: string): { h: Hierarchy; hdlCount: number; xciCount: number } {
-  const files = { hdl: [] as string[], xci: [] as string[] };
+  const files = { hdl: [] as string[], xci: [] as string[], con: [] as string[] };
   walk(root, files);
   const xciDirs = files.xci.map((f) => f.slice(0, f.lastIndexOf("/")));
   const hdlFiles = files.hdl.filter(

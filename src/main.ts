@@ -24,6 +24,7 @@ import { StatusBar } from "./ui/statusbar";
 import { OutlineView } from "./ui/outline";
 import { SearchPanel } from "./ui/search";
 import { RecentMenu } from "./ui/recent";
+import { appAlert } from "./ui/dialog";
 import { initTheme } from "./ui/theme";
 import { setIcon } from "./ui/icons";
 
@@ -952,7 +953,21 @@ async function openFolder(folder: string): Promise<void> {
   searchPanel.clear();
 
   setProgress("扫描文件…");
-  const { hdl, xci, con } = await scanFolder(folder);
+  let hdl: string[];
+  let xci: string[];
+  let con: string[];
+  try {
+    ({ hdl, xci, con } = await scanFolder(folder));
+  } catch (e) {
+    // 扫描失败（目录被删/无权限等）：回到空工程状态并提示，不得留下「扫描文件…」卡死的半初始化界面
+    if (gen !== scanGeneration) return;
+    state.folder = "";
+    setProgress("");
+    rebuildIndex();
+    renderTree();
+    await appAlert(`打开工程失败：${String(e)}`);
+    return;
+  }
   if (gen !== scanGeneration) return;
   // IP 生成目录（.xci 所在目录树）内的文件不进索引，stub/约束仅按需查看
   const xciDirs = xci.map((f) => f.slice(0, f.lastIndexOf("/")));

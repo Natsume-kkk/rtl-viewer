@@ -15,6 +15,8 @@ export function choiceDialog(message: string, options: string[]): Promise<number
     msg.textContent = message;
     const buttons = document.createElement("div");
     buttons.className = "choice-buttons";
+    // 打开前记住焦点，关闭后归还，避免焦点丢到 body 导致编辑器快捷键失灵
+    const prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
     let done = false;
     const finish = (index: number) => {
@@ -22,12 +24,25 @@ export function choiceDialog(message: string, options: string[]): Promise<number
       done = true;
       document.removeEventListener("keydown", onKey, true);
       overlay.remove();
+      prevFocus?.focus();
       resolve(index);
     };
     const onKey = (e: KeyboardEvent) => {
+      // 捕获阶段拦下全部按键：弹窗期间 Monaco/全局快捷键不得响应（键盘模态）
+      e.stopPropagation();
+      const btns = [...buttons.querySelectorAll("button")];
       if (e.key === "Escape") {
-        e.stopPropagation();
         finish(-1);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const idx = btns.indexOf(document.activeElement as HTMLButtonElement);
+        finish(idx >= 0 ? idx : 0);
+      } else if (e.key === "Tab") {
+        // 焦点圈在按钮组内循环，不得 Tab 出弹窗
+        e.preventDefault();
+        const cur = btns.indexOf(document.activeElement as HTMLButtonElement);
+        const next = e.shiftKey ? (cur - 1 + btns.length) % btns.length : (cur + 1) % btns.length;
+        btns[next]?.focus();
       }
     };
 

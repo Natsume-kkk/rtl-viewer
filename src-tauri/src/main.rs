@@ -132,10 +132,13 @@ fn show_in_folder(path: String) -> Result<(), String> {
 
 pub fn decode(bytes: &[u8]) -> (String, &'static str) {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        return (
-            String::from_utf8_lossy(&bytes[3..]).into_owned(),
-            "utf8-bom",
-        );
+        let body = &bytes[3..];
+        // BOM 声明 UTF-8 但内容不符（如 GBK 文件被加了 UTF-8 BOM）时落 GBK 兜底，
+        // 不得 lossy 解出替换字符——否则保存会把 U+FFFD 写回，静默损坏原文件
+        return match std::str::from_utf8(body) {
+            Ok(s) => (s.to_owned(), "utf8-bom"),
+            Err(_) => (encoding_rs::GBK.decode(body).0.into_owned(), "gbk"),
+        };
     }
     // UTF-32 BOM 必须先于 UTF-16 嗅探：FF FE 00 00 会被 UTF-16LE 抢先命中解出乱码。
     // UTF-32 不支持解码，剥离 BOM 后落到下方严格 UTF-8 / GBK 兜底。
@@ -298,6 +301,16 @@ mod tests {
         let (s, enc) = decode(&b);
         assert_eq!(enc, "utf8-bom");
         assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn utf8_bom_with_gbk_body_falls_back_to_gbk() {
+        // BOM 声明 UTF-8 但内容是 GBK：不得 lossy 解出替换字符（保存即毁原文件），落 GBK 兜底
+        let mut b = vec![0xEF, 0xBB, 0xBF];
+        b.extend_from_slice(&[0xD6, 0xD0, 0xCE, 0xC4]); // "中文" 的 GBK 编码
+        let (s, enc) = decode(&b);
+        assert_eq!(enc, "gbk");
+        assert_eq!(s, "中文");
     }
 
     #[test]

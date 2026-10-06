@@ -1,50 +1,13 @@
 import { defineConfig, type Plugin } from "vite";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { decode, decodeAs, walk } from "./tests/helpers/fs-scan";
 
 /**
  * 仅开发模式：E2E 文件服务，供 src/e2e-mock.ts 的 IPC mock 使用。
- * 解码策略与 Rust 端 read_file 一致（BOM → 严格 UTF-8 → GBK 兜底）。
- * 写出仅支持 utf8/utf8-bom（GBK 写回由 Rust 侧 cargo test 覆盖）。
+ * 扫描与解码规则走 tests/helpers/fs-scan.ts（逐条对齐 Rust 端，单一来源）。
+ * 写出仅支持 utf8/utf8-bom（GBK/UTF-16 写回由 Rust 侧 cargo test 覆盖）。
  */
 function e2eFsPlugin(): Plugin {
-  const SKIP_DIRS = new Set(["node_modules", "target", "dist"]);
-  // 与 Rust 端 GENERATED_DIR_SUFFIXES 一致：EDA 生成目录不扫描
-  const GENERATED_DIR_SUFFIXES = [".runs", ".sim", ".cache", ".hw", ".gen", ".ip_user_files"];
-  const HDL_RE = /\.(v|sv|vh|svh|vhd|vhdl)$/i;
-
-  function walk(dir: string, out: { hdl: string[]; xci: string[]; con: string[] }): void {
-    for (const name of readdirSync(dir)) {
-      if (
-        name.startsWith(".") ||
-        SKIP_DIRS.has(name) ||
-        GENERATED_DIR_SUFFIXES.some((s) => name.endsWith(s))
-      )
-        continue;
-      const p = join(dir, name).replace(/\\/g, "/");
-      if (statSync(p).isDirectory()) {
-        walk(p, out);
-      } else if (HDL_RE.test(name)) {
-        out.hdl.push(p);
-      } else if (/\.xci$/i.test(name)) {
-        out.xci.push(p);
-      } else if (/\.(xdc|sdc)$/i.test(name)) {
-        out.con.push(p);
-      }
-    }
-  }
-
-  function decode(buf: Buffer): { content: string; encoding: string } {
-    if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
-      return { content: buf.subarray(3).toString("utf8"), encoding: "utf8-bom" };
-    }
-    try {
-      return { content: new TextDecoder("utf-8", { fatal: true }).decode(buf), encoding: "utf8" };
-    } catch {
-      return { content: new TextDecoder("gbk").decode(buf), encoding: "gbk" };
-    }
-  }
-
   function json(res: import("node:http").ServerResponse, data: unknown, status = 200): void {
     res.statusCode = status;
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -96,8 +59,7 @@ function e2eFsPlugin(): Plugin {
           const buf = readFileSync(path);
           const mtime = Math.round(statSync(path).mtimeMs);
           if (forced && forced !== "null") {
-            const label = forced === "gbk" ? "gbk" : "utf-8";
-            json(res, { content: new TextDecoder(label).decode(buf), encoding: forced, mtime });
+            json(res, { ...decodeAs(buf, forced), mtime });
           } else {
             json(res, { ...decode(buf), mtime });
           }

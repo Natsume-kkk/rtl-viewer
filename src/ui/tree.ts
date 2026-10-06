@@ -26,6 +26,8 @@ export class HierarchyTree {
   private rootEl: HTMLElement;
   private callbacks: TreeCallbacks;
   private expanded = new Set<string>();
+  /** 出现过的顶层 key：顶层只在首次出现时自动展开，之后 render 不得覆盖用户的折叠状态 */
+  private seenTops = new Set<string>();
 
   constructor(rootEl: HTMLElement, callbacks: TreeCallbacks) {
     this.rootEl = rootEl;
@@ -45,7 +47,10 @@ export class HierarchyTree {
       const ul = document.createElement("ul");
       ul.className = "tree";
       for (const top of h.tops) {
-        this.expanded.add(top.key);
+        if (!this.seenTops.has(top.key)) {
+          this.seenTops.add(top.key);
+          this.expanded.add(top.key);
+        }
         ul.appendChild(this.renderNode(top, 0));
       }
       this.rootEl.appendChild(ul);

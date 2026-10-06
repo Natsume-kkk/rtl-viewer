@@ -300,6 +300,23 @@ end beh;
     expect(mods[1].instances.map((i) => i.module)).toEqual(["y"]);
   });
 
+  it("architecture 内函数以裸 end; 收尾不截断后续例化", () => {
+    // function/procedure 允许裸 end;（不带关键字与名称）收尾，不得被当作 architecture 终点
+    const src = `entity a is end;
+architecture rtl of a is
+  function add1(x : integer) return integer is
+  begin
+    return x + 1;
+  end;
+begin
+  u_x : entity work.x port map (clk => '0');
+end;
+`;
+    const mods = parseFile(src, "a.vhd");
+    expect(mods.map((m) => m.name)).toEqual(["a"]);
+    expect(mods[0].instances.map((i) => i.module)).toEqual(["x"]);
+  });
+
   it("port 支持 linkage 模式与逗号多名字", () => {
     const src = `entity e is
   port (

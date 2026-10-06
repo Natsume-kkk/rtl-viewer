@@ -111,15 +111,50 @@ function parseVhdlPorts(portListSrc: string): PortInfo[] {
 }
 
 function findEnd(stripped: string, from: number, name: string, extraTag?: string): number {
-  const endRe = /\bend\s*(?:(entity|architecture)(?:\s+[A-Za-z_]\w*)?|([A-Za-z_]\w*))?\s*;/gi;
-  endRe.lastIndex = from;
+  // function/procedure（及 process/block/record）可用裸 end; 或 end <内部名>; 收尾，
+  // 需按嵌套深度判断，否则内层块的裸 end; 会被误认为 entity/architecture 终点，
+  // 导致其后的例化边静默丢失。已知边界：体内 function 原型声明（无 end 收尾）会使深度
+  // 计数偏正，终点退化为文末兜底（多收而非漏收）；原型在 architecture 体内罕见，可接受。
+  const re =
+    /\b(process|function|procedure|block|record)\b|\bend\s*(?:(entity|architecture)(?:\s+[A-Za-z_]\w*)?|([A-Za-z_]\w*))?\s*;/gi;
+  const openers = new Set(["process", "function", "procedure", "block", "record"]);
+  // end if;/end loop;/end case;/end generate; 的 opener 未计数，其收尾直接跳过
+  const skipTags = new Set(["if", "loop", "case", "generate"]);
+  re.lastIndex = from;
+  let depth = 0;
   let em: RegExpExecArray | null;
-  while ((em = endRe.exec(stripped))) {
-    if (em[1]) return em.index + em[0].length;
-    const tag = (em[2] ?? "").toLowerCase();
-    if (tag === "" || tag === name.toLowerCase() || tag === extraTag?.toLowerCase()) {
-      return em.index + em[0].length;
+  while ((em = re.exec(stripped))) {
+    if (em[1]) {
+      depth++;
+      continue;
     }
+    if (em[2]) {
+      // end entity [名]; / end architecture [名];
+      if (depth === 0) return em.index + em[0].length;
+      depth--;
+      continue;
+    }
+    const tag = (em[3] ?? "").toLowerCase();
+    if (openers.has(tag)) {
+      // end process; / end function; 等内层收尾
+      if (depth > 0) depth--;
+      continue;
+    }
+    if (tag === name.toLowerCase() || (extraTag !== undefined && tag === extraTag.toLowerCase())) {
+      // end <entity名>; / end <架构名>;
+      if (depth === 0) return em.index + em[0].length;
+      depth--;
+      continue;
+    }
+    if (skipTags.has(tag)) continue;
+    if (tag !== "") {
+      // end component; 等未知 tag：深度 0 跳过；深度 >0 视为内层函数/过程名收尾
+      if (depth > 0) depth--;
+      continue;
+    }
+    // 裸 end;
+    if (depth === 0) return em.index + em[0].length;
+    depth--;
   }
   return stripped.length;
 }

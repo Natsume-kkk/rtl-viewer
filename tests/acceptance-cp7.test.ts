@@ -1,9 +1,10 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseFile, parseXci, scanStructure } from "../src/parser";
 import { ModuleIndex } from "../src/model";
 import { buildHierarchy, type TreeNode } from "../src/model/hierarchy";
+import { decode, walk } from "./helpers/fs-scan";
 
 /**
  * CP7 真实工程验收：对 .tmp/cp7-acceptance/project（cameralink 工程副本，
@@ -11,33 +12,6 @@ import { buildHierarchy, type TreeNode } from "../src/model/hierarchy";
  * 夹具缺失时跳过（夹具由 CP7 验收流程生成，不入 Git）。
  */
 const PROJECT = join(__dirname, "..", ".tmp", "cp7-acceptance", "project");
-const SKIP_DIRS = new Set(["node_modules", "target", "dist"]);
-const HDL_RE = /\.(v|sv|vh|svh|vhd|vhdl)$/i;
-
-function walk(dir: string, out: { hdl: string[]; xci: string[] }): void {
-  for (const name of readdirSync(dir)) {
-    if (name.startsWith(".") || SKIP_DIRS.has(name)) continue;
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) {
-      walk(p, out);
-      continue;
-    }
-    if (HDL_RE.test(name)) out.hdl.push(p.replace(/\\/g, "/"));
-    else if (/\.xci$/i.test(name)) out.xci.push(p.replace(/\\/g, "/"));
-  }
-}
-
-/** 与 Rust 端 read_file 同策略：BOM → 严格 UTF-8 → GBK 兜底。 */
-function decode(buf: Buffer): { content: string; encoding: string } {
-  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
-    return { content: buf.subarray(3).toString("utf8"), encoding: "utf8-bom" };
-  }
-  try {
-    return { content: new TextDecoder("utf-8", { fatal: true }).decode(buf), encoding: "utf8" };
-  } catch {
-    return { content: new TextDecoder("gbk").decode(buf), encoding: "gbk" };
-  }
-}
 
 function findNode(node: TreeNode, pred: (n: TreeNode) => boolean): TreeNode | undefined {
   if (pred(node)) return node;
@@ -50,7 +24,7 @@ function findNode(node: TreeNode, pred: (n: TreeNode) => boolean): TreeNode | un
 
 describe.skipIf(!existsSync(PROJECT))("CP7 真实工程验收（cameralink 副本）", () => {
   function build() {
-    const files = { hdl: [] as string[], xci: [] as string[] };
+    const files = { hdl: [] as string[], xci: [] as string[], con: [] as string[] };
     walk(PROJECT, files);
     // 与应用一致：.xci 所在目录树内的 HDL 不进索引（IP 生成目录）
     const xciDirs = files.xci.map((f) => f.slice(0, f.lastIndexOf("/")));

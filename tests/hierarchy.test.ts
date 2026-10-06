@@ -223,3 +223,28 @@ endmodule`,
     expect(findInstancesOf(structures, "nonexistent")).toEqual([]);
   });
 });
+
+describe("层级树性能", () => {
+  it("深层菱形复用：children 懒构建，不沿例化路径组合爆炸", () => {
+    // 链式菱形：lvl_i 例化 lvl_{i+1} 两次，例化路径数 2^26，全量展开必然超时/爆内存；
+    // 懒构建只在访问 children 时物化直接子节点，成本随实际访问的层级走
+    const depth = 26;
+    const files: Record<string, string> = {
+      "top.v": `module top;\n  lvl0 u_a ();\n  lvl0 u_b ();\nendmodule`,
+    };
+    for (let i = 0; i < depth; i++) {
+      files[`lvl${i}.v`] = `module lvl${i};\n  lvl${i + 1} u_a ();\n  lvl${i + 1} u_b ();\nendmodule`;
+    }
+    files[`lvl${depth}.v`] = `module lvl${depth};\nendmodule`;
+    const h = buildFromFiles(files, [], "top");
+    expect(h.tops).toHaveLength(1);
+    // 逐层深入访问仍正确（children 内容不受影响）
+    let node = h.tops[0];
+    for (let i = 0; i <= depth; i++) {
+      expect(node.children).toHaveLength(2);
+      expect(node.children[0].moduleName).toBe(`lvl${i}`);
+      node = node.children[0];
+    }
+    expect(node.children).toHaveLength(0);
+  });
+});

@@ -102,6 +102,7 @@ async function setup() {
     saveFileDialog: vi.mocked(ipc.saveFileDialog),
     appConfirm: vi.mocked(dialog.appConfirm),
     appAlert: vi.mocked(dialog.appAlert),
+    choiceDialog: vi.mocked(dialog.choiceDialog),
     fileStates: vi.mocked(ipc.fileStates),
   };
   mocks.appConfirm.mockResolvedValue(true);
@@ -228,5 +229,74 @@ describe("TabManager", () => {
     expect(mocks.appAlert).toHaveBeenCalledWith(expect.stringContaining("保存失败"));
     expect(mocks.writeFile).not.toHaveBeenCalled();
     expect(tab.dirty).toBe(true);
+  });
+
+  it("H4: 保存遇外部修改选择「放弃修改重新加载」后，对侧标签同步清脏与徽章", async () => {
+    const { make, mocks } = await setup();
+    const g0 = make();
+    const g1 = make();
+    g0.openContent("D:/p/a.v", "old", "utf8", 100);
+    g1.openContent("D:/p/a.v", "old", "utf8", 100);
+    const t0 = g0.activeTab!;
+    const t1 = g1.activeTab!;
+    t0.model.setValue("mine");
+    g0.markExternalChanged("D:/p/a.v", true);
+    g1.markExternalChanged("D:/p/a.v", true);
+
+    mocks.fileStates.mockResolvedValue([300]);
+    mocks.choiceDialog.mockResolvedValue(1);
+    mocks.readFile.mockResolvedValue({ content: "disk", encoding: "utf8", mtime: 300 });
+    await expect(g0.save()).resolves.toBe(false);
+
+    expect(t0.dirty).toBe(false);
+    // 修复前：doWrite 重载分支漏了 syncPeers，对侧仍脏且保留外部修改徽章
+    expect(t1.dirty).toBe(false);
+    expect(t1.externalChanged).toBe(false);
+    expect(t1.mtime).toBe(300);
+  });
+
+  it("H5: 两组各自新建 untitled 时 uriKey 不冲突、不共享 model", async () => {
+    const { make } = await setup();
+    const g0 = make();
+    const g1 = make();
+    g0.newFile();
+    g1.newFile();
+    // 修复前：untitled 计数是实例字段，两组都从 1 开始，uriKey 相同导致共享 model
+    expect(g0.activeTab!.uriKey).not.toBe(g1.activeTab!.uriKey);
+    expect(g0.activeTab!.model).not.toBe(g1.activeTab!.model);
+  });
+
+  it("保存遇外部修改选择「覆盖保存」：写盘成功并清脏", async () => {
+    const { make, mocks } = await setup();
+    mocks.readFile.mockResolvedValue({ content: "old", encoding: "utf8", mtime: 100 });
+    const tm = make();
+    await tm.openFile("D:/p/a.v");
+    const tab = tm.activeTab!;
+    tab.model.setValue("mine");
+
+    mocks.fileStates.mockResolvedValue([300]);
+    mocks.choiceDialog.mockResolvedValue(0);
+    mocks.writeFile.mockResolvedValue(400);
+    await expect(tm.save()).resolves.toBe(true);
+    expect(mocks.writeFile).toHaveBeenCalledWith("D:/p/a.v", "mine", "utf8");
+    expect(tab.dirty).toBe(false);
+    expect(tab.mtime).toBe(400);
+  });
+
+  it("保存遇外部修改选择「取消」/Esc：不写盘、保持脏标记", async () => {
+    for (const choice of [2, -1]) {
+      const { make, mocks } = await setup();
+      mocks.readFile.mockResolvedValue({ content: "old", encoding: "utf8", mtime: 100 });
+      const tm = make();
+      await tm.openFile("D:/p/a.v");
+      const tab = tm.activeTab!;
+      tab.model.setValue("mine");
+
+      mocks.fileStates.mockResolvedValue([300]);
+      mocks.choiceDialog.mockResolvedValue(choice);
+      await expect(tm.save()).resolves.toBe(false);
+      expect(mocks.writeFile).not.toHaveBeenCalled();
+      expect(tab.dirty).toBe(true);
+    }
   });
 });

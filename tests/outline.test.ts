@@ -87,6 +87,22 @@ endmodule`,
     ]);
   });
 
+  it("Verilog：begin 独占下一行的 always 块也能提到赋值目标", () => {
+    const items = extractOutline(
+      `module m(input clk, input d);
+  reg q, r;
+  always @(posedge clk)
+  begin
+    q <= d;
+    r <= q;
+  end
+endmodule`,
+      "m.v",
+    );
+    const proc = items.find((i) => i.kind === "process");
+    expect(proc?.name).toBe("always @(posedge clk) → q, r");
+  });
+
   it("例化进大纲：inst : module 形式", () => {
     const items = extractOutline(
       `module top;

@@ -1,6 +1,7 @@
 import type monacoNs from "monaco-editor";
 import { currentTheme, toggleTheme } from "./theme";
 import { setIcon } from "./icons";
+import { activateMenu } from "./menu-keyboard";
 
 export interface StatusBarCallbacks {
   onReopen(encoding: string): void;
@@ -29,10 +30,11 @@ export class StatusBar {
   private rootEl: HTMLElement;
   private posEl: HTMLSpanElement;
   private langEl: HTMLSpanElement;
-  private encEl: HTMLSpanElement;
+  private encEl: HTMLButtonElement;
   private themeEl: HTMLButtonElement;
   private callbacks: StatusBarCallbacks;
   private menu: HTMLDivElement | null = null;
+  private releaseKeyboard?: () => void;
   private hintEl!: HTMLSpanElement;
   private bcEl!: HTMLSpanElement;
   private hintTimer: number | undefined;
@@ -60,7 +62,10 @@ export class StatusBar {
     this.posEl.className = "status-item";
     this.langEl = document.createElement("span");
     this.langEl.className = "status-item";
-    this.encEl = document.createElement("span");
+    this.encEl = document.createElement("button");
+    this.encEl.type = "button";
+    this.encEl.title = "选择文件编码";
+    this.encEl.setAttribute("aria-haspopup", "menu");
     this.encEl.className = "status-item clickable";
     this.encEl.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -117,6 +122,7 @@ export class StatusBar {
     this.posEl.textContent = lang ? this.posEl.textContent || "行 1, 列 1" : "";
     this.langEl.textContent = lang ?? "";
     this.encEl.textContent = encoding ? (ENCODING_LABELS[encoding] ?? encoding) : "";
+    this.encEl.disabled = !encoding;
     if (!lang) this.bcEl.textContent = "";
   }
 
@@ -147,10 +153,11 @@ export class StatusBar {
     menu.addEventListener("click", (e) => e.stopPropagation());
     this.rootEl.appendChild(menu);
     this.menu = menu;
+    this.releaseKeyboard = activateMenu(menu, () => this.closeMenu(), this.encEl);
   }
 
-  private menuItem(text: string, action: () => void): HTMLDivElement {
-    const item = document.createElement("div");
+  private menuItem(text: string, action: () => void): HTMLButtonElement {
+    const item = document.createElement("button"); item.type = "button"; item.setAttribute("role", "menuitem");
     item.className = "menu-item";
     item.textContent = text;
     item.addEventListener("click", () => {
@@ -161,6 +168,7 @@ export class StatusBar {
   }
 
   private closeMenu(): void {
+    this.releaseKeyboard?.(); this.releaseKeyboard = undefined;
     this.menu?.remove();
     this.menu = null;
   }

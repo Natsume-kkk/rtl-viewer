@@ -47,6 +47,11 @@ export function showInFolder(path: string): Promise<void> {
   return invoke<void>("show_in_folder", { path });
 }
 
+/** 打开目录本身，不在父目录中选中它。 */
+export function openDirectory(path: string): Promise<void> {
+  return invoke<void>("open_directory", { path });
+}
+
 export async function openFolderDialog(): Promise<string | null> {
   const selected = await open({ directory: true, title: "选择源码文件夹" });
   return typeof selected === "string" ? selected : null;

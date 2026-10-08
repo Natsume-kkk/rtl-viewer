@@ -1,23 +1,30 @@
+import { activateMenu } from "./menu-keyboard";
 /** 右键菜单与文件路径操作的公共件：树节点与标签页共用。 */
 
 export interface MenuItem {
   label: string;
   action: () => void;
+  checked?: boolean;
 }
 
 let ctxMenu: HTMLDivElement | null = null;
+let releaseKeyboard: (() => void) | undefined;
 
 export function closeCtxMenu(): void {
+  releaseKeyboard?.(); releaseKeyboard = undefined;
   ctxMenu?.remove();
   ctxMenu = null;
 }
 
-export function showCtxMenu(x: number, y: number, items: MenuItem[]): void {
+export function showCtxMenu(x: number, y: number, items: MenuItem[], anchor?: HTMLElement): void {
   closeCtxMenu();
   const menu = document.createElement("div");
   menu.className = "ctx-menu";
   for (const item of items) {
-    const row = document.createElement("div");
+    const row = document.createElement("button");
+    row.type = "button";
+    row.setAttribute("role", item.checked === undefined ? "menuitem" : "menuitemradio");
+    if (item.checked !== undefined) row.setAttribute("aria-checked", String(item.checked));
     row.className = "menu-item ctx-item";
     row.textContent = item.label;
     row.addEventListener("click", () => {
@@ -29,9 +36,10 @@ export function showCtxMenu(x: number, y: number, items: MenuItem[]): void {
   document.body.appendChild(menu);
   // 防出屏：先渲染再按实际尺寸收回视口内
   const rect = menu.getBoundingClientRect();
-  menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 4)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 4)}px`;
+  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - rect.width - 4))}px`;
+  menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - rect.height - 4))}px`;
   ctxMenu = menu;
+  releaseKeyboard = activateMenu(menu, closeCtxMenu, anchor);
 }
 
 document.addEventListener("click", closeCtxMenu);
@@ -64,6 +72,7 @@ export function fileBasename(path: string): string {
 
 export function fileDirname(path: string): string {
   const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  if (i === 2 && /^[A-Za-z]:/.test(path)) return path.slice(0, 3);
   return i > 0 ? path.slice(0, i) : path;
 }
 

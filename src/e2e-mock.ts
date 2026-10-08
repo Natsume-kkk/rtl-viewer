@@ -46,6 +46,7 @@ const internals: TauriInternals = {
       case "is_directory":
         return true; // e2e 拖放测试固定用 fixture 目录
       case "show_in_folder":
+      case "open_directory":
         return null; // e2e 环境不起资源管理器
       // 对话框：选文件夹固定返回 fixture，另存为写到 fixture 下的输出文件
       case "plugin:dialog|open":

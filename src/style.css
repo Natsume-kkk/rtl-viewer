@@ -1278,8 +1278,8 @@ button:focus-visible, [tabindex]:focus-visible, select:focus-visible, input:focu
 .icon-button { border: 0; background: transparent; color: var(--fg-secondary); width: 28px; height: 28px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; }
 .icon-button:hover { background: var(--surface-hover); color: var(--fg); }
 .micro { margin-left: auto; color: var(--fg-secondary); font: 10px var(--font-mono); font-weight: 400; }
-.root-selector { margin: 0 12px 14px; padding: 10px 11px; display: flex; flex-direction: column; gap: 6px; background: var(--surface-editor); border: 1px solid var(--border-strong); border-radius: 5px; }
-.root-selector > span { color: var(--fg-secondary); font-size: 10px; }
+.root-selector { margin: 0 12px 14px; padding: 5px 11px; display: flex; align-items: center; gap: 8px; background: var(--surface-editor); border: 1px solid var(--border-strong); border-radius: 5px; }
+.root-selector > span { flex: none; white-space: nowrap; color: var(--fg-secondary); font-size: 10px; }
 .tree { margin: 0 8px; }
 .tree ul { position: relative; }
 .tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -1298,7 +1298,30 @@ button:focus-visible, [tabindex]:focus-visible, select:focus-visible, input:focu
 .outline-row { width: 100%; background: transparent; border: 0; text-align: left; }
 .outline-list { padding: 0 8px 8px; }
 .breadcrumb { height: 37px; display: flex; align-items: center; gap: 6px; padding: 0 12px; border-bottom: 1px solid var(--border-subtle); font: 11px var(--font-mono); color: var(--fg-secondary); flex: none; background: var(--surface-editor); min-width: 0; }
-.breadcrumb-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.breadcrumb-path { display: flex; align-items: center; gap: 5px; flex: 1; white-space: nowrap; overflow: hidden; min-width: 0; }
+.path-segment, .path-overflow { flex: none; padding: 2px 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.path-segment:hover, .path-overflow:hover { color: var(--accent); text-decoration: underline; }
+.path-parent { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.path-file { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.path-separator { flex: none; color: var(--fg-secondary); }
+.new-file-control { display: inline-flex; align-items: center; }
+.new-file-control .new-file-types { padding: 0 5px; border-left: 1px solid var(--border-subtle); }
+button.menu-item, .recent-path, .recent-remove { display: block; width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.recent-path { min-width: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; }
+.recent-remove { width: auto; flex: none; padding: 2px; }
+button.menu-item:hover, button.menu-item:focus-visible, .recent-path:focus-visible, .recent-remove:focus-visible { background: var(--surface-hover); }
+[role="menuitemradio"][aria-checked="true"] { color: var(--accent); font-weight: 600; }
+button.status-item { border: 0; background: transparent; color: inherit; font: inherit; }
+.column-editor { width: 420px; max-height: calc(100vh - 40px); overflow-y: auto; }
+.column-editor h2 { margin: 0 0 10px; font-size: var(--fs-header); }
+.column-scope, .column-help { color: var(--fg-secondary); font-size: var(--fs-body); line-height: 1.5; }
+.column-mode { display: flex; align-items: center; gap: 6px; margin: 12px 0 6px; }
+.column-editor fieldset { border: 1px solid var(--border-subtle); margin: 0; padding: 10px; }
+.column-editor fieldset > label { display: grid; grid-template-columns: 90px minmax(0, 1fr); align-items: center; gap: 8px; margin: 6px 0; }
+.column-editor input:not([type="radio"]), .column-editor select { width: 100%; min-width: 0; padding: 4px 6px; background: var(--surface-editor); color: var(--fg); border: 1px solid var(--border-strong); font: inherit; }
+.column-editor :disabled { opacity: 0.55; }
+.column-preview { margin: 12px 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-secondary); font-family: var(--font-mono); }
+.column-error { color: var(--fg); margin: 8px 0; }
 #close-split { margin-left: auto; }
 .editor-foot { height: 28px; padding: 6px 15px; flex: none; border-top: 1px solid var(--border-subtle); color: var(--fg-secondary); background: var(--surface-editor); font: 10px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab > span { overflow: hidden; text-overflow: ellipsis; }

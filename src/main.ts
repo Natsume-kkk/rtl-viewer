@@ -14,7 +14,7 @@ import { NavHistory, type NavEntry } from "./model/history";
 import { scanStructure, parseFile, parseFileDetail, parseXci } from "./parser";
 import type { ModuleInfo, IpInfo, PortInfo, PortConnection } from "./parser";
 import { findSignalDeclLine } from "./model/signals";
-import { scanFolder, readFile, openFolderDialog, fileStates, pathExists, showInFolder, isDirectory } from "./ipc";
+import { scanFolder, readFile, openFolderDialog, fileStates, pathExists, showInFolder, openDirectory, isDirectory } from "./ipc";
 import { initMonaco, createEditor, monaco } from "./editor/monaco";
 import { registerCompletionProviders } from "./editor/completion";
 import { TabManager } from "./editor/tabs";
@@ -25,6 +25,9 @@ import { OutlineView } from "./ui/outline";
 import { SearchPanel } from "./ui/search";
 import { RecentMenu } from "./ui/recent";
 import { appAlert } from "./ui/dialog";
+import { createNewFileControl, preferredNewFileType } from "./ui/new-file";
+import { PathBreadcrumb } from "./ui/breadcrumb";
+import { openColumnEditor, registerColumnActions } from "./editor/column-editor";
 import { attachWindowControls } from "./ui/window-controls";
 import { initTheme } from "./ui/theme";
 import { setIcon } from "./ui/icons";
@@ -86,10 +89,11 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
     recentMenu.toggle();
   });
   openWrap.append(openBtn, recentBtn);
-  const newBtn = action("新建", "plus", () => activeGroup().tabs.newFile());
-  newBtn.title = "新建文件";
+  const newBtn = createNewFileControl(extension => activeGroup().tabs.newFile(extension, state.folder));
   const saveBtn = action("保存", "save", () => void activeGroup().tabs.save());
   saveBtn.title = "保存 (Ctrl+S)";
+  const columnBtn = action("列编辑", "split", () => void openColumnEditor(activeGroup().editor));
+  columnBtn.title = "列编辑 (Alt+C)；Alt+Shift+方向键或拖动选择矩形区域";
   const end = document.createElement("div");
   end.className = "toolbar-end";
   const searchBtn = action("搜索", "search", () => setSearchVisible(searchRoot.hidden));
@@ -117,7 +121,7 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   flowBtn.title = "信号链分析";
   flowBtn.setAttribute("aria-expanded", "false");
   end.append(searchBtn, splitBtn, mapBtn, flowBtn);
-  bar.append(openWrap, newBtn, saveBtn, end);
+  bar.append(openWrap, newBtn, saveBtn, columnBtn, end);
   const progress = document.createElement("div");
   progress.id = "progress";
   progress.className = "progress";
@@ -773,6 +777,7 @@ function wireEditor(ed: monaco.editor.IStandaloneCodeEditor, idx: number): void 
  * 不能用 ed.addAction 在两组各注册同 id 动作，会让按键分发失效。
  */
 function registerEditorActions(): void {
+  registerColumnActions();
   monaco.editor.addEditorAction({ id: "rtl.signal-flow", label: "分析信号链", contextMenuGroupId: "navigation", run: () => { setSignalFlowVisible(true); void analyzeCurrentSignal(); } });
   monaco.editor.addEditorAction({
     id: "rtl.view-portmap",
@@ -893,6 +898,11 @@ const groups: EditorGroup[] = [
 ];
 wireEditor(editor, 0);
 wireEditor(editor2, 1);
+const breadcrumbs = [1, 2].map(index => new PathBreadcrumb(
+  document.querySelector<HTMLElement>(`#breadcrumb-${index} .breadcrumb-path`)!,
+  path => void openDirectory(path).catch(error => statusbar.hint(`打开文件夹失败：${String(error)}`)),
+  path => void showInFolder(path).catch(error => statusbar.hint(`定位文件失败：${String(error)}`)),
+));
 registerEditorActions();
 setIcon(document.getElementById("close-split")!, "close");
 document.getElementById("close-split")!.addEventListener("click", collapseSplit);
@@ -900,11 +910,8 @@ document.getElementById("close-split")!.addEventListener("click", collapseSplit)
 function syncEditorChrome(idx: number): void {
   const g = groups[idx];
   const tab = g.tabs.activeTab;
-  const crumb = document.querySelector<HTMLElement>(`#breadcrumb-${idx + 1} .breadcrumb-path`)!;
   const foot = document.getElementById(`editor-foot-${idx + 1}`)!;
-  const path = tab ? displayPath(tab.path || tab.title) : "未打开文件";
-  crumb.textContent = path.replace(/\//g, " › ");
-  crumb.title = tab?.path || path;
+  breadcrumbs[idx].setPath(tab?.path ?? "", tab?.title ?? "未打开文件");
   foot.textContent = tab ? `${tab.title} · ${tab.model.getLanguageId()}` : "打开工程，开始阅读源码";
   foot.title = foot.textContent;
 }
@@ -1465,7 +1472,9 @@ initSplitter();
 // ---------- 全局快捷键与编辑联动 ----------
 
 window.addEventListener("keydown", (e) => {
-  if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === "ArrowLeft") {
+  if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
+    e.preventDefault(); activeGroup().tabs.newFile(preferredNewFileType(), state.folder);
+  } else if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === "ArrowLeft") {
     e.preventDefault();
     navBack();
   } else if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === "ArrowRight") {

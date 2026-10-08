@@ -2,12 +2,15 @@ import { monaco, langForFile } from "./monaco";
 import { readFile, writeFile, saveFileDialog, fileStates, showInFolder } from "../ipc";
 import { appAlert, appConfirm, choiceDialog } from "../ui/dialog";
 import { setIcon } from "../ui/icons";
-import { filePathMenuItems, showCtxMenu, type MenuItem } from "../ui/menu";
+import { fileDirname, filePathMenuItems, showCtxMenu, type MenuItem } from "../ui/menu";
+import type { NewFileType } from "../ui/new-file";
 
 export interface Tab {
   /** 磁盘路径；未命名新文件为空字符串 */
   path: string;
   title: string;
+  /** 新建时记录来源目录，首次保存不因切换标签而改变建议位置。 */
+  suggestedPath?: string;
   model: monaco.editor.ITextModel;
   /** model 的 uri 字符串，共享 model 存储的键 */
   uriKey: string;
@@ -128,9 +131,13 @@ export class TabManager {
     this.createTab(path, basename(path), content, encoding, mtime, line);
   }
 
-  newFile(): void {
+  newFile(extension: NewFileType = "v", projectFolder = ""): void {
+    const source = this.active?.path || this.active?.suggestedPath;
+    const directory = source ? fileDirname(source) : projectFolder;
     untitledSeq += 1;
-    this.createTab("", `untitled-${untitledSeq}`, "", "utf8", 0);
+    const title = `untitled-${untitledSeq}.${extension}`;
+    this.createTab("", title, "", "utf8", 0);
+    this.active!.suggestedPath = directory ? `${directory.replace(/[\\/]$/, "")}/${title}` : undefined;
   }
 
   /** 以指定编码重新读取当前文件并替换内容。 */
@@ -209,7 +216,7 @@ export class TabManager {
   }
 
   private async saveTabAs(tab: Tab): Promise<boolean> {
-    const target = await saveFileDialog(tab.path || undefined);
+    const target = await saveFileDialog(tab.path || tab.suggestedPath || tab.title);
     if (!target) return false;
     const ok = await this.doWrite(tab, target);
     if (ok && !tab.path) {
@@ -400,7 +407,7 @@ export class TabManager {
     const uriKey = path ? `file:///${path}` : `inmemory:///${title}`;
     const peer = [...TabManager.managers].flatMap(manager => manager.tabs).find(tab => tab.uriKey === uriKey);
     // 同路径跨组共享 model（分屏双视图编辑同步）；未命名文件 uri 唯一不共享
-    const model = acquireModel(uriKey, content, langForFile(path));
+    const model = acquireModel(uriKey, content, langForFile(path || title));
     const tab: Tab = {
       path,
       title,
@@ -468,6 +475,7 @@ export class TabManager {
     }
     this.active = tab;
     tab.element.classList.add("active");
+    tab.element.scrollIntoView?.({ block: "nearest", inline: "nearest" });
     this.editor.setModel(tab.model);
     const state = this.viewStates.get(tab.model);
     if (state) this.editor.restoreViewState(state);

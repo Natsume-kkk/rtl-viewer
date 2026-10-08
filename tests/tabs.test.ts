@@ -109,6 +109,7 @@ async function setup() {
     fileStates: vi.mocked(ipc.fileStates),
   };
   mocks.appConfirm.mockResolvedValue(true);
+  mocks.choiceDialog.mockResolvedValue(0);
   const make = () =>
     new TabManager(
       makeEditor() as unknown as ConstructorParameters<typeof TabManager>[0],
@@ -119,6 +120,66 @@ async function setup() {
 }
 
 describe("TabManager", () => {
+  it.each([
+    [0, "v", "verilog"],
+    [1, "vhd", "vhdl"],
+    [2, "sv", "verilog"],
+  ] as const)("新建类型 %s 在保存前启用 %s 语言，保存建议保留后缀", async (choice, ext, language) => {
+    const { make, mocks } = await setup();
+    mocks.choiceDialog.mockResolvedValue(choice);
+    const tm = make();
+    tm.newFile(ext);
+    const tab = tm.activeTab!;
+    expect(tab.title).toBe(`untitled-1.${ext}`);
+    expect(tab.uriKey).toBe(`inmemory:///untitled-1.${ext}`);
+    expect(tab.model.getLanguageId()).toBe(language);
+    expect(tab.path).toBe("");
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+    tab.model.setValue("source");
+    mocks.saveFileDialog.mockResolvedValue(null);
+    await expect(tm.save()).resolves.toBe(false);
+    expect(mocks.saveFileDialog).toHaveBeenCalledWith(tab.title);
+    expect(tab.model.getValue()).toBe("source");
+    expect(tab.dirty).toBe(true);
+    expect(tab.model.getLanguageId()).toBe(language);
+    mocks.saveFileDialog.mockResolvedValue(`D:/p/new.${ext}`);
+    mocks.writeFile.mockResolvedValue(500);
+    await expect(tm.save()).resolves.toBe(true);
+    expect(tab.model.getLanguageId()).toBe(language);
+    expect(tab.model.getValue()).toBe("source");
+    expect(tab.dirty).toBe(false);
+  });
+
+  it("新建优先沿用当前源码目录，连续新建和取消保存保留建议目录", async () => {
+    const { make, mocks } = await setup();
+    const tm = make();
+    tm.openContent("D:/p/rtl/current.v", "module current; endmodule", "utf8", 0);
+    tm.newFile("sv", "D:/p");
+    tm.newFile("vhd", "D:/p");
+    mocks.saveFileDialog.mockResolvedValue(null);
+    await tm.save();
+    expect(mocks.saveFileDialog).toHaveBeenCalledWith("D:/p/rtl/untitled-2.vhd");
+    expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("没有源码标签时首次保存建议工程根目录，激活标签滚入可视区", async () => {
+    const { make, mocks } = await setup();
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    const tm = make(); tm.newFile("v", "D:/project/");
+    mocks.saveFileDialog.mockResolvedValue(null); await tm.save();
+    expect(mocks.saveFileDialog).toHaveBeenCalledWith("D:/project/untitled-1.v");
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+  });
+
+  it("没有工程时连续新建不会把上个未命名文件当作目录", async () => {
+    const { make, mocks } = await setup();
+    const tm = make(); tm.newFile("v"); tm.newFile("vhd");
+    mocks.saveFileDialog.mockResolvedValue(null); await tm.save();
+    expect(mocks.saveFileDialog).toHaveBeenCalledWith("untitled-2.vhd");
+  });
+
   it("批量关闭取消时保留所有组的全部标签，包括干净标签", async () => {
     const { make, mocks } = await setup();
     const { TabManager } = await import("../src/editor/tabs");
@@ -141,7 +202,7 @@ describe("TabManager", () => {
     await expect(tm.closeAll()).resolves.toBe(false); expect(tm.count).toBe(1);
     mocks.writeFile.mockResolvedValue(200);
     await expect(tm.closeAll()).resolves.toBe(true); expect(tm.count).toBe(0);
-    tm.newFile(); tm.activeTab!.model.setValue("new source"); mocks.saveFileDialog.mockResolvedValue(null);
+    await tm.newFile(); tm.activeTab!.model.setValue("new source"); mocks.saveFileDialog.mockResolvedValue(null);
     await expect(tm.closeAll()).resolves.toBe(false); expect(tm.count).toBe(1);
   });
 
@@ -235,10 +296,10 @@ describe("TabManager", () => {
   it("H3: saveAs 后 model 迁移到新 uri，旧 model 释放，另一组按路径打开共享新 model", async () => {
     const { make, mocks } = await setup();
     const tm = make();
-    tm.newFile();
+    await tm.newFile();
     const tab = tm.activeTab!;
     const oldModel = tab.model;
-    expect(tab.uriKey).toBe("inmemory:///untitled-1");
+    expect(tab.uriKey).toBe("inmemory:///untitled-1.v");
     tab.model.setValue("module x;");
     expect(tab.dirty).toBe(true);
 
@@ -334,8 +395,8 @@ describe("TabManager", () => {
     const { make } = await setup();
     const g0 = make();
     const g1 = make();
-    g0.newFile();
-    g1.newFile();
+    await g0.newFile();
+    await g1.newFile();
     // 修复前：untitled 计数是实例字段，两组都从 1 开始，uriKey 相同导致共享 model
     expect(g0.activeTab!.uriKey).not.toBe(g1.activeTab!.uriKey);
     expect(g0.activeTab!.model).not.toBe(g1.activeTab!.model);

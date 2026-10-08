@@ -130,6 +130,19 @@ fn show_in_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn open_directory(path: String) -> Result<(), String> {
+    let directory = PathBuf::from(&path);
+    if !directory.is_absolute() || !directory.is_dir() {
+        return Err("Directory does not exist or is not absolute".into());
+    }
+    std::process::Command::new("explorer")
+        .arg(path.replace('/', "\\"))
+        .spawn()
+        .map_err(|e| format!("explorer failed: {e}"))?;
+    Ok(())
+}
+
 pub fn decode(bytes: &[u8]) -> (String, &'static str) {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         let body = &bytes[3..];
@@ -277,7 +290,8 @@ fn main() {
             file_states,
             path_exists,
             is_directory,
-            show_in_folder
+            show_in_folder,
+            open_directory
         ])
         .run(tauri::generate_context!())
         .expect("error while running rtl-viewer");

@@ -1,18 +1,20 @@
 /**
  * HDL 补全：当前文件信号/例化名（复用大纲解析，按 model 版本缓存）、语法关键字与
- * 常用块 snippet、工程模块名（选中时懒解析端口生成例化骨架，仅 Verilog）。
+ * 常用块 snippet、双语言例化骨架与连接上下文补全。
  * 性能：击键路径只有单文件解析缓存与内存索引查询，端口解析在 resolve（选中）阶段。
  */
 import { monaco, VERILOG_KEYWORDS, VHDL_KEYWORDS } from "./monaco";
 import { moduleInstSnippet, fileSymbolItems } from "./completion-items";
+import { connectionContext, instantiationContext } from "./completion-context";
 import type { ModuleDef } from "../model";
-import type { PortInfo } from "../parser";
+import type { PortInfo, ParameterInfo } from "../parser";
 
 export interface CompletionDeps {
   /** 工程模块索引（模块名补全），每次调用取最新 */
   allDefs(): ModuleDef[];
   /** 模块端口（选中例化补全项时才调用） */
   modulePorts(name: string): Promise<PortInfo[]>;
+  moduleParameters(name: string): ParameterInfo[];
 }
 
 const VERILOG_SNIPPETS: { label: string; snippet: string; detail: string }[] = [
@@ -45,7 +47,7 @@ export function registerCompletionProviders(deps: CompletionDeps): void {
   // 当前文件符号缓存：uri → model 版本对应的补全项
   const symbolCache = new Map<string, { version: number; items: { label: string; detail: string }[] }>();
   // resolve 阶段找回模块名（item 对象同一引用流经 resolve）
-  const moduleItemMeta = new WeakMap<object, string>();
+  const moduleItemMeta = new WeakMap<object, { name: string; lang: "verilog" | "vhdl"; label?: string; library?: string }>();
 
   function symbolsFor(model: monaco.editor.ITextModel): { label: string; detail: string }[] {
     const key = model.uri.toString();
@@ -61,7 +63,8 @@ export function registerCompletionProviders(deps: CompletionDeps): void {
     const keywords = lang === "verilog" ? VERILOG_KEYWORDS : VHDL_KEYWORDS;
     const snippets = lang === "verilog" ? VERILOG_SNIPPETS : VHDL_SNIPPETS;
     return {
-      provideCompletionItems(model, position) {
+      triggerCharacters: [".", "(", ",", ">"],
+      async provideCompletionItems(model, position, _context, token) {
         const word = model.getWordUntilPosition(position);
         const range = new monaco.Range(
           position.lineNumber,
@@ -71,6 +74,20 @@ export function registerCompletionProviders(deps: CompletionDeps): void {
         );
         const K = monaco.languages.CompletionItemKind;
         const suggestions: monaco.languages.CompletionItem[] = [];
+        const connection = connectionContext(model.getValue(), model.getOffsetAt(position), lang);
+        if (connection && !connection.value) {
+          const ports: PortInfo[] = connection.parameters ? deps.moduleParameters(connection.module) : await deps.modulePorts(connection.module);
+          if (token.isCancellationRequested || model.isDisposed()) return { suggestions: [] };
+          const key = (s: string) => lang === "vhdl" ? s.toLowerCase() : s;
+          for (const port of ports.filter(p => !connection.used.some(u => key(u) === key(p.name)))) {
+            const after = model.getLineContent(position.lineNumber).slice(word.endColumn - 1);
+            const existing = lang === "vhdl" ? /^\s*=>/.test(after) : /^\s*\(/.test(after);
+            suggestions.push({ label: port.name, kind: K.Field, detail: `${port.direction ?? "端口"} ${port.width ?? ""}`,
+              insertText: existing ? port.name : lang === "vhdl" ? `${port.name} => \${1:${port.name}}` : `${connection.dot ? "" : "."}${port.name}(\${1:${port.name}})`,
+              insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet, range, sortText: `0~${port.name}` });
+          }
+          return { suggestions };
+        }
 
         for (const s of symbolsFor(model)) {
           suggestions.push({
@@ -83,15 +100,18 @@ export function registerCompletionProviders(deps: CompletionDeps): void {
           });
         }
         for (const def of deps.allDefs()) {
+          if (connection) continue;
+          const context = instantiationContext(model.getLineContent(position.lineNumber).slice(0, word.startColumn - 1), lang);
           const item: monaco.languages.CompletionItem = {
             label: def.name,
             kind: K.Module,
-            detail: def.isIp ? "IP 核" : def.file.split("/").pop(),
+            detail: `${context ? "例化 · " : ""}${def.isIp ? "IP 核" : def.file.split("/").pop()}`,
             sortText: `2~${def.name}`,
             insertText: def.name,
-            range,
+            filterText: context ? model.getLineContent(position.lineNumber).slice(context.start, word.startColumn - 1) + def.name : def.name,
+            range: context ? new monaco.Range(position.lineNumber, context.start + 1, position.lineNumber, word.endColumn) : range,
           };
-          if (lang === "verilog") moduleItemMeta.set(item, def.name);
+          if (context) moduleItemMeta.set(item, { name: def.name, lang, label: context.label, library: context.library });
           suggestions.push(item);
         }
         for (const kw of keywords) {
@@ -117,12 +137,12 @@ export function registerCompletionProviders(deps: CompletionDeps): void {
         return { suggestions };
       },
       async resolveCompletionItem(item) {
-        // 选中 Verilog 模块项时懒解析端口，展开例化骨架
-        const name = moduleItemMeta.get(item);
-        if (!name) return item;
+        // 选中模块项时懒解析接口，展开当前语言的例化骨架
+        const meta = moduleItemMeta.get(item);
+        if (!meta) return item;
         try {
-          const ports = await deps.modulePorts(name);
-          item.insertText = moduleInstSnippet(name, ports);
+          const ports = await deps.modulePorts(meta.name);
+          item.insertText = moduleInstSnippet(meta.name, ports, meta.lang, meta.label, meta.library, deps.moduleParameters(meta.name));
           item.insertTextRules = monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet;
         } catch {
           // 端口解析失败保留纯名插入

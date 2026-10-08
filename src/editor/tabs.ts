@@ -82,7 +82,7 @@ export class TabManager {
     TabManager.managers.add(this);
     this.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void this.save();
-    });
+    }, `editorId == '${this.editor.getId()}' && editorTextFocus`);
   }
 
   get activeTab(): Tab | null {
@@ -195,13 +195,20 @@ export class TabManager {
   async save(): Promise<boolean> {
     const tab = this.active;
     if (!tab) return false;
-    if (!tab.path) return this.saveAs();
-    return this.doWrite(tab, tab.path);
+    return this.saveTab(tab);
+  }
+
+  private saveTab(tab: Tab): Promise<boolean> {
+    return tab.path ? this.doWrite(tab, tab.path) : this.saveTabAs(tab);
   }
 
   async saveAs(): Promise<boolean> {
     const tab = this.active;
     if (!tab) return false;
+    return this.saveTabAs(tab);
+  }
+
+  private async saveTabAs(tab: Tab): Promise<boolean> {
     const target = await saveFileDialog(tab.path || undefined);
     if (!target) return false;
     const ok = await this.doWrite(tab, target);
@@ -227,11 +234,44 @@ export class TabManager {
     return ok;
   }
 
-  async close(tab: Tab): Promise<void> {
-    if (tab.dirty) {
-      const ok = await appConfirm(`「${tab.title}」有未保存的修改，关闭将丢弃，继续？`);
-      if (!ok) return;
+  /** 全部确认和保存成功后才关闭任何标签；共享缓冲区仍有其他视图时不提示丢弃。 */
+  private static async confirmClose(selections: { manager: TabManager; tabs: Tab[] }[]): Promise<boolean> {
+    const closing = new Set(selections.flatMap(s => s.tabs));
+    const remainingModels = new Set([...TabManager.managers].flatMap(m => m.tabs.filter(t => !closing.has(t)).map(t => t.model)));
+    const dirty = new Map<monaco.editor.ITextModel, { manager: TabManager; tab: Tab }>();
+    for (const { manager, tabs } of selections) for (const tab of tabs) {
+      if (tab.dirty && !remainingModels.has(tab.model)) dirty.set(tab.model, { manager, tab });
     }
+    if (!dirty.size) return true;
+    const choice = await choiceDialog(`${dirty.size} 个文件有未保存的修改：\n${[...dirty.values()].map(({ tab }) => tab.path || tab.title).join("\n")}`, ["保存并关闭", "不保存", "取消"], 2);
+    if (choice === 1) return true;
+    if (choice !== 0) return false;
+    for (const { manager, tab } of dirty.values()) if (!(await manager.saveTab(tab))) return false;
+    return true;
+  }
+
+  static confirmExit(managers: TabManager[]): Promise<boolean> {
+    return TabManager.confirmClose(managers.map(manager => ({ manager, tabs: [...manager.tabs] })));
+  }
+
+  static async closeGroups(managers: TabManager[]): Promise<boolean> {
+    const selections = managers.map(manager => ({ manager, tabs: [...manager.tabs] }));
+    if (!(await TabManager.confirmClose(selections))) return false;
+    for (const { manager, tabs } of selections) for (const tab of tabs) manager.removeTab(tab);
+    return true;
+  }
+
+  private async closeTabs(tabs: Tab[]): Promise<boolean> {
+    if (!(await TabManager.confirmClose([{ manager: this, tabs }]))) return false;
+    for (const tab of tabs) this.removeTab(tab);
+    return true;
+  }
+
+  close(tab: Tab): Promise<boolean> {
+    return this.closeTabs(this.tabs.includes(tab) ? [tab] : []);
+  }
+
+  private removeTab(tab: Tab): void {
     const idx = this.tabs.indexOf(tab);
     if (idx < 0) return; // 标签已被关闭（双击关闭按钮等重复触发），splice(-1) 会误删末尾标签
     this.tabs.splice(idx, 1);
@@ -250,26 +290,19 @@ export class TabManager {
     }
   }
 
-  /** 关闭所有标签（脏标签逐个确认；取消确认的标签保留）。切换工程前调用。 */
-  async closeAll(): Promise<void> {
-    for (const t of [...this.tabs]) {
-      if (this.tabs.includes(t)) await this.close(t);
-    }
+  closeAll(): Promise<boolean> {
+    return this.closeTabs([...this.tabs]);
   }
 
   /** 关闭除 tab 外的所有标签（脏标签逐个确认）。 */
-  async closeOthers(tab: Tab): Promise<void> {
-    for (const t of [...this.tabs]) {
-      if (t !== tab && this.tabs.includes(t)) await this.close(t);
-    }
+  closeOthers(tab: Tab): Promise<boolean> {
+    return this.closeTabs(this.tabs.filter(t => t !== tab));
   }
 
   /** 关闭 tab 右侧的所有标签（脏标签逐个确认）。 */
-  async closeRight(tab: Tab): Promise<void> {
+  closeRight(tab: Tab): Promise<boolean> {
     const idx = this.tabs.indexOf(tab);
-    for (const t of [...this.tabs.slice(idx + 1)]) {
-      if (this.tabs.includes(t)) await this.close(t);
-    }
+    return this.closeTabs(idx < 0 ? [] : this.tabs.slice(idx + 1));
   }
 
   private showTabMenu(tab: Tab, x: number, y: number): void {
@@ -365,6 +398,7 @@ export class TabManager {
 
   private createTab(path: string, title: string, content: string, encoding: string, mtime: number, line?: number): void {
     const uriKey = path ? `file:///${path}` : `inmemory:///${title}`;
+    const peer = [...TabManager.managers].flatMap(manager => manager.tabs).find(tab => tab.uriKey === uriKey);
     // 同路径跨组共享 model（分屏双视图编辑同步）；未命名文件 uri 唯一不共享
     const model = acquireModel(uriKey, content, langForFile(path));
     const tab: Tab = {
@@ -372,10 +406,10 @@ export class TabManager {
       title,
       model,
       uriKey,
-      encoding,
-      dirty: false,
-      mtime,
-      externalChanged: false,
+      encoding: peer?.encoding ?? encoding,
+      dirty: peer?.dirty ?? false,
+      mtime: peer?.mtime ?? mtime,
+      externalChanged: peer?.externalChanged ?? false,
       element: document.createElement("li"),
     };
     this.watchContent(tab, model);
@@ -394,6 +428,9 @@ export class TabManager {
   private renderTab(tab: Tab): void {
     tab.element.textContent = "";
     tab.element.className = "tab";
+    const fileIcon = document.createElement("span");
+    fileIcon.className = "tab-file-icon";
+    setIcon(fileIcon, "module");
     const label = document.createElement("span");
     label.className = "tab-label";
     if (tab.dirty) {
@@ -410,15 +447,16 @@ export class TabManager {
     }
     label.appendChild(document.createTextNode(tab.title));
     label.title = tab.externalChanged ? "磁盘文件已被外部修改" : tab.path || "未保存";
-    const close = document.createElement("span");
+    const close = document.createElement("button");
     close.className = "tab-close";
     setIcon(close, "close");
     close.title = "关闭";
+    close.setAttribute("aria-label", `关闭 ${tab.title}`);
     close.addEventListener("click", (e) => {
       e.stopPropagation();
       void this.close(tab);
     });
-    tab.element.append(label, close);
+    tab.element.append(fileIcon, label, close);
     if (this.active === tab) tab.element.classList.add("active");
   }
 

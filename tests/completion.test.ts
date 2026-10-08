@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { moduleInstSnippet, fileSymbolItems } from "../src/editor/completion-items";
 import type { PortInfo } from "../src/parser";
+import { connectionContext, instantiationContext } from "../src/editor/completion-context";
 
 describe("例化骨架 snippet", () => {
+  it("VHDL 生成 entity 和 port map，保留已输入的例化标签与库", () => {
+    expect(moduleInstSnippet("child", [{ name: "clk" }, { name: "q" }], "vhdl")).toBe("${1:u_child} : entity work.child\n\tport map (\n\t\tclk => ${2:clk},\n\t\tq => ${3:q}\n\t);");
+    expect(moduleInstSnippet("child", [{ name: "clk" }], "vhdl", "dut", "lib")).toContain("dut : entity lib.child");
+    expect(moduleInstSnippet("empty", [], "vhdl")).toBe("${1:u_empty} : entity work.empty;$0");
+  });
   it("端口名为固定文本，连接信号为同名 Tab 占位，编号连续", () => {
     const ports: PortInfo[] = [
       { name: "i_clk", direction: "input", width: "" },
@@ -27,7 +33,26 @@ describe("例化骨架 snippet", () => {
   });
 });
 
+describe("未写完的例化补全上下文", () => {
+  const context = (s: string, lang: "vhdl" | "verilog") => connectionContext(s, s.length, lang);
+  it("Verilog 参数后端口补全排除已连接端口，表达式内补信号", () => {
+    expect(context("child #(.W(8)) u (.clk(clk), .", "verilog")).toMatchObject({ module: "child", used: ["clk"], value: false, dot: true });
+    expect(context("child u (.clk(cl", "verilog")?.value).toBe(true);
+    expect(context("module top(input cl", "verilog")).toBeUndefined();
+  });
+  it("VHDL 架构/generic map 后支持 port map 和大小写写法", () => {
+    expect(context("u : entity work.child(rtl) generic map (W => 8) PORT MAP (CLK => clk, ", "vhdl")).toMatchObject({ module: "child", used: ["CLK"], value: false });
+    expect(context("u : child port map (clk => cl", "vhdl")?.value).toBe(true);
+    expect(instantiationContext("  dut : entity lib.", "vhdl")).toEqual({ start: 2, label: "dut", library: "lib" });
+    expect(instantiationContext("assign a = ", "verilog")).toBeUndefined();
+  });
+});
+
 describe("当前文件符号补全项", () => {
+  it("连接右侧补全包含两种语言的头部端口和参数", () => {
+    expect(fileSymbolItems("module m #(parameter W=8)(input clk); endmodule", "m.v").map(i => i.label)).toEqual(expect.arrayContaining(["clk", "W"]));
+    expect(fileSymbolItems("entity m is generic(W:integer:=8); port(clk:in bit); end m;", "m.vhd").map(i => i.label)).toEqual(expect.arrayContaining(["clk", "W"]));
+  });
   it("提取信号与例化名，去重", () => {
     const items = fileSymbolItems(
       `module top;

@@ -1,4 +1,5 @@
 import type { DefinitionRef, InstanceInfo, ModuleInfo, PortInfo } from "./types";
+import { parseParameters } from "./parameters";
 
 function computeLineStarts(s: string): number[] {
   const starts = [0];
@@ -31,7 +32,7 @@ function skipBalanced(s: string, i: number): number {
 }
 
 /** 去掉注释与字符串内容，保留长度和换行。跟踪字符串状态（`""` 为转义引号），支持 VHDL-2008 块注释。 */
-export function stripVhdlComments(src: string): string {
+export function stripVhdlComments(src: string, maskStrings = true): string {
   const out = src.split("");
   let i = 0;
   while (i < src.length) {
@@ -69,6 +70,7 @@ export function stripVhdlComments(src: string): string {
         j++;
       }
       if (j < src.length) out[j] = " ";
+      if (!maskStrings) for (let k = i; k <= j && k < src.length; k++) out[k] = src[k];
       i = j + 1;
     } else {
       i++;
@@ -162,6 +164,7 @@ function findEnd(stripped: string, from: number, name: string, extraTag?: string
 /** 完整解析：entity 定义、端口、例化（component / direct entity，按 architecture 归属）。withPorts=false 时跳过端口提取（第一级结构扫描用）；withConn=true 时额外提取 port map 连接（悬停端口映射用）。 */
 export function parseVhdl(src: string, file: string, withPorts = true, withConn = false): ModuleInfo[] {
   const stripped = stripVhdlComments(src);
+  const expressions = withPorts || withConn ? stripVhdlComments(src, false) : "";
   const lineStarts = computeLineStarts(stripped);
   const byName = new Map<string, ModuleInfo>();
 
@@ -173,7 +176,13 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
     const body = stripped.slice(entRe.lastIndex, bodyEnd);
 
     let ports: PortInfo[] = [];
+    let parameters: ModuleInfo["parameters"];
     if (withPorts) {
+      const generic = /\bgeneric\s*\(/i.exec(body);
+      if (generic) {
+        const open = generic.index + generic[0].length - 1, close = skipBalanced(body, open);
+        if (close > 0) parameters = parseParameters(body.slice(open + 1, close - 1), expressions.slice(entRe.lastIndex + open + 1, entRe.lastIndex + close - 1), true);
+      }
       const portKw = /\bport\s*\(/i.exec(body);
       if (portKw) {
         const open = portKw.index + portKw[0].length - 1;
@@ -187,6 +196,7 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
       file,
       line: lineAt(lineStarts, m.index),
       ports,
+      ...(parameters ? { parameters } : {}),
       instances: [],
     });
     entRe.lastIndex = bodyEnd;
@@ -242,7 +252,7 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
           const open = im.index + pm.index + pm[0].length - 1;
           const close = skipBalanced(body, open);
           if (close > 0) {
-            info.connections = parseVhdlConnections(body.slice(open + 1, close - 1), bodyStart + open + 1, lineStarts);
+            info.connections = parseVhdlConnections(body.slice(open + 1, close - 1), bodyStart + open + 1, lineStarts, expressions);
             info.endLine = lineAt(lineStarts, bodyStart + close - 1);
           }
         }
@@ -258,6 +268,7 @@ function parseVhdlConnections(
   src: string,
   baseOffset: number,
   lineStarts: number[],
+  expressions: string,
 ): InstanceInfo["connections"] {
   const entries: { text: string; start: number }[] = [];
   let depth = 0, cur = "", curStart = 0;
@@ -275,7 +286,8 @@ function parseVhdlConnections(
   }
   entries.push({ text: cur, start: curStart });
   const out: NonNullable<InstanceInfo["connections"]> = [];
-  for (const { text, start } of entries) {
+  for (const { text: masked, start } of entries) {
+    const text = expressions.slice(baseOffset + start, baseOffset + start + masked.length);
     const expr = text.trim();
     if (!expr) continue;
     // 行号取条目内首个非空白字符（条目可能以换行开头）

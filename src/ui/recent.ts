@@ -40,6 +40,8 @@ export class RecentMenu {
     this.menu = menu;
     this.renderItems();
     this.anchorEl.appendChild(menu);
+    const anchor = document.querySelector(".open-wrap")?.getBoundingClientRect();
+    if (anchor) { menu.style.top = `${anchor.bottom + 4}px`; menu.style.left = `${anchor.left}px`; }
   }
 
   close(): void {

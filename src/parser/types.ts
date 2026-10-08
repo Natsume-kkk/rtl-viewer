@@ -4,6 +4,8 @@ export interface PortInfo {
   width?: string;
 }
 
+export interface ParameterInfo { name: string; defaultValue?: string }
+
 export interface PortConnection {
   /** 命名连接的端口名；位置连接无此字段 */
   port?: string;
@@ -27,6 +29,7 @@ export interface ModuleInfo {
   file: string;
   line: number;
   ports: PortInfo[];
+  parameters?: ParameterInfo[];
   instances: InstanceInfo[];
 }
 

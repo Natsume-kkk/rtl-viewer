@@ -68,10 +68,13 @@ vi.mock("../src/ui/dialog", () => ({
   appAlert: vi.fn(),
 }));
 
+let editorSeq = 0;
 function makeEditor() {
   let model: unknown = null;
+  const id = `test-editor-${++editorSeq}`;
   return {
     addCommand: vi.fn(),
+    getId: () => id,
     getModel: () => model,
     setModel: (m: unknown) => {
       model = m;
@@ -116,6 +119,78 @@ async function setup() {
 }
 
 describe("TabManager", () => {
+  it("批量关闭取消时保留所有组的全部标签，包括干净标签", async () => {
+    const { make, mocks } = await setup();
+    const { TabManager } = await import("../src/editor/tabs");
+    const a = make(), b = make();
+    a.openContent("D:/p/clean.v", "clean", "utf8", 0);
+    b.openContent("D:/p/dirty.v", "old", "utf8", 0);
+    b.activeTab!.model.setValue("edited");
+    mocks.choiceDialog.mockResolvedValue(2);
+    await expect(TabManager.closeGroups([a, b])).resolves.toBe(false);
+    expect(a.count).toBe(1); expect(b.count).toBe(1);
+    expect(b.activeTab!.model.getValue()).toBe("edited");
+    expect(mocks.choiceDialog).toHaveBeenCalledWith(expect.any(String), ["保存并关闭", "不保存", "取消"], 2);
+  });
+
+  it("保存后关闭成功才移除标签，写失败和另存为取消均保留全部标签", async () => {
+    const { make, mocks } = await setup();
+    const tm = make(); tm.openContent("D:/p/a.v", "old", "utf8", 0);
+    tm.activeTab!.model.setValue("edited");
+    mocks.choiceDialog.mockResolvedValue(0); mocks.writeFile.mockRejectedValueOnce(new Error("disk full"));
+    await expect(tm.closeAll()).resolves.toBe(false); expect(tm.count).toBe(1);
+    mocks.writeFile.mockResolvedValue(200);
+    await expect(tm.closeAll()).resolves.toBe(true); expect(tm.count).toBe(0);
+    tm.newFile(); tm.activeTab!.model.setValue("new source"); mocks.saveFileDialog.mockResolvedValue(null);
+    await expect(tm.closeAll()).resolves.toBe(false); expect(tm.count).toBe(1);
+  });
+
+  it("共享脏缓冲区关闭一侧不丢内容，全部退出只确认和保存一次", async () => {
+    const { make, mocks } = await setup();
+    const { TabManager } = await import("../src/editor/tabs");
+    const a = make(), b = make();
+    for (const tm of [a, b]) tm.openContent("D:/p/shared.v", "old", "utf8", 0);
+    a.activeTab!.model.setValue("edited");
+    await expect(a.closeAll()).resolves.toBe(true); expect(mocks.choiceDialog).not.toHaveBeenCalled();
+    expect(b.activeTab!.model.getValue()).toBe("edited");
+    a.openContent("D:/p/shared.v", "old", "utf8", 0);
+    expect(a.activeTab!.dirty).toBe(true);
+    await b.closeAll();
+    expect(a.activeTab!.dirty).toBe(true);
+    b.openContent("D:/p/shared.v", "old", "utf8", 0);
+    mocks.choiceDialog.mockResolvedValue(0); mocks.writeFile.mockResolvedValue(300);
+    await expect(TabManager.confirmExit([a, b])).resolves.toBe(true);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(1); expect(a.count).toBe(1); expect(b.count).toBe(1);
+  });
+
+  it("不保存关闭不写磁盘，关闭非活动脏标签保存正确的文件", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    tm.openContent("D:/p/a.v", "old", "utf8", 0); const first = tm.activeTab!; first.model.setValue("edited");
+    tm.openContent("D:/p/b.v", "other", "utf8", 0);
+    mocks.choiceDialog.mockResolvedValueOnce(0); mocks.writeFile.mockResolvedValue(100);
+    await expect(tm.close(first)).resolves.toBe(true);
+    expect(mocks.writeFile).toHaveBeenCalledWith("D:/p/a.v", "edited", "utf8");
+    tm.activeTab!.model.setValue("discard"); mocks.writeFile.mockClear(); mocks.choiceDialog.mockResolvedValue(1);
+    await expect(tm.closeAll()).resolves.toBe(true); expect(mocks.writeFile).not.toHaveBeenCalled();
+  });
+  it("Ctrl+S 只保存聚焦编辑组，另一侧关闭后仍可保存左侧", async () => {
+    const { mocks } = await setup();
+    const { TabManager } = await import("../src/editor/tabs");
+    const editors = [makeEditor(), makeEditor()];
+    const managers = editors.map(ed => new TabManager(ed as unknown as ConstructorParameters<typeof TabManager>[0], document.createElement("ul"), makeEvents()));
+    managers[0].openContent("D:/p/left.v", "left", "utf8", 0);
+    managers[1].openContent("D:/p/right.v", "right", "utf8", 0);
+    await managers[1].closeAll();
+    managers[0].activeTab!.model.setValue("left edited");
+    mocks.writeFile.mockResolvedValue(200);
+    // Monaco 的动态快捷键共享注册表，后注册者优先；只有 context 匹配才生效。
+    const commands = editors.flatMap(ed => ed.addCommand.mock.calls);
+    const applicable = commands.filter(([, , context]) => !context || context.includes(editors[0].getId()));
+    applicable.at(-1)![1]();
+    await vi.waitFor(() => expect(mocks.writeFile).toHaveBeenCalledWith("D:/p/left.v", "left edited", "utf8"));
+    expect(managers[0].activeTab!.dirty).toBe(false);
+  });
+
   it("编辑标脏，保存后清脏并更新 mtime", async () => {
     const { make, mocks } = await setup();
     mocks.readFile.mockResolvedValue({ content: "module a;", encoding: "utf8", mtime: 100 });

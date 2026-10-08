@@ -18,6 +18,34 @@ function makeTree(callbacks: ConstructorParameters<typeof HierarchyTree>[1]) {
 }
 
 describe("HierarchyTree", () => {
+  it("键盘可展开、逐行导航、打开定义及聚焦跳转按钮，完整名称留在提示中", () => {
+    const onOpen = vi.fn();
+    const onOpenInst = vi.fn();
+    const { rootEl, tree } = makeTree({ onOpen, onOpenInst });
+    document.body.append(rootEl);
+    const child = node({ key: "top/u_long", label: "u_very_long_instance_name", moduleName: "actual_module_definition", instFile: "top.v", instLine: 9 });
+    tree.render({ tops: [node({ key: "top", label: "top", moduleName: "top", children: [child] })], topCandidates: ["top"], unused: [] });
+    const key = (value: string) => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true }));
+    rootEl.querySelector<HTMLElement>(".tree-row")!.focus();
+    key("ArrowLeft");
+    expect(rootEl.querySelectorAll(".tree-row")).toHaveLength(1);
+    expect(document.activeElement?.getAttribute("aria-expanded")).toBe("false");
+    key("ArrowRight");
+    key("ArrowDown");
+    expect(document.activeElement?.getAttribute("title")).toContain("actual_module_definition");
+    expect(rootEl.querySelectorAll(".tree-label")[1].textContent).toBe(child.label);
+    key("Enter");
+    expect(onOpen).toHaveBeenCalledWith(child);
+    const jump = rootEl.querySelector<HTMLButtonElement>("button.tree-inst")!;
+    jump.focus();
+    expect(document.activeElement).toBe(jump);
+    expect(jump.getAttribute("aria-label")).toContain(child.label);
+    jump.click();
+    expect(onOpenInst).toHaveBeenCalledWith(child);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    rootEl.remove();
+  });
+
   it("多顶层候选渲染切换下拉，选择回调 onSelectTop", () => {
     const onSelectTop = vi.fn();
     const { rootEl, tree } = makeTree({ onOpen: vi.fn(), onSelectTop });
@@ -35,7 +63,7 @@ describe("HierarchyTree", () => {
     expect(onSelectTop).toHaveBeenCalledWith("mod_b");
   });
 
-  it("渲染顶层与子节点，IP/unresolved/recursive 标记正确", () => {
+  it("渲染顶层与子节点，IP/原语/未解析类型可区分且保留循环标记", () => {
     const onOpen = vi.fn();
     const { rootEl, tree } = makeTree({ onOpen });
     const h: Hierarchy = {
@@ -48,6 +76,7 @@ describe("HierarchyTree", () => {
             node({ key: "top/u_ip", label: "u_ip", moduleName: "clk_wiz_0", kind: "ip" }),
             node({ key: "top/u_m", label: "u_m", moduleName: "missing", kind: "unresolved" }),
             node({ key: "top/u_r", label: "u_r", moduleName: "top", recursive: true }),
+            node({ key: "top/u_buf", label: "u_buf", moduleName: "BUFG", kind: "primitive" }),
           ],
         }),
       ],
@@ -61,6 +90,12 @@ describe("HierarchyTree", () => {
     expect(ipLabel?.querySelector(".icon-ip-diamond svg")).toBeTruthy();
     const unLabel = labels.find((el) => el.textContent === "u_m");
     expect(unLabel?.querySelector(".icon-unresolved svg")).toBeTruthy();
+    const primitiveRow = rootEl.querySelector(".kind-primitive")!;
+    expect(primitiveRow.querySelector(".icon-primitive svg")).toBeTruthy();
+    expect(primitiveRow.querySelector(".icon-module")).toBeNull();
+    expect(primitiveRow.getAttribute("aria-label")).toBe("u_buf，厂商原语 BUFG");
+    expect(primitiveRow.querySelector(".tree-type")?.getAttribute("title")).toBe("厂商原语 · BUFG");
+    expect(rootEl.querySelector(".kind-unresolved")?.getAttribute("title")).toContain("未解析模块 · missing");
     expect(labels.some((t) => t.textContent?.includes("(recursive)"))).toBe(true);
 
     const rows = rootEl.querySelectorAll(".tree-row");

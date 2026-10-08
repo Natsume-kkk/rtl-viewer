@@ -10,7 +10,7 @@ import type { Hierarchy, TreeNode, InstanceSite } from "./model/hierarchy";
 import { extractOutline, breadcrumbAt, OUTLINE_KIND_LABELS } from "./model/outline";
 import type { OutlineItem } from "./model/outline";
 import { searchContents } from "./model/search";
-import { NavHistory } from "./model/history";
+import { NavHistory, type NavEntry } from "./model/history";
 import { scanStructure, parseFile, parseFileDetail, parseXci } from "./parser";
 import type { ModuleInfo, IpInfo, PortInfo, PortConnection } from "./parser";
 import { findSignalDeclLine } from "./model/signals";
@@ -25,8 +25,13 @@ import { OutlineView } from "./ui/outline";
 import { SearchPanel } from "./ui/search";
 import { RecentMenu } from "./ui/recent";
 import { appAlert } from "./ui/dialog";
+import { attachWindowControls } from "./ui/window-controls";
 import { initTheme } from "./ui/theme";
 import { setIcon } from "./ui/icons";
+import type { IconName } from "./ui/icons";
+import { renderPortMap, type PortMapRow, type PortMapData } from "./ui/portmap";
+import { SignalProject, traceSignal, type SignalContext } from "./model/signal-flow";
+import { SignalFlowPanel } from "./ui/signal-flow";
 
 interface CachedFile {
   content: string;
@@ -54,40 +59,77 @@ const tabbarEl = document.getElementById("tabbar")!;
 const editorContainer = document.getElementById("editor-container")!;
 const statusbarEl = document.getElementById("statusbar")!;
 
-// 侧栏静态结构：工具条 / 进度 / 搜索 / 树容器 / 大纲（只建一次，各组件渲染进对应容器）
+// 全局工具栏与侧栏容器只建一次，各组件渲染进对应容器。
 function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlineRoot: HTMLElement } {
-  const bar = document.createElement("div");
-  bar.className = "sidebar-toolbar";
+  const bar = document.getElementById("toolbar")!;
+  setIcon(document.getElementById("project-icon")!, "folder");
+  const action = (label: string, icon: IconName, run: () => void) => {
+    const btn = document.createElement("button");
+    btn.className = "btn btn-ghost";
+    const glyph = document.createElement("span");
+    setIcon(glyph, icon);
+    btn.append(glyph, document.createTextNode(label));
+    btn.addEventListener("click", run);
+    return btn;
+  };
   const openWrap = document.createElement("span");
   openWrap.className = "open-wrap";
-  const openBtn = document.createElement("button");
+  const openBtn = action("打开文件夹", "folder", () => void openProject());
   openBtn.className = "btn btn-primary";
-  openBtn.textContent = "打开文件夹";
-  openBtn.addEventListener("click", () => void openProject());
   const recentBtn = document.createElement("button");
   recentBtn.className = "btn btn-primary recent-btn";
   setIcon(recentBtn, "chevron-down");
   recentBtn.title = "最近打开的工程 (Ctrl+R)";
+  recentBtn.setAttribute("aria-label", "最近打开的工程");
   recentBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     recentMenu.toggle();
   });
   openWrap.append(openBtn, recentBtn);
-  const newBtn = document.createElement("button");
-  newBtn.className = "btn btn-ghost";
-  newBtn.textContent = "新建文件";
-  newBtn.addEventListener("click", () => activeGroup().tabs.newFile());
-  bar.append(openWrap, newBtn);
+  const newBtn = action("新建", "plus", () => activeGroup().tabs.newFile());
+  newBtn.title = "新建文件";
+  const saveBtn = action("保存", "save", () => void activeGroup().tabs.save());
+  saveBtn.title = "保存 (Ctrl+S)";
+  const end = document.createElement("div");
+  end.className = "toolbar-end";
+  const searchBtn = action("搜索", "search", () => setSearchVisible(searchRoot.hidden));
+  searchBtn.id = "search-action";
+  searchBtn.title = "全工程搜索 (Ctrl+Shift+F)";
+  searchBtn.setAttribute("aria-expanded", "false");
+  const shortcut = document.createElement("span");
+  shortcut.className = "shortcut";
+  shortcut.textContent = "Ctrl Shift F";
+  searchBtn.append(shortcut);
+  const splitBtn = action("分屏", "split", () => {
+    if (splitVisible) collapseSplit();
+    else if (groups[1].tabs.count) ensureSplit();
+    else void openInOtherGroup();
+  });
+  splitBtn.id = "split-action";
+  splitBtn.title = "分屏 (Ctrl+\\)";
+  const mapBtn = action("", "ports", togglePortMap);
+  mapBtn.id = "map-action";
+  mapBtn.title = "端口映射 (Ctrl+K)";
+  mapBtn.setAttribute("aria-label", "切换端口映射");
+  mapBtn.setAttribute("aria-expanded", "false");
+  const flowBtn = action("信号链", "ports", toggleSignalFlow);
+  flowBtn.id = "flow-action";
+  flowBtn.title = "信号链分析";
+  flowBtn.setAttribute("aria-expanded", "false");
+  end.append(searchBtn, splitBtn, mapBtn, flowBtn);
+  bar.append(openWrap, newBtn, saveBtn, end);
   const progress = document.createElement("div");
   progress.id = "progress";
   progress.className = "progress";
-  const searchRoot = document.createElement("div");
-  searchRoot.id = "search-root";
+  const searchRoot = document.getElementById("search-root")!;
   const treeRoot = document.createElement("div");
   treeRoot.id = "tree-root";
   const outlineRoot = document.createElement("div");
   outlineRoot.id = "outline-root";
-  sidebarEl.append(bar, progress, searchRoot, treeRoot, outlineRoot);
+  const foot = document.createElement("div");
+  foot.id = "sidebar-foot";
+  foot.textContent = "本地工程";
+  sidebarEl.append(progress, treeRoot, outlineRoot, foot);
   return { treeRoot, searchRoot, outlineRoot };
 }
 
@@ -121,12 +163,14 @@ const tree = new HierarchyTree(treeRootEl, {
   onOpen: (node) => void openTreeNode(node),
   onOpenInst: (node) => {
     if (node.instFile && node.instLine !== undefined) {
+      selectTreeInstance(node);
       void navigateTo(node.instFile, node.instLine);
     }
   },
   onRevealFile: (path) => void showInFolder(path),
   onSelectTop: (name) => {
     state.topName = name;
+    if (flowSelection) flowPanel.markStale();
     renderTree();
   },
   onOpenFile: (path) => void navigateTo(path),
@@ -145,52 +189,61 @@ const tree = new HierarchyTree(treeRootEl, {
 
 // ---------- 导航历史 ----------
 
-const history = new NavHistory();
+const histories = [new NavHistory(), new NavHistory()];
+let activeGroupIdx = 0;
 
-function currentPos(): { path: string; line: number } | undefined {
+function currentPos(): NavEntry | undefined {
   const g = activeGroup();
   const tab = g.tabs.activeTab;
   if (!tab?.path) return undefined;
-  return { path: tab.path, line: g.editor.getPosition()?.lineNumber ?? 1 };
+  const selection = g.editor.getSelection(), position = g.editor.getPosition();
+  return { path: tab.path, line: selection?.startLineNumber ?? position?.lineNumber ?? 1, column: selection?.startColumn ?? position?.column ?? 1,
+    length: selection && selection.startLineNumber === selection.endLineNumber ? selection.endColumn - selection.startColumn : 0 };
 }
 
 /** 工程内跳转统一入口：记录当前位置到历史，再打开目标位置。 */
-async function navigateTo(file: string, line?: number): Promise<void> {
+async function navigateTo(file: string, line?: number, column = 1, length = 0): Promise<void> {
+  const idx = activeGroupIdx;
   const cur = currentPos();
-  if (cur) history.push(cur);
-  await openProjectFile(file, line);
+  if (cur) histories[idx].push(cur);
+  await openProjectFile(file, line, idx, column, length);
   updateNavButtons();
 }
 
 function navBack(): void {
   const cur = currentPos();
   if (!cur) return;
-  const target = history.goBack(cur);
-  if (target) void openProjectFile(target.path, target.line).then(updateNavButtons);
+  const idx = activeGroupIdx, target = histories[idx].goBack(cur);
+  if (target) void openProjectFile(target.path, target.line, idx, target.column, target.length).then(updateNavButtons);
 }
 
 function navForward(): void {
   const cur = currentPos();
   if (!cur) return;
-  const target = history.goForward(cur);
-  if (target) void openProjectFile(target.path, target.line).then(updateNavButtons);
+  const idx = activeGroupIdx, target = histories[idx].goForward(cur);
+  if (target) void openProjectFile(target.path, target.line, idx, target.column, target.length).then(updateNavButtons);
 }
 
-const navBackBtn = document.createElement("li");
-navBackBtn.className = "nav-btn";
-setIcon(navBackBtn, "arrow-left");
-navBackBtn.title = "后退 (Alt+←)";
-navBackBtn.addEventListener("click", navBack);
-const navFwdBtn = document.createElement("li");
-navFwdBtn.className = "nav-btn";
-setIcon(navFwdBtn, "arrow-right");
-navFwdBtn.title = "前进 (Alt+→)";
-navFwdBtn.addEventListener("click", navForward);
-tabbarEl.prepend(navBackBtn, navFwdBtn);
+const navButtons = histories.map((_, idx) => {
+  const back = document.createElement("button"), forward = document.createElement("button");
+  for (const button of [back, forward]) button.className = "nav-btn";
+  setIcon(back, "arrow-left"); setIcon(forward, "arrow-right");
+  back.title = "后退 (Alt+←)"; forward.title = "前进 (Alt+→)";
+  back.setAttribute("aria-label", idx ? "右侧后退" : "后退");
+  forward.setAttribute("aria-label", idx ? "右侧前进" : "前进");
+  back.onclick = () => { focusGroup(idx); navBack(); };
+  forward.onclick = () => { focusGroup(idx); navForward(); };
+  document.getElementById(`breadcrumb-${idx + 1}`)!.prepend(back, forward);
+  return { back, forward };
+});
 
 function updateNavButtons(): void {
-  navBackBtn.classList.toggle("disabled", !history.canBack);
-  navFwdBtn.classList.toggle("disabled", !history.canForward);
+  navButtons.forEach(({ back, forward }, idx) => {
+    back.disabled = !histories[idx].canBack;
+    forward.disabled = !histories[idx].canForward;
+    back.classList.toggle("disabled", back.disabled);
+    forward.classList.toggle("disabled", forward.disabled);
+  });
 }
 updateNavButtons();
 
@@ -199,7 +252,7 @@ updateNavButtons();
 const outline = new OutlineView(outlineRootEl, {
   onJump: (line) => {
     const cur = currentPos();
-    if (cur) history.push(cur);
+    if (cur) histories[activeGroupIdx].push(cur);
     const ed = activeGroup().editor;
     ed.revealLineInCenter(line);
     ed.setPosition({ lineNumber: line, column: 1 });
@@ -248,19 +301,20 @@ function displayPath(file: string): string {
 }
 
 const searchPanel = new SearchPanel(searchRootEl, {
-  onSearch: (query, options) => searchContents(state.contents, query, options),
-  onOpen: (file, line) => void navigateTo(file, line),
+  onClose: () => { setSearchVisible(false); activeGroup().editor.focus(); },
+  onFocus: () => setSearchVisible(true, false),
+  onSearch: (query, options) => searchContents(new Map([...state.contents].map(([path, cached]) => [path, { ...cached, content: fileContent(path) ?? cached.content }])), query, options),
+  onOpen: (file, line, column, length) => void navigateTo(file, line, column, length),
   displayPath,
 });
 
-// ---------- 例化端口映射（悬停 + Ctrl+K 钉住） ----------
-
-interface PortMapRow {
-  direction: string;
-  width: string;
-  port?: string;
-  expr: string;
+function setSearchVisible(visible: boolean, focus = true): void {
+  searchRootEl.hidden = !visible;
+  document.getElementById("search-action")!.setAttribute("aria-expanded", String(visible));
+  if (visible && focus) searchPanel.focus();
 }
+
+// ---------- 例化端口映射（悬停预览 + 明确选择后保留） ----------
 
 /** 当前编辑内容的第三级解析缓存（按 model 版本失效），悬停高频触发不能每次重解析。 */
 const detailCache = new Map<string, { version: number; modules: ModuleInfo[] }>();
@@ -330,10 +384,9 @@ async function modulePorts(moduleName: string): Promise<PortInfo[]> {
   const def = state.index.resolve(moduleName);
   const key = moduleName.toLowerCase();
   if (def && !def.isIp) {
-    const cached = state.contents.get(def.file);
-    if (cached) {
-      ensureParsed(def.file, cached.content);
-      const mod = state.parsed.get(def.file)?.find((m) => m.name.toLowerCase() === key);
+    const content = fileContent(def.file);
+    if (content !== undefined) {
+      const mod = parseFile(content, def.file).find((m) => m.name.toLowerCase() === key);
       if (mod) return mod.ports;
     }
   }
@@ -461,6 +514,10 @@ monaco.languages.registerHoverProvider("vhdl", hoverProvider);
 registerCompletionProviders({
   allDefs: () => state.index.allDefs(),
   modulePorts,
+  moduleParameters: name => {
+    const def = state.index.resolve(name), content = def && fileContent(def.file);
+    return def && content ? parseFile(content, def.file).find(m => m.name.toLowerCase() === name.toLowerCase())?.parameters ?? [] : [];
+  },
 });
 
 // ---------- Ctrl+Shift+O 文件符号（与侧栏大纲共用 extractOutline） ----------
@@ -496,64 +553,165 @@ const symbolProvider: monaco.languages.DocumentSymbolProvider = {
 monaco.languages.registerDocumentSymbolProvider("verilog", symbolProvider);
 monaco.languages.registerDocumentSymbolProvider("vhdl", symbolProvider);
 
-/** 钉住的端口映射面板（Ctrl+K）。 */
-function pinPortMapPanel(
-  instName: string,
-  moduleName: string,
-  rows: PortMapRow[],
-  file: string,
-): void {
-  document.getElementById("portmap-panel")?.remove();
-  const panel = document.createElement("div");
-  panel.id = "portmap-panel";
+let mappingRequest = 0;
+let mappingStale = false;
+let mappingData: PortMapData | undefined;
+let mappingTarget: { file: string; line?: number; instance: string } | undefined;
 
-  const head = document.createElement("div");
-  head.className = "ip-panel-head";
-  const title = document.createElement("span");
-  title.textContent = `${instName} : ${moduleName}`;
-  const close = document.createElement("span");
-  close.className = "ip-panel-close";
-  setIcon(close, "close");
-  close.addEventListener("click", () => panel.remove());
-  head.append(title, close);
-  panel.appendChild(head);
-
-  const body = document.createElement("div");
-  body.className = "ip-panel-body";
-  const note = document.createElement("div");
-  note.className = "ip-panel-note";
-  note.textContent = "点端口跳定义，点信号跳声明";
-  body.appendChild(note);
-  const table = document.createElement("table");
-  for (const row of rows) {
-    const tr = document.createElement("tr");
-    const dirTd = document.createElement("td");
-    dirTd.textContent = row.direction;
-    const widthTd = document.createElement("td");
-    widthTd.textContent = row.width;
-    const portTd = document.createElement("td");
-    portTd.textContent = row.port ?? "?";
-    if (row.port) {
-      portTd.className = "pm-link";
-      portTd.addEventListener("click", () => gotoPortDecl(moduleName, row.port!));
-    }
-    const exprTd = document.createElement("td");
-    if (row.expr) {
-      exprTd.textContent = row.expr;
-      if (IDENT_RE.test(row.expr)) {
-        exprTd.className = "pm-link";
-        exprTd.addEventListener("click", () => gotoSignalDecl(file, row.expr));
-      }
-    } else {
-      exprTd.textContent = "（未连接）";
-      exprTd.className = "pm-unconnected";
-    }
-    tr.append(dirTd, widthTd, portTd, exprTd);
-    table.appendChild(tr);
+function renderMapping(): void {
+  if (!mappingData) return;
+  const { module: moduleName, file, line } = mappingData;
+  const panel = document.getElementById("mapping")!;
+  const def = state.index.resolve(moduleName);
+  renderPortMap(panel, mappingData, {
+    close: () => { setMappingVisible(false); document.getElementById("map-action")!.focus(); },
+    definition: () => { if (def) void navigateTo(def.file, def.line); },
+    origin: () => void navigateTo(file, line),
+    port: (name) => gotoPortDecl(moduleName, name),
+    signal: (name) => gotoSignalDecl(file, name),
+  });
+  if (mappingStale) {
+    const refresh = document.createElement("button"); refresh.className = "text-button result-stale";
+    refresh.textContent = "源码已变化，刷新端口连接";
+    refresh.onclick = () => void loadPortMap(file, line, mappingData?.instance);
+    panel.insertBefore(refresh, panel.children[1]);
   }
-  body.appendChild(table);
-  panel.appendChild(body);
-  document.getElementById("main-area")!.appendChild(panel);
+}
+
+/** 光标位于例化语句任意一行即可；树选择可显式指定父文件中的实例。 */
+async function loadPortMap(file?: string, line?: number, instance?: string): Promise<void> {
+  if (document.getElementById("mapping")!.hidden) return;
+  const request = ++mappingRequest;
+  const ed = activeGroup().editor;
+  const model = ed.getModel();
+  const modules = file ? parseFileDetail(fileContent(file) ?? "", file) : model ? detailForModel(model) : [];
+  const at = line ?? ed.getPosition()?.lineNumber ?? 1;
+  const candidates = modules.flatMap(m => m.instances).filter(i => !instance || i.inst === instance);
+  const hit = candidates.find(i => at >= i.line && at <= (i.endLine ?? i.line)) ?? (instance && candidates.length === 1 ? candidates[0] : undefined);
+  if (!hit) {
+    if (mappingData) { statusbar.hint("当前位置没有可识别的例化，保留原端口连接。"); return; }
+    const panel = document.getElementById("mapping")!;
+    panel.replaceChildren();
+    const head = document.createElement("div"); head.className = "panel-head"; head.textContent = "端口映射";
+    const close = document.createElement("button"); close.className = "icon-button"; close.setAttribute("aria-label", "收起端口映射");
+    setIcon(close, "close"); close.onclick = () => setMappingVisible(false); head.append(close);
+    const note = document.createElement("p"); note.className = "mapping-note"; note.textContent = "点击层级树中的例化，或将光标放到例化语句内，查看端口连接。";
+    panel.append(head, note);
+    return;
+  }
+  const rows = await buildPortMapRows(hit.module, hit.connections ?? []);
+  if (request !== mappingRequest || document.getElementById("mapping")!.hidden) return;
+  const def = state.index.resolve(hit.module);
+  mappingData = { instance: hit.inst, module: hit.module, rows, file: file ?? pathFromUri(model!.uri), line: hit.line, hasDefinition: !!def && !def.isIp };
+  mappingStale = false;
+  renderMapping();
+}
+
+function setMappingVisible(visible: boolean): void {
+  if (visible) setSignalFlowVisible(false);
+  if (!visible) mappingRequest++;
+  document.getElementById("mapping")!.hidden = !visible;
+  document.getElementById("map-action")!.setAttribute("aria-expanded", String(visible));
+}
+
+function togglePortMap(): void {
+  const panel = document.getElementById("mapping")!;
+  if (!panel.hidden) setMappingVisible(false);
+  else { setMappingVisible(true); if (!mappingData) void loadPortMap(mappingTarget?.file, mappingTarget?.line, mappingTarget?.instance); }
+}
+
+function selectTreeInstance(node: TreeNode): void {
+  treeContextPath = node.key;
+  if (!node.instFile || node.instLine === undefined) return;
+  mappingTarget = { file: node.instFile, line: node.instLine, instance: node.label };
+  mappingData = undefined;
+  mappingStale = false;
+  void loadPortMap(node.instFile, node.instLine, node.label);
+}
+
+function markResultsStale(): void {
+  searchPanel.markStale();
+  if (flowSelection) flowPanel.markStale();
+  if (mappingData && !mappingStale) {
+    mappingStale = true;
+    const panel = document.getElementById("mapping")!, scroll = panel.scrollTop;
+    renderMapping(); panel.scrollTop = scroll;
+  }
+}
+
+// ---------- 按需信号链：当前缓冲区快照，结果不随导航跳动 ----------
+let flowRequest = 0;
+let flowSelection: { project: SignalProject; signal: string; contexts: SignalContext[]; note: string; file: string; line: number; column: number } | undefined;
+let treeContextPath: string | undefined;
+let flowContextPath: string | undefined;
+const flowPanel = new SignalFlowPanel(document.getElementById("signal-flow")!, {
+  close: () => { setSignalFlowVisible(false); document.getElementById("flow-action")!.focus(); },
+  analyze: () => void analyzeCurrentSignal(),
+  refresh: () => { if (flowSelection) void analyzeCurrentSignal(flowSelection); },
+  context: index => void runSignalTrace(index),
+  navigate: (file, line) => void navigateTo(file, line),
+});
+
+function setSignalFlowVisible(visible: boolean): void {
+  if (visible) setMappingVisible(false);
+  document.getElementById("signal-flow")!.hidden = !visible;
+  document.getElementById("flow-action")!.setAttribute("aria-expanded", String(visible));
+}
+
+function toggleSignalFlow(): void {
+  const visible = document.getElementById("signal-flow")!.hidden;
+  setSignalFlowVisible(visible);
+  if (visible && !flowSelection) void analyzeCurrentSignal();
+}
+
+async function analyzeCurrentSignal(previous?: { file: string; line: number; column: number; signal: string }): Promise<void> {
+  ++flowRequest;
+  const ed = activeGroup().editor, model = ed.getModel(), position = ed.getPosition();
+  const word = previous?.signal ?? (model && position ? model.getWordAtPosition(position)?.word : undefined);
+  if ((!previous && (!model || !position)) || !word || !IDENT_RE.test(word)) {
+    if (flowSelection) statusbar.hint("请先选择信号名，原分析结果已保留。");
+    else flowPanel.message("请先在源码中选择一个信号名，再点击分析。");
+    return;
+  }
+  const files = new Map([...state.contents.keys()].map(file => [file, fileContent(file) ?? ""]));
+  const file = previous?.file ?? pathFromUri(model!.uri);
+  const line = previous ? findSignalDeclLine(fileContent(file) ?? "", file, word) ?? previous.line : position!.lineNumber;
+  const column = previous?.column ?? position!.column;
+  if (!previous) files.set(file, model!.getValue());
+  const structures = new Map(state.structures);
+  // 打开标签可能尚未保存，结构与连接均以本次分析的同一快照为准。
+  for (const group of groups) for (const [path, source] of files) {
+    if (group.tabs.findTab(path)) structures.set(path, scanStructure(source, path));
+  }
+  const project = new SignalProject(files, structures);
+  const owner = project.owner(file, line, column);
+  if (!owner) { statusbar.hint("当前位置不在可识别的 HDL 模块内，原结果已保留。"); return; }
+  const top = buildHierarchy(state.index, structures, state.topName).tops[0]?.moduleName ?? owner;
+  const found = project.contexts(top, owner);
+  const contexts = found.items.length ? found.items : [project.root(owner)!].filter(Boolean);
+  if (!contexts.length) { flowPanel.message("未找到当前模块定义。"); return; }
+  const note = found.truncated ? "实例路径列表已截断。" : found.items.length ? "" : "未定位到当前顶层内的实例，仅分析本模块范围。";
+  flowSelection = { project, signal: word, contexts, note, file, line, column };
+  flowPanel.clearStale();
+  const selected = Math.max(0, contexts.findIndex(c => c.path === (previous ? flowContextPath : treeContextPath)));
+  flowPanel.setContexts(contexts, selected);
+  await runSignalTrace(selected);
+}
+
+async function runSignalTrace(index: number): Promise<void> {
+  const selection = flowSelection;
+  if (!selection?.contexts[index]) return;
+  flowContextPath = selection.contexts[index].path;
+  const request = ++flowRequest;
+  flowPanel.message("正在追踪端口与直接赋值…");
+  const options = { cancelled: () => request !== flowRequest };
+  try {
+    const up = await traceSignal(selection.project, selection.contexts[index], selection.signal, "upstream", options);
+    const down = await traceSignal(selection.project, selection.contexts[index], selection.signal, "downstream", options);
+    if (request === flowRequest) flowPanel.result(selection.signal, up, down, selection.note);
+  } catch (error) {
+    if (request === flowRequest) flowPanel.message(`分析未完成：${String(error)}`);
+  }
 }
 
 /** 「查看例化处」结果面板：多处例化时列出父模块与位置，点击跳转。 */
@@ -597,6 +755,7 @@ function wireEditor(ed: monaco.editor.IStandaloneCodeEditor, idx: number): void 
   ed.onDidFocusEditorText(() => focusGroup(idx));
   // 共享 model 时两组编辑器都会收到内容事件，只让活动组触发大纲刷新
   ed.onDidChangeModelContent(() => {
+    markResultsStale();
     if (idx !== activeGroupIdx) return;
     refreshOutline();
   });
@@ -614,26 +773,15 @@ function wireEditor(ed: monaco.editor.IStandaloneCodeEditor, idx: number): void 
  * 不能用 ed.addAction 在两组各注册同 id 动作，会让按键分发失效。
  */
 function registerEditorActions(): void {
+  monaco.editor.addEditorAction({ id: "rtl.signal-flow", label: "分析信号链", contextMenuGroupId: "navigation", run: () => { setSignalFlowVisible(true); void analyzeCurrentSignal(); } });
   monaco.editor.addEditorAction({
-    id: "rtl.pin-portmap",
-    label: "例化端口映射",
+    id: "rtl.view-portmap",
+    label: "查看端口连接",
     keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
-    run: (ed) => {
-      const model = ed.getModel();
-      const pos = ed.getPosition();
-      const word = model && pos ? model.getWordAtPosition(pos) : null;
-      const hit =
-        model && pos && word
-          ? findInstanceAt(detailForModel(model), word.word, pos.lineNumber)
-          : undefined;
-      if (!model || !hit) {
-        statusbar.hint("光标不在例化名上");
-        return;
-      }
-      const inst = hit.inst;
-      void buildPortMapRows(inst.module, inst.connections ?? []).then((rows) =>
-        pinPortMapPanel(inst.inst, inst.module, rows, pathFromUri(model.uri)),
-      );
+    contextMenuGroupId: "navigation",
+    run: () => {
+      setMappingVisible(true);
+      void loadPortMap();
     },
   });
 
@@ -681,7 +829,7 @@ function registerEditorActions(): void {
         statusbar.hint("光标不在标识符上");
         return;
       }
-      searchPanel.searchAll(word);
+      searchPanel.searchAll(word, model?.getLanguageId() !== "vhdl");
     },
   });
 
@@ -704,19 +852,22 @@ interface EditorGroup {
 }
 
 let splitVisible = false;
-let activeGroupIdx = 0;
+let splitFlex = "";
 
 function makeTabEvents(idx: number): TabEvents {
   return {
     onActiveChange: () => {
       if (idx === 1 && groups[1].tabs.count === 0) collapseSplit();
+      syncEditorChrome(idx);
       if (idx === activeGroupIdx) syncChrome();
     },
     onFileReloaded: (path, content, encoding, mtime) => {
+      if (state.contents.get(path)?.content !== content) markResultsStale();
       state.contents.set(path, { content, encoding, mtime });
       updateStructure(path, content);
     },
     onFileSaved: (path, content, encoding, mtime) => {
+      if (state.contents.get(path)?.content !== content) markResultsStale();
       state.contents.set(path, { content, encoding, mtime });
       updateStructure(path, content);
     },
@@ -743,6 +894,20 @@ const groups: EditorGroup[] = [
 wireEditor(editor, 0);
 wireEditor(editor2, 1);
 registerEditorActions();
+setIcon(document.getElementById("close-split")!, "close");
+document.getElementById("close-split")!.addEventListener("click", collapseSplit);
+
+function syncEditorChrome(idx: number): void {
+  const g = groups[idx];
+  const tab = g.tabs.activeTab;
+  const crumb = document.querySelector<HTMLElement>(`#breadcrumb-${idx + 1} .breadcrumb-path`)!;
+  const foot = document.getElementById(`editor-foot-${idx + 1}`)!;
+  const path = tab ? displayPath(tab.path || tab.title) : "未打开文件";
+  crumb.textContent = path.replace(/\//g, " › ");
+  crumb.title = tab?.path || path;
+  foot.textContent = tab ? `${tab.title} · ${tab.model.getLanguageId()}` : "打开工程，开始阅读源码";
+  foot.title = foot.textContent;
+}
 
 function activeGroup(): EditorGroup {
   return groups[activeGroupIdx];
@@ -756,6 +921,7 @@ function focusGroup(idx: number): void {
 
 /** 同步状态栏/大纲等外围 UI 到当前活动组。 */
 function syncChrome(): void {
+  updateNavButtons();
   const g = activeGroup();
   const tab = g.tabs.activeTab;
   if (!tab) {
@@ -772,20 +938,27 @@ function syncChrome(): void {
 function ensureSplit(): void {
   if (splitVisible) return;
   splitVisible = true;
+  document.getElementById("split-action")!.setAttribute("aria-pressed", "true");
+  setMappingVisible(false);
+  setSignalFlowVisible(false);
   document.getElementById("group-2")!.hidden = false;
   document.getElementById("group-splitter")!.hidden = false;
+  document.getElementById("group-1")!.style.flex = splitFlex;
 }
 
 function collapseSplit(): void {
   if (!splitVisible) return;
   splitVisible = false;
+  document.getElementById("split-action")!.setAttribute("aria-pressed", "false");
   document.getElementById("group-2")!.hidden = true;
   document.getElementById("group-splitter")!.hidden = true;
+  splitFlex = document.getElementById("group-1")!.style.flex;
   document.getElementById("group-1")!.style.flex = "";
   if (activeGroupIdx === 1) {
     activeGroupIdx = 0;
     syncChrome();
   }
+  groups[0].editor.focus();
 }
 
 /** 当前文件在另一侧视图打开（Ctrl+\ / 编辑器右键）。 */
@@ -825,6 +998,18 @@ function initGroupSplitter(): void {
   });
 }
 initGroupSplitter();
+
+// Tauri 宿主负责标题栏拖动与双击最大化；纯浏览器预览不显示不可用的窗口按钮。
+if (!new URLSearchParams(location.search).has("e2e") && (await import("@tauri-apps/api/core")).isTauri()) {
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const disposeControls = await attachWindowControls(document.getElementById("window-controls")!, getCurrentWindow(), async () => {
+      if (document.querySelector(".choice-overlay")) return false;
+      return TabManager.confirmExit(groups.map(group => group.tabs));
+    }, message => statusbar.hint(message));
+    window.addEventListener("pagehide", disposeControls, { once: true });
+  } catch (error) { statusbar.hint(`窗口控制初始化失败：${String(error)}`); }
+}
 
 function updateStructure(path: string, content: string): void {
   if (!state.folder) return;
@@ -933,11 +1118,29 @@ async function openProject(): Promise<void> {
 
 /** 扫描代际：每次 openFolder 递增，进行中的旧扫描据此中止，防止跨工程污染 state。 */
 let scanGeneration = 0;
+let preparingProject = false;
 
 async function openFolder(folder: string): Promise<void> {
+  if (preparingProject) return;
+  preparingProject = true;
+  try { if (!(await TabManager.closeGroups(groups.map(g => g.tabs)))) return; }
+  finally { preparingProject = false; }
   const gen = ++scanGeneration;
-  for (const g of groups) await g.tabs.closeAll();
   state.folder = folder;
+  updateProjectChrome();
+  setMappingVisible(false);
+  document.getElementById("mapping")!.replaceChildren();
+  mappingData = undefined;
+  mappingStale = false;
+  mappingTarget = undefined;
+  setSignalFlowVisible(false);
+  ++flowRequest;
+  flowSelection = undefined;
+  flowContextPath = undefined;
+  flowPanel.clearStale();
+  treeContextPath = undefined;
+  flowPanel.setContexts([], 0);
+  flowPanel.message("将光标放在信号名上，然后点击分析。");
   addRecent(folder);
   state.topName = undefined;
   state.structures.clear();
@@ -948,7 +1151,7 @@ async function openFolder(folder: string): Promise<void> {
   // 端口缓存按工程失效：换工程后同名 IP（clk_wiz_0 等）不得沿用旧定义
   ipPortsCache.clear();
   detailCache.clear();
-  history.clear();
+  histories.forEach(history => history.clear());
   updateNavButtons();
   searchPanel.clear();
 
@@ -962,6 +1165,7 @@ async function openFolder(folder: string): Promise<void> {
     // 扫描失败（目录被删/无权限等）：回到空工程状态并提示，不得留下「扫描文件…」卡死的半初始化界面
     if (gen !== scanGeneration) return;
     state.folder = "";
+    updateProjectChrome();
     setProgress("");
     rebuildIndex();
     renderTree();
@@ -1021,6 +1225,17 @@ async function openFolder(folder: string): Promise<void> {
   startWatcher();
 }
 
+function updateProjectChrome(): void {
+  const name = state.folder.split(/[\\/]/).filter(Boolean).pop() || "未打开工程";
+  for (const id of ["project-name", "project-title"]) {
+    const el = document.getElementById(id)!;
+    el.textContent = name;
+    el.title = state.folder;
+  }
+  document.getElementById("sidebar-foot")!.textContent = state.folder ? "本地工程 · " + name : "本地工程";
+  document.getElementById("sidebar-foot")!.title = state.folder;
+}
+
 // ---------- 外部变更监视 ----------
 
 let watchTimer: number | undefined;
@@ -1054,6 +1269,7 @@ async function pollExternalChanges(): Promise<void> {
       }
       try {
         const fresh = await readFile(file);
+        if (fresh.content !== cached.content) markResultsStale();
         const openGroups = groups.filter((g) => g.tabs.findTab(file));
         const anyDirty = openGroups.some((g) => g.tabs.findTab(file)!.dirty);
         if (openGroups.length > 0 && !anyDirty) {
@@ -1080,6 +1296,7 @@ async function pollExternalChanges(): Promise<void> {
 
 /** 文件在磁盘被删除：打开中的标签保留缓冲区并打警示徽章，未打开的从索引移除。 */
 function handleExternalDelete(file: string): void {
+  markResultsStale();
   const openGroups = groups.filter((g) => g.tabs.findTab(file));
   if (openGroups.length > 0) {
     for (const g of openGroups) g.tabs.markExternalChanged(file, true);
@@ -1152,6 +1369,7 @@ async function rescanFolderDiff(): Promise<void> {
     changed = true;
   }
   if (changed) {
+    markResultsStale();
     rebuildIndex();
     renderTree();
   }
@@ -1161,7 +1379,7 @@ async function rescanFolderDiff(): Promise<void> {
 
 /** 打开工程内文件并跳转行：优先用扫描缓存，未缓存则读盘。树节点与编辑器跳转共用。
  *  targetIdx 指定目标编辑组（分屏「在另一侧打开」），缺省为当前活动组。 */
-async function openProjectFile(file: string, line?: number, targetIdx?: number): Promise<void> {
+async function openProjectFile(file: string, line?: number, targetIdx?: number, column = 1, length = 0): Promise<void> {
   const idx = targetIdx ?? activeGroupIdx;
   if (idx === 1) ensureSplit();
   const g = groups[idx];
@@ -1173,6 +1391,10 @@ async function openProjectFile(file: string, line?: number, targetIdx?: number):
     await g.tabs.openFile(file, line);
     const after = state.contents.get(file);
     if (after) ensureParsed(file, after.content);
+  }
+  if (line !== undefined && g.tabs.activeTab?.path === file) {
+    g.editor.setSelection(new monaco.Range(line, column, line, column + length));
+    g.editor.revealRangeInCenterIfOutsideViewport(new monaco.Range(line, column, line, column + length));
   }
 }
 
@@ -1193,6 +1415,7 @@ monaco.editor.registerEditorOpener({
 });
 
 async function openTreeNode(node: TreeNode): Promise<void> {
+  selectTreeInstance(node);
   // 单击进模块定义（直觉操作）；例化点由节点行的跳例化图标进入
   if (node.file) {
     await navigateTo(node.file, node.line);

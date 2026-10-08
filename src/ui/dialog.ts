@@ -4,7 +4,7 @@
  * appConfirm/appAlert 是其两键/单键封装，替代 Tauri 原生 confirm（原生弹窗
  * 跟随系统主题且 warning 级会播放系统提示音，应用内弹窗则静默并贴合主题）。
  */
-export function choiceDialog(message: string, options: string[]): Promise<number> {
+export function choiceDialog(message: string, options: string[], defaultIndex = 0): Promise<number> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
     overlay.className = "choice-overlay";
@@ -36,7 +36,7 @@ export function choiceDialog(message: string, options: string[]): Promise<number
       } else if (e.key === "Enter") {
         e.preventDefault();
         const idx = btns.indexOf(document.activeElement as HTMLButtonElement);
-        finish(idx >= 0 ? idx : 0);
+        finish(idx >= 0 ? idx : defaultIndex);
       } else if (e.key === "Tab") {
         // 焦点圈在按钮组内循环，不得 Tab 出弹窗
         e.preventDefault();
@@ -49,7 +49,7 @@ export function choiceDialog(message: string, options: string[]): Promise<number
     options.forEach((label, i) => {
       const btn = document.createElement("button");
       btn.textContent = label;
-      if (i === 0) btn.className = "primary";
+      if (i === defaultIndex) btn.className = "primary";
       btn.addEventListener("click", () => finish(i));
       buttons.appendChild(btn);
     });
@@ -61,7 +61,7 @@ export function choiceDialog(message: string, options: string[]): Promise<number
     box.append(msg, buttons);
     overlay.appendChild(box);
     document.body.appendChild(overlay);
-    (buttons.firstChild as HTMLButtonElement | null)?.focus();
+    (buttons.children[defaultIndex] as HTMLButtonElement | undefined)?.focus();
   });
 }
 

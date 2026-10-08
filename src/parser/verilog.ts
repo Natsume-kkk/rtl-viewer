@@ -1,4 +1,5 @@
 import type { DefinitionRef, InstanceInfo, ModuleInfo, PortInfo } from "./types";
+import { parseParameters } from "./parameters";
 
 const KEYWORDS = new Set([
   "module", "endmodule", "macromodule", "begin", "end", "if", "else", "always",
@@ -55,7 +56,7 @@ function skipBalanced(s: string, i: number): number {
 }
 
 /** 去掉注释与字符串内容，保留长度和换行，保证行号不变。 */
-export function stripComments(src: string): string {
+export function stripComments(src: string, maskStrings = true): string {
   const out = src.split("");
   let i = 0;
   while (i < src.length) {
@@ -90,6 +91,7 @@ export function stripComments(src: string): string {
         j++;
       }
       if (j < src.length) out[j] = " ";
+      if (!maskStrings) for (let k = i; k <= j && k < src.length; k++) out[k] = src[k];
       i = j + 1;
     } else {
       i++;
@@ -173,6 +175,7 @@ function parseConnections(
   src: string,
   baseOffset: number,
   lineStarts: number[],
+  expressions: string,
 ): InstanceInfo["connections"] {
   const entries: { text: string; start: number }[] = [];
   let depth = 0, cur = "", curStart = 0;
@@ -190,7 +193,8 @@ function parseConnections(
   }
   entries.push({ text: cur, start: curStart });
   const out: NonNullable<InstanceInfo["connections"]> = [];
-  for (const { text, start } of entries) {
+  for (const { text: masked, start } of entries) {
+    const text = expressions.slice(baseOffset + start, baseOffset + start + masked.length);
     // 行号取条目内首个非空白字符（条目可能以换行开头）
     const lead = /^\s*/.exec(text)![0].length;
     const line = lineAt(lineStarts, baseOffset + start + lead);
@@ -211,6 +215,7 @@ function scanInstances(
   lineStarts: number[],
   selfName: string,
   withConn: boolean,
+  expressions: string,
 ): InstanceInfo[] {
   const out: InstanceInfo[] = [];
   const re = /[A-Za-z_]\w*/g;
@@ -248,7 +253,7 @@ function scanInstances(
       if (body[k] !== ";" && body[k] !== ",") break;
       const info: InstanceInfo = { module: typeName, inst: instName, line: groupLine };
       if (withConn) {
-        info.connections = parseConnections(body.slice(p + 1, j - 1), bodyStart + p + 1, lineStarts);
+        info.connections = parseConnections(body.slice(p + 1, j - 1), bodyStart + p + 1, lineStarts, expressions);
         info.endLine = lineAt(lineStarts, bodyStart + j - 1);
       }
       out.push(info);
@@ -264,6 +269,7 @@ function scanInstances(
 /** 完整解析：module/interface 定义、端口、例化。withPorts=false 时跳过端口提取（第一级结构扫描用）；withConn=true 时额外提取例化端口连接（悬停端口映射用）。 */
 export function parseVerilog(src: string, file: string, withPorts = true, withConn = false): ModuleInfo[] {
   const stripped = stripComments(src);
+  const expressions = withPorts || withConn ? stripComments(src, false) : "";
   const lineStarts = computeLineStarts(stripped);
   const modules: ModuleInfo[] = [];
   const modRe = /\b(?:(?:macro)?module|interface)\s+([A-Za-z_]\w*)/g;
@@ -276,10 +282,12 @@ export function parseVerilog(src: string, file: string, withPorts = true, withCo
     const bodyEnd = endMatch ? endMatch.index : stripped.length;
 
     let i = skipAttrs(stripped, modRe.lastIndex);
+    let parameters: ModuleInfo["parameters"];
     if (stripped[i] === "#") {
       i = skipWs(stripped, i + 1);
       if (stripped[i] === "(") {
         const j = skipBalanced(stripped, i);
+        if (withPorts && j > 0) parameters = parseParameters(stripped.slice(i + 1, j - 1), expressions.slice(i + 1, j - 1), false);
         i = j < 0 ? i : skipWs(stripped, j);
       }
       i = skipAttrs(stripped, i);
@@ -301,12 +309,14 @@ export function parseVerilog(src: string, file: string, withPorts = true, withCo
       file,
       line: lineAt(lineStarts, m.index),
       ports,
+      ...(parameters ? { parameters } : {}),
       instances: scanInstances(
         stripped.slice(bodyStart, bodyEnd),
         bodyStart,
         lineStarts,
         name,
         withConn,
+        expressions,
       ),
     });
     modRe.lastIndex = endMatch ? endRe.lastIndex : stripped.length;

@@ -1,16 +1,19 @@
 import type { FileMatches, SearchOptions } from "../model/search";
 import { buildAllMatcher, countMatches } from "../model/search";
+import { setIcon } from "./icons";
 
 export interface SearchPanelCallbacks {
   /** 查询变化（已去抖）；options 为 Aa/整词/正则开关状态 */
   onSearch(query: string, options: SearchOptions): FileMatches[];
   /** 点击命中行：打开文件并跳转 */
-  onOpen(file: string, line: number): void;
+  onOpen(file: string, line: number, column: number, length: number): void;
   /** 路径转显示用相对路径 */
   displayPath(file: string): string;
+  onFocus?(): void;
+  onClose?(): void;
 }
 
-/** 侧栏全局搜索面板：输入框 + 大小写/整词/正则开关 + 按文件分组的结果列表。 */
+/** 独立搜索面板，不负责工程树或编辑器的可见状态。 */
 export class SearchPanel {
   private rootEl: HTMLElement;
   private input: HTMLInputElement;
@@ -22,11 +25,32 @@ export class SearchPanel {
   private callbacks: SearchPanelCallbacks;
   private options: SearchOptions = {};
   private debounceTimer: number | undefined;
+  private stale: HTMLButtonElement;
+  private hasRun = false;
 
   constructor(rootEl: HTMLElement, callbacks: SearchPanelCallbacks) {
     this.rootEl = rootEl;
     this.callbacks = callbacks;
     this.rootEl.className = "search-panel";
+    const resize = document.createElement("div"); resize.className = "search-resize";
+    resize.tabIndex = 0; resize.setAttribute("role", "separator"); resize.setAttribute("aria-label", "调整搜索面板高度"); resize.setAttribute("aria-orientation", "horizontal");
+    const height = (value: number) => {
+      const maximum = Math.max(140, (this.rootEl.parentElement?.clientHeight ?? 600) - 180);
+      const next = Math.min(Math.max(value, 140), maximum);
+      this.rootEl.style.height = `${next}px`; resize.setAttribute("aria-valuenow", String(Math.round(next)));
+    };
+    resize.addEventListener("keydown", event => {
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      event.preventDefault(); height(this.rootEl.clientHeight + (event.key === "ArrowUp" ? 24 : -24));
+    });
+    resize.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
+      event.preventDefault(); resize.setPointerCapture(event.pointerId);
+      const y = event.clientY, initial = this.rootEl.clientHeight;
+      const move = (e: PointerEvent) => height(initial + y - e.clientY);
+      const finish = () => { resize.removeEventListener("pointermove", move); resize.removeEventListener("pointerup", finish); resize.removeEventListener("pointercancel", finish); };
+      resize.addEventListener("pointermove", move); resize.addEventListener("pointerup", finish); resize.addEventListener("pointercancel", finish);
+    });
 
     const bar = document.createElement("div");
     bar.className = "search-bar";
@@ -37,14 +61,19 @@ export class SearchPanel {
     this.caseBtn = this.toggleButton("Aa", "区分大小写", "caseSensitive");
     this.wordBtn = this.toggleButton("词", "整词匹配", "wholeWord");
     this.regexBtn = this.toggleButton(".*", "正则表达式", "useRegex");
-    bar.append(this.input, this.caseBtn, this.wordBtn, this.regexBtn);
+    const label = document.createElement("span"); label.className = "search-heading"; label.textContent = "搜索";
+    const close = document.createElement("button"); close.className = "icon-button"; close.setAttribute("aria-label", "收起搜索"); close.title = "收起搜索（保留结果）"; setIcon(close, "close"); close.onclick = () => this.callbacks.onClose?.();
+    this.input.setAttribute("aria-label", "全工程搜索");
+    bar.append(label, this.input, this.caseBtn, this.wordBtn, this.regexBtn, close);
 
     this.countEl = document.createElement("div");
     this.countEl.className = "search-count";
     this.resultsEl = document.createElement("div");
     this.resultsEl.className = "search-results";
 
-    this.rootEl.append(bar, this.countEl, this.resultsEl);
+    this.stale = document.createElement("button"); this.stale.className = "text-button result-stale";
+    this.stale.textContent = "源码已变化，刷新搜索结果"; this.stale.hidden = true; this.stale.onclick = () => this.run();
+    this.rootEl.append(resize, bar, this.stale, this.countEl, this.resultsEl);
 
     this.input.addEventListener("input", () => {
       window.clearTimeout(this.debounceTimer);
@@ -55,7 +84,7 @@ export class SearchPanel {
         window.clearTimeout(this.debounceTimer);
         this.run();
       } else if (e.key === "Escape") {
-        this.clear();
+        this.callbacks.onClose?.();
       }
     });
   }
@@ -79,26 +108,33 @@ export class SearchPanel {
 
   /** 聚焦输入框并全选（Ctrl+Shift+F）。 */
   focus(): void {
+    this.callbacks.onFocus?.();
     this.input.focus();
     this.input.select();
   }
 
   /** 一键查引用：填入查询、强制整词匹配，立即执行并聚焦面板。 */
-  searchAll(query: string): void {
+  searchAll(query: string, caseSensitive = true): void {
     this.input.value = query;
-    this.options.wholeWord = true;
+    this.options = { wholeWord: true, useRegex: false, caseSensitive };
     this.wordBtn.classList.add("on");
+    this.regexBtn.classList.remove("on");
+    this.caseBtn.classList.toggle("on", caseSensitive);
     this.run();
     this.focus();
   }
 
   clear(): void {
+    window.clearTimeout(this.debounceTimer);
+    this.hasRun = false; this.stale.hidden = true;
     this.input.value = "";
     this.resultsEl.textContent = "";
     this.countEl.textContent = "";
   }
 
   run(): void {
+    window.clearTimeout(this.debounceTimer);
+    this.hasRun = true; this.stale.hidden = true;
     const query = this.input.value;
     this.resultsEl.textContent = "";
     if (!query) {
@@ -123,26 +159,30 @@ export class SearchPanel {
     }
   }
 
+  markStale(): void {
+    if (this.hasRun && this.input.value) this.stale.hidden = false;
+  }
+
   private renderGroup(group: FileMatches, highlighter: (line: string) => { index: number; length: number }[]): HTMLElement {
     const box = document.createElement("div");
     box.className = "search-group";
-    const head = document.createElement("div");
+    const head = document.createElement("button");
     head.className = "search-file";
     head.textContent = `${this.callbacks.displayPath(group.file)} (${group.matches.length})`;
     head.title = group.file;
     head.addEventListener("click", () =>
-      this.callbacks.onOpen(group.file, group.matches[0].line),
+      this.callbacks.onOpen(group.file, group.matches[0].line, group.matches[0].column, group.matches[0].length),
     );
     box.appendChild(head);
     for (const m of group.matches) {
-      const row = document.createElement("div");
+      const row = document.createElement("button");
       row.className = "search-match";
       const lineNo = document.createElement("span");
       lineNo.className = "search-line-no";
       lineNo.textContent = String(m.line);
       row.appendChild(lineNo);
       row.appendChild(this.highlight(m.text, highlighter));
-      row.addEventListener("click", () => this.callbacks.onOpen(group.file, m.line));
+      row.addEventListener("click", () => this.callbacks.onOpen(group.file, m.line, m.column, m.length));
       box.appendChild(row);
     }
     return box;

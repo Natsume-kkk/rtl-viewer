@@ -1,6 +1,8 @@
 export interface NavEntry {
   path: string;
   line: number;
+  column?: number;
+  length?: number;
 }
 
 /**
@@ -27,7 +29,7 @@ export class NavHistory {
   /** 跳转前记录离开的位置。 */
   push(entry: NavEntry): void {
     const top = this.backStack[this.backStack.length - 1];
-    if (top && top.path === entry.path && top.line === entry.line) return;
+    if (top && top.path === entry.path && top.line === entry.line && (top.column ?? 1) === (entry.column ?? 1) && (top.length ?? 0) === (entry.length ?? 0)) return;
     this.backStack.push(entry);
     if (this.backStack.length > this.capacity) this.backStack.shift();
     this.fwdStack = [];

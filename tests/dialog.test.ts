@@ -13,6 +13,11 @@ function dialogButtons(): HTMLButtonElement[] {
 }
 
 describe("choiceDialog", () => {
+  it("关闭确认可默认选择取消，Enter 不会丢弃修改", async () => {
+    const result = choiceDialog("未保存", ["保存并关闭", "不保存", "取消"], 2);
+    expect(document.activeElement?.textContent).toBe("取消");
+    pressKey("Enter"); await expect(result).resolves.toBe(2);
+  });
   it("点击按钮返回其下标并移除弹窗", async () => {
     const p = choiceDialog("msg", ["甲", "乙", "丙"]);
     dialogButtons()[1].click();

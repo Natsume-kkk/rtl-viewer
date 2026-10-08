@@ -447,7 +447,9 @@ export function createEditor(container: HTMLElement): monaco.editor.IStandaloneC
   return monaco.editor.create(container, {
     theme: editorThemeName(),
     automaticLayout: true,
-    fontSize: 13,
+    fontSize: window.innerWidth <= 1320 ? 13 : 14,
+    lineHeight: 24,
+    padding: { top: 14, bottom: 30 },
     fontFamily: "'Cascadia Code', 'JetBrains Mono', Consolas, monospace",
     minimap: { enabled: true },
     scrollBeyondLastLine: false,

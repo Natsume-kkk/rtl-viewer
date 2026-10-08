@@ -8,19 +8,38 @@
   </head>
   <body>
     <div id="app">
+      <header id="titlebar" data-tauri-drag-region>
+        <div class="brand"><img src="/src-tauri/icons/brand.svg" alt="" /><strong>RTL Viewer</strong><span>源码工程查看器</span></div>
+        <span id="project-title"></span>
+        <div id="window-controls" hidden>
+          <button id="window-minimize" class="window-control" aria-label="最小化" title="最小化"></button>
+          <button id="window-maximize" class="window-control" aria-label="最大化" title="最大化"></button>
+          <button id="window-close" class="window-control" aria-label="关闭窗口" title="关闭窗口"></button>
+        </div>
+      </header>
+      <div id="toolbar"><div id="project-switch"><span id="project-icon"></span><strong id="project-name">未打开工程</strong></div></div>
       <aside id="sidebar"></aside>
       <div id="splitter"></div>
+      <div id="editor-workspace">
       <main id="main-area">
         <div class="editor-group" id="group-1">
           <ul id="tabbar" class="tabbar"></ul>
+          <div class="breadcrumb" id="breadcrumb-1"><span class="breadcrumb-path"></span></div>
           <div id="editor-container" class="editor-container"></div>
+          <div class="editor-foot" id="editor-foot-1"></div>
         </div>
         <div id="group-splitter" hidden></div>
         <div class="editor-group" id="group-2" hidden>
           <ul id="tabbar-2" class="tabbar"></ul>
+          <div class="breadcrumb" id="breadcrumb-2"><span class="breadcrumb-path"></span><button id="close-split" class="icon-button" title="收起分屏（保留文件）" aria-label="收起分屏"></button></div>
           <div id="editor-container-2" class="editor-container"></div>
+          <div class="editor-foot" id="editor-foot-2"></div>
         </div>
       </main>
+      <section id="search-root" aria-label="全工程搜索" hidden></section>
+      </div>
+      <aside id="mapping" aria-label="端口映射" hidden></aside>
+      <aside id="signal-flow" aria-label="信号链分析" hidden></aside>
       <footer id="statusbar"></footer>
     </div>
     <script type="module" src="/src/main.ts"></script>

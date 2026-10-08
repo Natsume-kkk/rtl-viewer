@@ -18,7 +18,8 @@ export class OutlineView {
   private resizerEl: HTMLDivElement;
   private listEl: HTMLElement;
   private filterEl: HTMLInputElement;
-  private toggleEl: HTMLSpanElement;
+  private toggleEl: HTMLButtonElement;
+  private fileEl: HTMLElement;
   private callbacks: OutlineCallbacks;
   private items: OutlineItem[] = [];
   private fileName = "";
@@ -38,29 +39,34 @@ export class OutlineView {
     const head = document.createElement("div");
     head.className = "outline-head";
 
-    this.toggleEl = document.createElement("span");
+    this.toggleEl = document.createElement("button");
     this.toggleEl.className = "outline-toggle";
     this.toggleEl.title = "折叠/展开大纲";
+    this.toggleEl.setAttribute("aria-label", "折叠/展开大纲");
     this.toggleEl.addEventListener("click", () => this.toggleCollapse());
 
     const label = document.createElement("span");
-    label.textContent = "大纲";
+    label.textContent = "当前文件大纲";
 
     this.filterEl = document.createElement("input");
     this.filterEl.className = "outline-filter";
     this.filterEl.placeholder = "过滤…";
+    this.filterEl.setAttribute("aria-label", "过滤当前文件大纲");
     this.filterEl.addEventListener("input", () => this.renderList());
 
-    const symbolsBtn = document.createElement("span");
+    const symbolsBtn = document.createElement("button");
     symbolsBtn.className = "outline-symbols";
     setIcon(symbolsBtn, "outline");
     symbolsBtn.title = "符号搜索 (Ctrl+Shift+O)";
+    symbolsBtn.setAttribute("aria-label", "符号搜索");
     symbolsBtn.addEventListener("click", () => this.callbacks.onOpenSymbols?.());
 
     head.append(this.toggleEl, label, this.filterEl, symbolsBtn);
     this.listEl = document.createElement("div");
     this.listEl.className = "outline-list";
-    this.rootEl.append(head, this.listEl);
+    this.fileEl = document.createElement("div");
+    this.fileEl.className = "outline-file";
+    this.rootEl.append(head, this.fileEl, this.listEl);
 
     // 恢复折叠状态与高度
     if (localStorage.getItem(LS_COLLAPSED) === "1") this.setCollapsed(true);
@@ -74,6 +80,7 @@ export class OutlineView {
   private setCollapsed(collapsed: boolean): void {
     this.rootEl.classList.toggle("collapsed", collapsed);
     setIcon(this.toggleEl, collapsed ? "chevron-right" : "chevron-down");
+    this.toggleEl.setAttribute("aria-expanded", String(!collapsed));
     localStorage.setItem(LS_COLLAPSED, collapsed ? "1" : "0");
   }
 
@@ -84,7 +91,6 @@ export class OutlineView {
   private applyHeight(px: number): void {
     const max = window.innerHeight * 0.6;
     const height = Math.min(Math.max(px, 100), max);
-    this.rootEl.style.maxHeight = "none";
     this.rootEl.style.height = `${height}px`;
   }
 
@@ -111,6 +117,8 @@ export class OutlineView {
   render(items: OutlineItem[], fileName: string): void {
     this.items = items;
     this.fileName = fileName;
+    this.fileEl.textContent = fileName;
+    this.fileEl.title = fileName;
     this.activeLine = undefined;
     this.renderList();
   }
@@ -155,8 +163,9 @@ export class OutlineView {
       return;
     }
     for (const item of shown) {
-      const row = document.createElement("div");
+      const row = document.createElement("button");
       row.className = `outline-row outline-kind-${item.kind}`;
+      row.title = `${item.name}，第 ${item.line} 行`;
       const kind = document.createElement("span");
       kind.className = "outline-kind";
       kind.textContent = OUTLINE_KIND_LABELS[item.kind];

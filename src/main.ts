@@ -12,9 +12,9 @@ import type { OutlineItem } from "./model/outline";
 import { searchContents } from "./model/search";
 import { NavHistory, type NavEntry } from "./model/history";
 import { scanStructure, parseFile, parseFileDetail, parseXci } from "./parser";
-import type { ModuleInfo, IpInfo, PortInfo, PortConnection } from "./parser";
+import type { ModuleInfo, IpInfo } from "./parser";
 import { findSignalDeclLine } from "./model/signals";
-import { scanFolder, readFile, openFolderDialog, openFileDialog, fileStates, pathExists, showInFolder, openDirectory, isDirectory, normalizePath } from "./ipc";
+import { scanFolder, readFile, openFolderDialog, openFileDialog, pathExists, showInFolder, openDirectory, isDirectory, normalizePath } from "./ipc";
 import { registerAppShortcuts } from "./ui/shortcuts";
 import { initMonaco, createEditor, monaco } from "./editor/monaco";
 import { registerCompletionProviders } from "./editor/completion";
@@ -38,13 +38,8 @@ import { SignalProject, traceSignal, type SignalContext } from "./model/signal-f
 import { SignalFlowPanel, type FlowViewState } from "./ui/signal-flow";
 import { ComputationProject } from "./analysis/project";
 import { localLogic, signalMode } from "./analysis/local";
-
-interface CachedFile {
-  content: string;
-  encoding: string;
-  /** 读取时的磁盘 mtime，外部变更检测基准 */
-  mtime: number;
-}
+import { createPortMapLoader, findInstanceAt, resolveInstanceAt } from "./app/portmap";
+import { createExternalWatcher, type CachedFile } from "./app/watcher";
 
 /** 全局工程状态 */
 const state = {
@@ -52,8 +47,6 @@ const state = {
   index: new ModuleIndex(),
   structures: new Map<string, ModuleInfo[]>(),
   contents: new Map<string, CachedFile>(),
-  /** 文件 → 完整解析（含端口），按需缓存 */
-  parsed: new Map<string, ModuleInfo[]>(),
   ips: [] as IpInfo[],
   /** 约束文件（.xdc/.sdc）路径列表，树底部「约束」分组 */
   constraints: [] as string[],
@@ -327,117 +320,12 @@ function setSearchVisible(visible: boolean, focus = true): void {
 
 // ---------- 例化端口映射（悬停预览 + 明确选择后保留） ----------
 
-/** 当前编辑内容的第三级解析缓存（按 model 版本失效），悬停高频触发不能每次重解析。 */
-const detailCache = new Map<string, { version: number; modules: ModuleInfo[] }>();
-
-function detailForModel(model: monaco.editor.ITextModel): ModuleInfo[] {
-  const key = model.uri.toString();
-  const version = model.getVersionId();
-  const hit = detailCache.get(key);
-  if (hit?.version === version) return hit.modules;
-  const modules = parseFileDetail(model.getValue(), model.uri.path);
-  detailCache.set(key, { version, modules });
-  return modules;
-}
-
-function findInstanceAt(
-  modules: ModuleInfo[],
-  word: string,
-  line: number,
-): { owner: ModuleInfo; inst: ModuleInfo["instances"][number] } | undefined {
-  for (const owner of modules) {
-    for (const inst of owner.instances) {
-      if (inst.inst !== word || !inst.connections) continue;
-      if (line >= inst.line && line <= (inst.endLine ?? inst.line)) return { owner, inst };
-    }
-  }
-  return undefined;
-}
-
-const ipPortsCache = new Map<string, { ports: PortInfo[]; source: string }>();
-
-/** 从 IP stub（同名 .v / synth / sim 子目录）提取端口，.veo 兜底；结果缓存。 */
-async function loadIpPorts(name: string): Promise<{ ports: PortInfo[]; source: string }> {
-  const key = name.toLowerCase();
-  const hit = ipPortsCache.get(key);
-  if (hit) return hit;
-  const empty = { ports: [] as PortInfo[], source: "" };
-  const ip = state.ips.find((i) => i.name.toLowerCase() === key);
-  if (!ip) return empty;
-  const base = ip.file.replace(/\.xci$/i, "");
-  const dir = ip.file.slice(0, ip.file.lastIndexOf("/"));
-  const candidates = [
-    `${base}.v`,
-    `${dir}/synth/${ip.name}.v`,
-    `${dir}/sim/${ip.name}.v`,
-    `${base}.veo`,
-  ];
-  for (const candidate of candidates) {
-    try {
-      const { content } = await readFile(candidate);
-      const modules = parseFile(content, candidate);
-      const mod = modules.find((m) => m.name.toLowerCase() === key) ?? modules[0];
-      if (mod && mod.ports.length > 0) {
-        const result = { ports: mod.ports, source: candidate };
-        ipPortsCache.set(key, result);
-        return result;
-      }
-    } catch {
-      // 候选文件不存在或解析失败，尝试下一个
-    }
-  }
-  ipPortsCache.set(key, empty);
-  return empty;
-}
-
-/** 子模块端口元数据：工程内模块取解析结果，IP 取 stub。 */
-async function modulePorts(moduleName: string): Promise<PortInfo[]> {
-  const def = state.index.resolve(moduleName);
-  const key = moduleName.toLowerCase();
-  if (def && !def.isIp) {
-    const content = fileContent(def.file);
-    if (content !== undefined) {
-      const mod = parseFile(content, def.file).find((m) => m.name.toLowerCase() === key);
-      if (mod) return mod.ports;
-    }
-  }
-  return (await loadIpPorts(moduleName)).ports;
-}
-
-/** 连接表对齐端口元数据：命名按名（大小写不敏感），位置按序；未连接的端口补空行。 */
-async function buildPortMapRows(
-  moduleName: string,
-  connections: PortConnection[],
-): Promise<PortMapRow[]> {
-  const ports = await modulePorts(moduleName);
-  const byName = new Map(ports.map((p) => [p.name.toLowerCase(), p]));
-  const rows: PortMapRow[] = [];
-  const used = new Set<string>();
-  let posIdx = 0;
-  for (const conn of connections) {
-    let meta: PortInfo | undefined;
-    if (conn.port) {
-      meta = byName.get(conn.port.toLowerCase());
-    } else {
-      while (posIdx < ports.length && used.has(ports[posIdx].name.toLowerCase())) posIdx++;
-      meta = ports[posIdx];
-      posIdx++;
-    }
-    if (meta) used.add(meta.name.toLowerCase());
-    rows.push({
-      direction: meta?.direction ?? "",
-      width: meta?.width ?? "",
-      port: conn.port ?? meta?.name,
-      expr: conn.expr,
-    });
-  }
-  for (const p of ports) {
-    if (!used.has(p.name.toLowerCase())) {
-      rows.push({ direction: p.direction ?? "", width: p.width ?? "", port: p.name, expr: "" });
-    }
-  }
-  return rows;
-}
+const portMapLoader = createPortMapLoader({
+  ips: () => state.ips,
+  resolveModule: (name) => state.index.resolve(name),
+  fileContent,
+});
+const { detailForModel, modulePorts, buildPortMapRows } = portMapLoader;
 
 /** 打开中的标签页用当前缓冲区（含未保存修改），否则用扫描缓存。两组标签都查。 */
 function fileContent(file: string): string | undefined {
@@ -597,8 +485,7 @@ async function loadPortMap(file?: string, line?: number, instance?: string): Pro
   const model = ed.getModel();
   const modules = file ? parseFileDetail(fileContent(file) ?? "", file) : model ? detailForModel(model) : [];
   const at = line ?? ed.getPosition()?.lineNumber ?? 1;
-  const candidates = modules.flatMap(m => m.instances).filter(i => !instance || i.inst === instance);
-  const hit = candidates.find(i => at >= i.line && at <= (i.endLine ?? i.line)) ?? (instance && candidates.length === 1 ? candidates[0] : undefined);
+  const hit = resolveInstanceAt(modules, at, instance);
   if (!hit) {
     if (mappingData) { statusbar.hint("当前位置没有可识别的例化，保留原端口连接。"); return; }
     const panel = document.getElementById("mapping")!;
@@ -1109,7 +996,6 @@ function updateStructure(path: string, content: string): void {
   // 只索引当前工程内的文件：换工程后残留旧标签的保存/重载不得写入新索引（Windows 路径大小写不敏感）
   if (!path.toLowerCase().startsWith(state.folder.toLowerCase() + "/") || !state.structures.has(path)) return;
   state.structures.set(path, scanStructure(content, path));
-  state.parsed.delete(path);
   rebuildIndex();
   renderTree();
 }
@@ -1244,12 +1130,9 @@ async function openFolder(folder: string): Promise<void> {
   state.topName = undefined;
   state.structures.clear();
   state.contents.clear();
-  state.parsed.clear();
   state.ips = [];
   state.constraints = [];
-  // 端口缓存按工程失效：换工程后同名 IP（clk_wiz_0 等）不得沿用旧定义
-  ipPortsCache.clear();
-  detailCache.clear();
+  portMapLoader.reset();
   histories.forEach(history => history.clear());
   updateNavButtons();
   searchPanel.clear();
@@ -1321,7 +1204,7 @@ async function openFolder(folder: string): Promise<void> {
   rebuildIndex();
   setProgress("");
   renderTree();
-  startWatcher();
+  watcher.start();
 }
 
 function updateProjectChrome(): void {
@@ -1337,142 +1220,21 @@ function updateProjectChrome(): void {
 
 // ---------- 外部变更监视 ----------
 
-let watchTimer: number | undefined;
-let watchPollCount = 0;
-
-function startWatcher(): void {
-  window.clearInterval(watchTimer);
-  watchTimer = window.setInterval(() => void pollExternalChanges(), 4000);
-}
-
-/** 轮询已索引文件的 mtime：干净标签静默重载，脏标签打警示徽章，未打开的增量重扫；每 4 轮 diff 一次目录增删。 */
-async function pollExternalChanges(): Promise<void> {
-  if (!state.folder || document.hidden) return;
-  const files = [...state.contents.keys()];
-  if (files.length > 0) {
-    let states: (number | null)[];
-    try {
-      states = await fileStates(files);
-    } catch {
-      return;
-    }
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const cached = state.contents.get(file);
-      if (!cached) continue;
-      const mtime = states[i];
-      if (mtime === cached.mtime) continue;
-      if (mtime === null) {
-        handleExternalDelete(file);
-        continue;
-      }
-      try {
-        const fresh = await readFile(file);
-        if (fresh.content !== cached.content) markResultsStale();
-        const openGroups = groups.filter((g) => g.tabs.findTab(file));
-        const anyDirty = openGroups.some((g) => g.tabs.findTab(file)!.dirty);
-        if (openGroups.length > 0 && !anyDirty) {
-          // 静默重载：onFileReloaded 事件会同步缓存与结构；共享 model 的组逐个刷新标签状态
-          for (const g of openGroups) {
-            g.tabs.reloadFromDisk(file, fresh.content, fresh.encoding, fresh.mtime);
-          }
-          statusbar.hint(`${file.split("/").pop() ?? file} 已被外部修改，已重新加载`);
-        } else {
-          cached.content = fresh.content;
-          cached.encoding = fresh.encoding;
-          cached.mtime = fresh.mtime;
-          for (const g of openGroups) g.tabs.markExternalChanged(file, true);
-          updateStructure(file, fresh.content);
-        }
-      } catch (e) {
-        console.error("reload failed:", file, e);
-      }
-    }
-  }
-  watchPollCount += 1;
-  if (watchPollCount % 4 === 1) await rescanFolderDiff();
-}
-
-/** 文件在磁盘被删除：打开中的标签保留缓冲区并打警示徽章，未打开的从索引移除。 */
-function handleExternalDelete(file: string): void {
-  markResultsStale();
-  const openGroups = groups.filter((g) => g.tabs.findTab(file));
-  if (openGroups.length > 0) {
-    for (const g of openGroups) g.tabs.markExternalChanged(file, true);
-    return;
-  }
-  state.contents.delete(file);
-  state.structures.delete(file);
-  state.parsed.delete(file);
-  rebuildIndex();
-  renderTree();
-}
-
-/** 目录级 diff：新增 HDL/xci 纳入索引，删除的 xci 移除。 */
-async function rescanFolderDiff(): Promise<void> {
-  let scan;
-  try {
-    scan = await scanFolder(state.folder);
-  } catch {
-    return;
-  }
-  const xciDirs = scan.xci.map((f) => f.slice(0, f.lastIndexOf("/")));
-  const isIpGenerated = (file: string) => xciDirs.some((dir) => file.startsWith(dir + "/"));
-  let changed = false;
-  for (const file of scan.hdl) {
-    if (isIpGenerated(file) || state.structures.has(file)) continue;
-    try {
-      const { content, encoding, mtime } = await readFile(file);
-      state.contents.set(file, { content, encoding, mtime });
-      state.structures.set(file, scanStructure(content, file));
-      changed = true;
-    } catch (e) {
-      console.error("read failed:", file, e);
-    }
-  }
-  const knownXci = new Set(state.ips.map((i) => i.file));
-  for (const file of scan.xci) {
-    if (knownXci.has(file)) continue;
-    try {
-      const { content } = await readFile(file);
-      state.ips.push(parseXci(content, file));
-      changed = true;
-    } catch (e) {
-      console.error("xci parse failed:", file, e);
-    }
-  }
-  const xciSet = new Set(scan.xci);
-  const before = state.ips.length;
-  state.ips = state.ips.filter((i) => xciSet.has(i.file));
-  if (state.ips.length !== before) changed = true;
-  // 约束文件增删：新增的读入缓存，删除的从缓存移除（IP 生成目录的约束不纳入）
-  const userCon = scan.con.filter((f) => !isIpGenerated(f));
-  for (const file of userCon) {
-    if (state.contents.has(file)) continue;
-    try {
-      const { content, encoding, mtime } = await readFile(file);
-      state.contents.set(file, { content, encoding, mtime });
-    } catch (e) {
-      console.error("read failed:", file, e);
-    }
-  }
-  const conSet = new Set(userCon);
-  for (const file of state.constraints) {
-    if (!conSet.has(file) && !groups.some((g) => g.tabs.findTab(file))) state.contents.delete(file);
-  }
-  if (
-    userCon.length !== state.constraints.length ||
-    userCon.some((f, i) => state.constraints[i] !== f)
-  ) {
-    state.constraints = userCon;
-    changed = true;
-  }
-  if (changed) {
-    markResultsStale();
-    rebuildIndex();
-    renderTree();
-  }
-}
+const watcher = createExternalWatcher({
+  folder: () => state.folder,
+  contents: state.contents,
+  structures: state.structures,
+  ips: () => state.ips,
+  setIps: (ips) => { state.ips = ips; },
+  constraints: () => state.constraints,
+  setConstraints: (constraints) => { state.constraints = constraints; },
+  tabs: groups.map((g) => g.tabs),
+  hint: (message) => statusbar.hint(message),
+  markResultsStale,
+  updateStructure,
+  rebuildIndex,
+  renderTree,
+});
 
 // ---------- 树节点打开 ----------
 
@@ -1485,11 +1247,8 @@ async function openProjectFile(file: string, line?: number, targetIdx?: number, 
   const cached = state.contents.get(file);
   if (cached) {
     g.tabs.openContent(file, cached.content, cached.encoding, cached.mtime, line);
-    ensureParsed(file, cached.content);
   } else {
     await g.tabs.openFile(file, line);
-    const after = state.contents.get(file);
-    if (after) ensureParsed(file, after.content);
   }
   if (line !== undefined && g.tabs.activeTab?.path === file) {
     g.editor.setSelection(new monaco.Range(line, column, line, column + length));
@@ -1523,16 +1282,6 @@ async function openTreeNode(node: TreeNode): Promise<void> {
   // unresolved 节点无定义位置，退到例化点
   if (node.instFile && node.instLine !== undefined) {
     await navigateTo(node.instFile, node.instLine);
-  }
-}
-
-function ensureParsed(path: string, content: string): void {
-  if (!state.parsed.has(path)) {
-    try {
-      state.parsed.set(path, parseFile(content, path));
-    } catch (e) {
-      console.error("parse failed:", path, e);
-    }
   }
 }
 

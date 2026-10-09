@@ -1,5 +1,5 @@
 import { monaco, langForFile } from "./monaco";
-import { readFile, writeFile, saveFileDialog, fileStates, showInFolder } from "../ipc";
+import { readFile, writeFile, saveFileDialog, fileStates, showInFolder, normalizePath } from "../ipc";
 import { appAlert, appConfirm, choiceDialog } from "../ui/dialog";
 import { setIcon } from "../ui/icons";
 import { fileDirname, filePathMenuItems, showCtxMenu, type MenuItem } from "../ui/menu";
@@ -216,8 +216,9 @@ export class TabManager {
   }
 
   private async saveTabAs(tab: Tab): Promise<boolean> {
-    const target = await saveFileDialog(tab.path || tab.suggestedPath || tab.title);
-    if (!target) return false;
+    const selected = await saveFileDialog(tab.path || tab.suggestedPath || tab.title);
+    if (!selected) return false;
+    const target = normalizePath(selected);
     const ok = await this.doWrite(tab, target);
     if (ok && !tab.path) {
       // Monaco 不允许改 model.uri：用新 uri 重建 model 并迁移内容。

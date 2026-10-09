@@ -1336,6 +1336,10 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 #signal-flow { grid-area: mapping; width: 320px; min-height: 0; display: flex; flex-direction: column; background: var(--surface-app); border-left: 1px solid var(--border-strong); }
 #signal-flow .panel-head { flex: none; border-bottom: 1px solid var(--border-subtle); }
 .flow-tools { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 0; }
+.flow-following { margin: 0; color: var(--fg-secondary); font-size: 11px; line-height: 1.6; }
+.flow-path { display: block; font-family: var(--font-mono); overflow-wrap: anywhere; }
+.flow-terminal { padding: 4px 0 8px; border-bottom: 1px solid var(--border-subtle); }
+.flow-node.flow-usage { display: block; padding: 0; color: var(--fg-secondary); font: 10px var(--font-ui); }
 .flow-tools select { width: 100%; background: var(--surface-editor); color: var(--fg); border: 1px solid var(--border-strong); padding: 6px; }
 .flow-body { overflow: auto; min-height: 0; padding: 0 14px 18px; }
 .flow-body h3 { margin: 12px 0; font-size: 12px; }
@@ -1350,8 +1354,8 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .flow-branch > summary { cursor: pointer; font: 12px var(--font-mono); line-height: 1.8; color: var(--fg); }
 .flow-branch-name { overflow-wrap: anywhere; }
 .flow-count { display: block; margin-left: 15px; color: var(--fg-secondary); font: 10px var(--font-ui); }
-.flow-definition { margin-left: 15px; font-size: 10px; }
-.flow-body .flow-usages { margin-left: 14px; }
+.flow-branch[open] > summary > .flow-count { display: none; }
+.flow-note { color: var(--fg-secondary); font-size: 10px; margin-left: 6px; overflow-wrap: anywhere; }
 .mapping-identity { padding: 21px 20px 20px; position: relative; flex: none; }
 .eyebrow { font-size: 10px; color: var(--fg-secondary); }
 .module-badge { float: right; padding: 9px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-raised); color: var(--sem-module); margin-left: 8px; }

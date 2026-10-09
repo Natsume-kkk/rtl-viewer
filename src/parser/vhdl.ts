@@ -113,12 +113,12 @@ function parseVhdlPorts(portListSrc: string): PortInfo[] {
 }
 
 function findEnd(stripped: string, from: number, name: string, extraTag?: string): number {
-  // function/procedure（及 process/block/record）可用裸 end; 或 end <内部名>; 收尾，
+  // function/procedure（及 process/block/record）可用裸 end;、end <类型>; 或 end <类型> <标签>; 收尾，
   // 需按嵌套深度判断，否则内层块的裸 end; 会被误认为 entity/architecture 终点，
   // 导致其后的例化边静默丢失。已知边界：体内 function 原型声明（无 end 收尾）会使深度
   // 计数偏正，终点退化为文末兜底（多收而非漏收）；原型在 architecture 体内罕见，可接受。
   const re =
-    /\b(process|function|procedure|block|record)\b|\bend\s*(?:(entity|architecture)(?:\s+[A-Za-z_]\w*)?|([A-Za-z_]\w*))?\s*;/gi;
+    /\b(process|function|procedure|block|record)\b|\bend\s*(?:(entity|architecture)(?:\s+[A-Za-z_]\w*)?|([A-Za-z_]\w*)(?:\s+[A-Za-z_]\w*)?)\s*;/gi;
   const openers = new Set(["process", "function", "procedure", "block", "record"]);
   // end if;/end loop;/end case;/end generate; 的 opener 未计数，其收尾直接跳过
   const skipTags = new Set(["if", "loop", "case", "generate"]);

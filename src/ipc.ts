@@ -52,13 +52,18 @@ export function openDirectory(path: string): Promise<void> {
   return invoke<void>("open_directory", { path });
 }
 
-export async function openFolderDialog(): Promise<string | null> {
-  const selected = await open({ directory: true, title: "选择源码文件夹" });
-  return typeof selected === "string" ? selected : null;
+/** Windows 入站路径（对话框、拖放）统一为 `/` 分隔，与扫描结果及索引键一致。 */
+export function normalizePath(path: string): string {
+  return path.replace(/\\/g, "/");
 }
 
-export function saveFileDialog(defaultPath?: string): Promise<string | null> {
-  return save({
+export async function openFolderDialog(): Promise<string | null> {
+  const selected = await open({ directory: true, title: "选择源码文件夹" });
+  return typeof selected === "string" ? normalizePath(selected) : null;
+}
+
+export async function saveFileDialog(defaultPath?: string): Promise<string | null> {
+  const selected = await save({
     title: "另存为",
     defaultPath,
     filters: [
@@ -66,4 +71,5 @@ export function saveFileDialog(defaultPath?: string): Promise<string | null> {
       { name: "All", extensions: ["*"] },
     ],
   });
+  return selected ? normalizePath(selected) : null;
 }

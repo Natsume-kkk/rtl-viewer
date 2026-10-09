@@ -1,7 +1,7 @@
 import type { DefinitionRef, InstanceInfo, ModuleInfo, PortInfo } from "./types";
 import { parseParameters } from "./parameters";
 
-const KEYWORDS = new Set([
+export const KEYWORDS = new Set([
   "module", "endmodule", "macromodule", "begin", "end", "if", "else", "always",
   "always_ff", "always_comb", "always_latch", "initial", "final", "assign", "wire",
   "reg", "logic", "input", "output", "inout", "parameter", "localparam", "genvar",

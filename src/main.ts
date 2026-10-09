@@ -14,7 +14,7 @@ import { NavHistory, type NavEntry } from "./model/history";
 import { scanStructure, parseFile, parseFileDetail, parseXci } from "./parser";
 import type { ModuleInfo, IpInfo, PortInfo, PortConnection } from "./parser";
 import { findSignalDeclLine } from "./model/signals";
-import { scanFolder, readFile, openFolderDialog, fileStates, pathExists, showInFolder, openDirectory, isDirectory } from "./ipc";
+import { scanFolder, readFile, openFolderDialog, fileStates, pathExists, showInFolder, openDirectory, isDirectory, normalizePath } from "./ipc";
 import { initMonaco, createEditor, monaco } from "./editor/monaco";
 import { registerCompletionProviders } from "./editor/completion";
 import { TabManager } from "./editor/tabs";
@@ -174,6 +174,9 @@ const tree = new HierarchyTree(treeRootEl, {
   onRevealFile: (path) => void showInFolder(path),
   onSelectTop: (name) => {
     state.topName = name;
+    flowProject = undefined;
+    cancelSignalFollow();
+    flowReady = false;
     if (flowSelection) flowPanel.markStale();
     renderTree();
   },
@@ -625,6 +628,7 @@ function togglePortMap(): void {
 }
 
 function selectTreeInstance(node: TreeNode): void {
+  if (treeContextPath !== node.key) { flowContextPath = node.key; flowReady = false; }
   treeContextPath = node.key;
   if (!node.instFile || node.instLine === undefined) return;
   mappingTarget = { file: node.instFile, line: node.instLine, instance: node.label };
@@ -634,6 +638,9 @@ function selectTreeInstance(node: TreeNode): void {
 }
 
 function markResultsStale(): void {
+  flowProject = undefined;
+  cancelSignalFollow();
+  flowReady = false;
   searchPanel.markStale();
   if (flowSelection) flowPanel.markStale();
   if (mappingData && !mappingStale) {
@@ -643,21 +650,49 @@ function markResultsStale(): void {
   }
 }
 
-// ---------- 按需信号链：当前缓冲区快照，结果不随导航跳动 ----------
+// ---------- 按需信号链：跟随主动源码选择，结果内导航保留目标 ----------
 let flowRequest = 0;
+let flowTimer: number | undefined;
+let flowNavigation = 0;
+let flowKeepTarget = false;
+let flowReady = false;
+let flowProject: { project: SignalProject; top: string | undefined; files: Set<string> } | undefined;
+const flowTokens = new WeakMap<monaco.editor.ITextModel, { version: number; lines: monaco.Token[][] }>();
 let flowSelection: { project: SignalProject; signal: string; contexts: SignalContext[]; note: string; file: string; line: number; column: number } | undefined;
 let treeContextPath: string | undefined;
 let flowContextPath: string | undefined;
 const flowPanel = new SignalFlowPanel(document.getElementById("signal-flow")!, {
   close: () => { setSignalFlowVisible(false); document.getElementById("flow-action")!.focus(); },
-  analyze: () => void analyzeCurrentSignal(),
   refresh: () => { if (flowSelection) void analyzeCurrentSignal(flowSelection); },
   context: index => void runSignalTrace(index),
-  navigate: (file, line) => void navigateTo(file, line),
+  navigate: (file, line) => {
+    cancelSignalFollow();
+    flowKeepTarget = true;
+    flowNavigation++;
+    void navigateTo(file, line).catch(error => statusbar.hint(`定位失败：${String(error)}`)).finally(() => flowNavigation--);
+  },
 });
+
+function cancelSignalFollow(): void {
+  window.clearTimeout(flowTimer);
+  flowTimer = undefined;
+  ++flowRequest;
+}
+
+function scheduleSignalFollow(): void {
+  if (flowNavigation) return;
+  flowKeepTarget = false;
+  if (document.getElementById("signal-flow")!.hidden) return;
+  cancelSignalFollow();
+  flowTimer = window.setTimeout(() => {
+    flowTimer = undefined;
+    void analyzeCurrentSignal();
+  }, 300);
+}
 
 function setSignalFlowVisible(visible: boolean): void {
   if (visible) setMappingVisible(false);
+  else cancelSignalFollow();
   document.getElementById("signal-flow")!.hidden = !visible;
   document.getElementById("flow-action")!.setAttribute("aria-expanded", String(visible));
 }
@@ -665,56 +700,94 @@ function setSignalFlowVisible(visible: boolean): void {
 function toggleSignalFlow(): void {
   const visible = document.getElementById("signal-flow")!.hidden;
   setSignalFlowVisible(visible);
-  if (visible && !flowSelection) void analyzeCurrentSignal();
+  if (visible) {
+    if (flowKeepTarget && flowSelection) {
+      if (!flowReady) void analyzeCurrentSignal(flowSelection);
+    } else void analyzeCurrentSignal();
+  }
 }
 
 async function analyzeCurrentSignal(previous?: { file: string; line: number; column: number; signal: string }): Promise<void> {
-  ++flowRequest;
+  cancelSignalFollow();
   const ed = activeGroup().editor, model = ed.getModel(), position = ed.getPosition();
-  const word = previous?.signal ?? (model && position ? model.getWordAtPosition(position)?.word : undefined);
+  let word = previous?.signal ?? (model && position ? model.getWordAtPosition(position)?.word : undefined);
+  if (!previous && model && position && word) {
+    const language = model.getLanguageId();
+    if (language !== "verilog" && language !== "vhdl") word = undefined;
+    else {
+      let tokens = flowTokens.get(model);
+      if (tokens?.version !== model.getVersionId()) {
+        tokens = { version: model.getVersionId(), lines: monaco.editor.tokenize(model.getValue(), language) };
+        flowTokens.set(model, tokens);
+      }
+      const token = tokens.lines[position.lineNumber - 1]?.filter(t => t.offset <= position.column - 1).at(-1);
+      if (!token || /comment|string|keyword|number|type/.test(token.type)) word = undefined;
+    }
+  }
   if ((!previous && (!model || !position)) || !word || !IDENT_RE.test(word)) {
-    if (flowSelection) statusbar.hint("请先选择信号名，原分析结果已保留。");
-    else flowPanel.message("请先在源码中选择一个信号名，再点击分析。");
+    flowPanel.hint(flowSelection ? "光标未落在信号上，保留当前链路。" : "点击源码中的信号，即可自动查看链路。");
     return;
   }
-  const files = new Map([...state.contents.keys()].map(file => [file, fileContent(file) ?? ""]));
   const file = previous?.file ?? pathFromUri(model!.uri);
   const line = previous ? findSignalDeclLine(fileContent(file) ?? "", file, word) ?? previous.line : position!.lineNumber;
   const column = previous?.column ?? position!.column;
-  if (!previous) files.set(file, model!.getValue());
-  const structures = new Map(state.structures);
-  // 打开标签可能尚未保存，结构与连接均以本次分析的同一快照为准。
-  for (const group of groups) for (const [path, source] of files) {
-    if (group.tabs.findTab(path)) structures.set(path, scanStructure(source, path));
+  if (!flowProject || !flowProject.files.has(file)) {
+    const files = new Map([...state.contents.keys()].map(path => [path, fileContent(path) ?? ""]));
+    const structures = new Map(state.structures);
+    for (const group of groups) for (const [path, source] of files) {
+      if (group.tabs.findTab(path)) structures.set(path, scanStructure(source, path));
+    }
+    if (!previous && model) {
+      files.set(file, model.getValue());
+      structures.set(file, scanStructure(model.getValue(), file));
+    }
+    flowProject = { project: new SignalProject(files, structures), top: buildHierarchy(state.index, structures, state.topName).tops[0]?.moduleName, files: new Set(files.keys()) };
   }
-  const project = new SignalProject(files, structures);
+  const { project } = flowProject;
   const owner = project.owner(file, line, column);
-  if (!owner) { statusbar.hint("当前位置不在可识别的 HDL 模块内，原结果已保留。"); return; }
-  const top = buildHierarchy(state.index, structures, state.topName).tops[0]?.moduleName ?? owner;
+  if (!owner) { flowPanel.hint("当前位置不在可识别的 HDL 模块内。"); return; }
+  const mod = project.module(owner);
+  if (!mod) { flowPanel.hint("点击源码中的信号，即可自动查看链路。"); return; }
+  if (!previous && (word === owner || mod?.instances.some(inst => inst.inst === word || inst.module === word))) {
+    flowPanel.hint("点击源码中的信号，即可自动查看链路。"); return;
+  }
+  const preferredPath = previous || flowSelection?.contexts.some(c => c.module === owner) ? flowContextPath : treeContextPath;
+  const sameSignal = model?.getLanguageId() === "vhdl" ? word.toLowerCase() === flowSelection?.signal.toLowerCase() : word === flowSelection?.signal;
+  if (!previous && flowReady && flowSelection?.project === project && sameSignal && flowSelection.file === file && flowSelection.contexts.some(c => c.module === owner) && (!preferredPath || preferredPath === flowContextPath)) {
+    flowPanel.hint("跟随源码光标；点击链路节点查看源码。"); return;
+  }
+  const top = flowProject.top ?? owner;
   const found = project.contexts(top, owner);
   const contexts = found.items.length ? found.items : [project.root(owner)!].filter(Boolean);
-  if (!contexts.length) { flowPanel.message("未找到当前模块定义。"); return; }
+  if (!contexts.length) { flowPanel.hint("未找到当前模块定义，保留原链路。"); return; }
   const note = found.truncated ? "实例路径列表已截断。" : found.items.length ? "" : "未定位到当前顶层内的实例，仅分析本模块范围。";
-  flowSelection = { project, signal: word, contexts, note, file, line, column };
-  flowPanel.clearStale();
-  const selected = Math.max(0, contexts.findIndex(c => c.path === (previous ? flowContextPath : treeContextPath)));
-  flowPanel.setContexts(contexts, selected);
-  await runSignalTrace(selected);
+  const selection = { project, signal: word, contexts, note, file, line, column };
+  const selected = Math.max(0, contexts.findIndex(c => c.path === preferredPath));
+  await runSignalTrace(selected, selection);
 }
 
-async function runSignalTrace(index: number): Promise<void> {
-  const selection = flowSelection;
+async function runSignalTrace(index: number, selection = flowSelection): Promise<void> {
   if (!selection?.contexts[index]) return;
-  flowContextPath = selection.contexts[index].path;
   const request = ++flowRequest;
-  flowPanel.message("正在追踪端口与直接赋值…");
+  flowReady = false;
+  flowPanel.hint(`正在分析 ${selection.signal}…`);
   const options = { cancelled: () => request !== flowRequest };
   try {
     const up = await traceSignal(selection.project, selection.contexts[index], selection.signal, "upstream", options);
+    if (request !== flowRequest) return;
     const down = await traceSignal(selection.project, selection.contexts[index], selection.signal, "downstream", options);
-    if (request === flowRequest) flowPanel.result(selection.signal, up, down, selection.note);
+    if (request === flowRequest) {
+      flowSelection = selection;
+      flowContextPath = selection.contexts[index].path;
+      flowPanel.setContexts(selection.contexts, index);
+      if (selection.project === flowProject?.project) flowPanel.clearStale();
+      else flowPanel.markStale();
+      flowPanel.result(selection.signal, up, down, selection.note);
+      flowPanel.hint("跟随源码光标；点击链路节点查看源码。");
+      flowReady = true;
+    }
   } catch (error) {
-    if (request === flowRequest) flowPanel.message(`分析未完成：${String(error)}`);
+    if (request === flowRequest) flowPanel.hint(`分析未完成：${String(error)}`);
   }
 }
 
@@ -768,6 +841,10 @@ function wireEditor(ed: monaco.editor.IStandaloneCodeEditor, idx: number): void 
     const line = e.position.lineNumber;
     statusbar.setBreadcrumb(breadcrumbAt(currentOutline, line));
     outline.highlightLine(line);
+    if (e.reason === monaco.editor.CursorChangeReason.Explicit && e.source !== "api") scheduleSignalFollow();
+  });
+  ed.onMouseDown(e => {
+    if (e.target.type === monaco.editor.MouseTargetType.CONTENT_TEXT) scheduleSignalFollow();
   });
 }
 
@@ -928,6 +1005,7 @@ function focusGroup(idx: number): void {
 
 /** 同步状态栏/大纲等外围 UI 到当前活动组。 */
 function syncChrome(): void {
+  scheduleSignalFollow();
   updateNavButtons();
   const g = activeGroup();
   const tab = g.tabs.activeTab;
@@ -1058,7 +1136,8 @@ const RECENT_KEY = "rtl-viewer.recentProjects";
 function loadRecents(): string[] {
   try {
     const list = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
-    return Array.isArray(list) ? list.filter((p) => typeof p === "string") : [];
+    // 存量条目可能来自归一之前的版本，读出时统一
+    return Array.isArray(list) ? list.filter((p) => typeof p === "string").map(normalizePath) : [];
   } catch {
     return [];
   }
@@ -1099,7 +1178,7 @@ async function openRecent(path: string): Promise<void> {
 
 /** 拖入窗口的路径：是文件夹则打开为工程，否则提示。 */
 async function handleDroppedPaths(paths: string[]): Promise<void> {
-  const dir = paths[0];
+  const dir = paths[0] ? normalizePath(paths[0]) : "";
   if (!dir) return;
   if (await isDirectory(dir)) {
     await openFolder(dir);
@@ -1143,11 +1222,15 @@ async function openFolder(folder: string): Promise<void> {
   setSignalFlowVisible(false);
   ++flowRequest;
   flowSelection = undefined;
+  flowProject = undefined;
+  flowReady = false;
+  flowKeepTarget = false;
   flowContextPath = undefined;
   flowPanel.clearStale();
   treeContextPath = undefined;
   flowPanel.setContexts([], 0);
-  flowPanel.message("将光标放在信号名上，然后点击分析。");
+  flowPanel.message("");
+  flowPanel.hint("点击源码中的信号，即可自动查看链路。");
   addRecent(folder);
   state.topName = undefined;
   state.structures.clear();

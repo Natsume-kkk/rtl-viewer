@@ -191,6 +191,52 @@ end architecture;
       ["sub_mod", "u_c"],
     ]);
   });
+
+  it("end <构造> <标签>; 收尾不破坏深度计数，同文件后续设计单元归属正确", () => {
+    const src = `entity foo is
+end entity foo;
+
+architecture rtl of foo is
+  function f return integer is
+  begin
+    return 0;
+  end function f;
+
+  procedure p is
+  begin
+    null;
+  end procedure p;
+
+  type t_rec is record
+    a : integer;
+  end record t_rec;
+begin
+  b1 : block is
+  begin
+    null;
+  end block b1;
+
+  p1 : process is
+  begin
+    null;
+  end process p1;
+
+  u_child : entity work.child port map (x => '0');
+end architecture rtl;
+
+entity bar is
+end entity bar;
+
+architecture rtl of bar is
+begin
+  u_child2 : entity work.child port map (x => '0');
+end architecture rtl;
+`;
+    const mods = parseFile(src, "labeled.vhd");
+    expect(mods.map((m) => m.name)).toEqual(["foo", "bar"]);
+    expect(mods[0].instances.map((i) => [i.module, i.inst])).toEqual([["child", "u_child"]]);
+    expect(mods[1].instances.map((i) => [i.module, i.inst])).toEqual([["child", "u_child2"]]);
+  });
 });
 
 describe("verilog 语法变体覆盖", () => {

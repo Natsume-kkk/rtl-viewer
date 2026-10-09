@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { appAlert, appConfirm, choiceDialog } from "../src/ui/dialog";
+import { openFolderDialog, saveFileDialog } from "../src/ipc";
+import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
 function pressKey(key: string, shiftKey = false): KeyboardEvent {
   const e = new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true });
@@ -111,5 +115,26 @@ describe("appConfirm / appAlert", () => {
     const b = appAlert("出错了");
     pressKey("Escape");
     await expect(b).resolves.toBeUndefined();
+  });
+});
+
+describe("对话框入站路径归一", () => {
+  it("openFolderDialog 将 Windows 反斜杠归一为正斜杠", async () => {
+    vi.mocked(tauriOpen).mockResolvedValue("D:\\proj\\rtl");
+    await expect(openFolderDialog()).resolves.toBe("D:/proj/rtl");
+  });
+
+  it("UNC 路径转为 //server/share，正斜杠路径不变", async () => {
+    vi.mocked(tauriOpen).mockResolvedValue("\\\\server\\share\\proj");
+    await expect(openFolderDialog()).resolves.toBe("//server/share/proj");
+    vi.mocked(tauriOpen).mockResolvedValue("C:/already/fine");
+    await expect(openFolderDialog()).resolves.toBe("C:/already/fine");
+  });
+
+  it("saveFileDialog 归一返回路径，取消返回 null", async () => {
+    vi.mocked(tauriSave).mockResolvedValue("D:\\p\\sub\\a.v");
+    await expect(saveFileDialog("D:/p")).resolves.toBe("D:/p/sub/a.v");
+    vi.mocked(tauriSave).mockResolvedValue(null);
+    await expect(saveFileDialog()).resolves.toBeNull();
   });
 });

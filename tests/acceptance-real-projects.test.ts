@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseXci, scanStructure } from "../src/parser";
 import { ModuleIndex } from "../src/model";
 import { buildHierarchy, type Hierarchy, type TreeNode } from "../src/model/hierarchy";
+import { SignalProject, traceSignal, type TraceNode } from "../src/model/signal-flow";
 import { decode, walk } from "./helpers/fs-scan";
 
 /**
@@ -52,6 +53,27 @@ function findNode(node: TreeNode, pred: (n: TreeNode) => boolean): TreeNode | un
   return collect(node, pred)[0];
 }
 
+/** 信号链验收用的工程装载（只读），结构与 build() 相同但保留文件内容。 */
+function buildSignals(root: string): { project: SignalProject; structures: Map<string, ReturnType<typeof scanStructure>> } {
+  const files = { hdl: [] as string[], xci: [] as string[], con: [] as string[] };
+  walk(root, files);
+  const xciDirs = files.xci.map((f) => f.slice(0, f.lastIndexOf("/")));
+  const contents = new Map<string, string>();
+  const structures = new Map<string, ReturnType<typeof scanStructure>>();
+  for (const file of files.hdl.filter((f) => !xciDirs.some((dir) => f.startsWith(dir + "/") || f.startsWith(dir + "\\")))) {
+    const { content } = decode(readFileSync(file));
+    contents.set(file, content);
+    structures.set(file, scanStructure(content, file));
+  }
+  return { project: new SignalProject(contents, structures), structures };
+}
+
+const allNodes = (n: TraceNode, out: TraceNode[] = []): TraceNode[] => {
+  out.push(n);
+  n.children.forEach((c) => allNodes(c, out));
+  return out;
+};
+
 describe.skipIf(!existsSync(P1))("P1 Vivado 工程（z7_test）", () => {
   // 这 5 个 IP 在全工程无 xci、无定义文件（合成产物在已跳过的 .runs 中），
   // 属于预期黑盒，与 Vivado 缺 IP 时的表现一致。
@@ -89,6 +111,25 @@ describe.skipIf(!existsSync(P1))("P1 Vivado 工程（z7_test）", () => {
       expect(f).not.toMatch(/\.(runs|sim|cache|hw|gen|ip_user_files)[/\\]/);
     }
   });
+
+  it("信号链穿透 Verilog 过程块：全工程解析健壮，寄存器来源追到数据输入", async () => {
+    const { project, structures } = buildSignals(P1);
+    // 全工程 module() 不抛异常（文本级过程解析的健壮性）
+    let probed: { mod: string; target: string; read: string } | undefined;
+    for (const mods of structures.values()) {
+      for (const m of mods) {
+        const mod = project.module(m.name);
+        if (!mod || mod.problem) continue;
+        const hit = mod.assignments.find((a) => a.clock?.length && a.direct && a.reads?.length === 1);
+        if (hit && !probed) probed = { mod: m.name, target: hit.target, read: hit.reads![0] };
+      }
+    }
+    expect(probed, "真实工程中应存在时钟过程内的直接赋值").toBeDefined();
+    const up = await traceSignal(project, project.root(probed!.mod)!, probed!.target, "upstream");
+    const nodes = allNodes(up);
+    expect(nodes.some((n) => n.label.endsWith(`.${probed!.read}`)), `寄存器 ${probed!.target} 的来源应追到 ${probed!.read}`).toBe(true);
+    expect(nodes.some((n) => n.tip?.includes("寄存器"))).toBe(true);
+  });
 });
 
 describe.skipIf(!existsSync(P2))("P2 ISE 工程（GDCX_ZHGL）", () => {
@@ -120,5 +161,26 @@ describe.skipIf(!existsSync(P2))("P2 ISE 工程（GDCX_ZHGL）", () => {
       (n) => !P2_EXPECTED_BLACKBOX.has(n),
     );
     expect(unexpected, `出现预期外的未解析模块: ${unexpected}`).toEqual([]);
+  });
+
+  it("VHDL 过程块穿透：寄存器来源追到数据输入，全工程解析不抛异常", async () => {
+    const { project, structures } = buildSignals(P2);
+    let probed: { mod: string; target: string; read: string } | undefined;
+    for (const mods of structures.values()) {
+      for (const m of mods) {
+        const mod = project.module(m.name);
+        if (!mod || mod.problem) continue;
+        const hit = mod.assignments.find((a) => a.clock?.length && a.direct && a.reads?.length === 1);
+        if (hit && !probed) probed = { mod: m.name, target: hit.target, read: hit.reads![0] };
+      }
+    }
+    expect(probed, "真实 VHDL 工程中应存在时钟过程内的直接赋值").toBeDefined();
+    const up = await traceSignal(project, project.root(probed!.mod)!, probed!.target, "upstream");
+    const nodes = allNodes(up);
+    expect(
+      nodes.some((n) => n.label.toLowerCase().endsWith(`.${probed!.read.toLowerCase()}`)),
+      `寄存器 ${probed!.target} 的来源应追到 ${probed!.read}`,
+    ).toBe(true);
+    expect(nodes.some((n) => n.tip?.includes("寄存器"))).toBe(true);
   });
 });

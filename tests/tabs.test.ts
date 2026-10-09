@@ -60,6 +60,7 @@ vi.mock("../src/ipc", () => ({
   saveFileDialog: vi.fn(),
   fileStates: vi.fn(),
   showInFolder: vi.fn(),
+  normalizePath: (p: string) => p.replace(/\\/g, "/"),
 }));
 
 vi.mock("../src/ui/dialog", () => ({
@@ -325,6 +326,19 @@ describe("TabManager", () => {
     // 另一侧编辑经新监听器正常标脏
     tm2.activeTab!.model.setValue("module x; // edit");
     expect(tm2.activeTab!.dirty).toBe(true);
+  });
+
+  it("另存为对话框返回反斜杠路径时归一为正斜杠，tab.path 与 uriKey 一致", async () => {
+    const { make, mocks } = await setup();
+    const tm = make();
+    await tm.newFile();
+    const tab = tm.activeTab!;
+    tab.model.setValue("module x;");
+    mocks.saveFileDialog.mockResolvedValue("D:\\p\\sub\\new.v");
+    mocks.writeFile.mockResolvedValue(500);
+    await expect(tm.save()).resolves.toBe(true);
+    expect(tab.path).toBe("D:/p/sub/new.v");
+    expect(tab.uriKey).toBe("file:///D:/p/sub/new.v");
   });
 
   it("M3: close 后共享 model 的变化不再触达已关闭标签", async () => {

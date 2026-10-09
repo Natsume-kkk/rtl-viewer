@@ -94,6 +94,17 @@ endmodule`,
     expect(h.tops[0].moduleName).toBe("dut");
   });
 
+  it("工程根本身位于 tests 等目录段内时不误判模块为仿真候选", () => {
+    // 夹具或工程放在 tests/ 之类的父目录下时，sim/tb 目录判定只看工程相对路径；
+    // 否则所有模块都被当成仿真环境，解包会一直走到叶子
+    const h = buildFromFiles({
+      "D:/proj/tests/cp7/project/tb_top.v": `module tb_top; big u_b (.x(1'b0)); endmodule`,
+      "D:/proj/tests/cp7/project/big.v": `module big(input x); leaf u_l (.y(x)); endmodule`,
+      "D:/proj/tests/cp7/project/leaf.v": `module leaf(input y); endmodule`,
+    });
+    expect(h.tops[0].moduleName).toBe("big");
+  });
+
   it("指定顶层后其余未引用模块归入未使用", () => {
     const h = buildFromFiles(
       {

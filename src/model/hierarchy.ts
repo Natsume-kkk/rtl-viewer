@@ -72,6 +72,23 @@ const SIM_PATH_RE =
   /(^|[/\\])(sim|sim_\d+|tb|tbs|test|tests|testbench|verification|simulation|dv|uvm|bench)([/\\]|$)/i;
 
 /**
+ * 所有扫描文件的最长公共目录前缀（段级、大小写不敏感）。
+ * SIM_PATH_RE 只对工程相对路径判定：工程根或夹具本身位于 tests/ 等目录段下时，
+ * 用绝对路径会把所有模块误判为仿真候选。
+ */
+function commonDirPrefix(paths: string[]): string {
+  if (paths.length === 0) return "";
+  const dirs = paths.map((p) => p.replace(/\\/g, "/").split("/").slice(0, -1));
+  let prefix = dirs[0];
+  for (const d of dirs.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < d.length && d[i].toLowerCase() === prefix[i].toLowerCase()) i++;
+    prefix = prefix.slice(0, i);
+  }
+  return prefix.length > 0 ? prefix.join("/") + "/" : "";
+}
+
+/**
  * 多候选顶层自动识别：测试台/仿真候选先向内「解包」出 DUT（可达子图最大的已定义子模块），
  * 再在所有候选的有效顶层中取可达子图最大者。仿真环境通常例化真实顶层，
  * 导致真实顶层不在候选中，直接过滤仿真候选会误选孤立小模块。
@@ -79,6 +96,7 @@ const SIM_PATH_RE =
 function autoPickTop(
   candidates: string[],
   structByModule: Map<string, ModuleInfo>,
+  rootPrefix = "",
 ): string | undefined {
   if (candidates.length === 0) return undefined;
   const sizeCache = new Map<string, number>();
@@ -98,7 +116,12 @@ function autoPickTop(
     sizeCache.set(root.toLowerCase(), seen.size);
     return seen.size;
   };
-  const fileOf = (name: string) => structByModule.get(name.toLowerCase())?.file ?? "";
+  const fileOf = (name: string) => {
+    const file = (structByModule.get(name.toLowerCase())?.file ?? "").replace(/\\/g, "/");
+    return rootPrefix && file.toLowerCase().startsWith(rootPrefix.toLowerCase())
+      ? file.slice(rootPrefix.length)
+      : file;
+  };
   const isTb = (name: string) =>
     TB_NAME_RE.test(name) || SIM_PATH_RE.test(fileOf(name));
   const unwrap = (name: string): string => {
@@ -171,7 +194,8 @@ export function buildHierarchy(
     .filter((d) => !d.isIp && !instantiated.has(d.name.toLowerCase()))
     .map((d) => d.name);
 
-  const chosenTop = topName ?? autoPickTop(topCandidates, structByModule);
+  const chosenTop =
+    topName ?? autoPickTop(topCandidates, structByModule, commonDirPrefix([...structures.keys()]));
 
   const buildNode = (
     moduleName: string,

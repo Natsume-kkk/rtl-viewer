@@ -1,9 +1,8 @@
 import { detectLang, type HdlLang } from "../parser";
-import { stripComments } from "../parser/verilog";
-import { stripVhdlComments } from "../parser/vhdl";
 import { SignalProject, type SignalContext, type SignalModule } from "../model/signal-flow";
 import { formatExpr, parseExpression, refs, type Expr } from "./expression";
 import { analyzeProcess, type ProcessResult } from "./process";
+import { sourceEntry } from "./source-cache";
 
 export interface SourceSpan { file: string; start: number; end: number }
 export interface ComputationNode {
@@ -18,7 +17,6 @@ export interface ComputationGraph { root: string; nodes: ComputationNode[]; edge
 export interface Driver { expression: Expr; source: SourceSpan; process?: ProcessResult; operator?: string }
 export interface ModuleAnalysis { mod: SignalModule; drivers: Map<string, Driver[]>; widths: Map<string, string>; vectors: Set<string>; lang: HdlLang }
 export interface Load { path: string; signal: string; label: string; source?: SourceSpan }
-const lineOffset = (text: string, line: number) => text.split("\n").slice(0, line - 1).reduce((n, s) => n + s.length + 1, 0);
 
 /** 按访问模块惰性分析；仅在用户打开信号链时构建。 */
 export class ComputationProject {
@@ -55,10 +53,11 @@ export class ComputationProject {
     for (const file of moduleFiles) {
       const raw = this.files.get(file); if (raw === undefined) continue;
       if (detectLang(file) !== lang) continue;
-      const clean = lang === "vhdl" ? stripVhdlComments(raw, false) : stripComments(raw, false);
-      const scopes = [...clean.matchAll(lang === "vhdl" ? /\barchitecture\s+\w+\s+of\s+(\w+)\s+is/gi : /\bmodule\s+(\w+)/g)];
+      const entry = sourceEntry(file, raw);
+      const clean = entry.text(false);
+      const scopes = entry.scopes(false, false);
       for (let s = 0; s < scopes.length; s++) {
-        if (normal(scopes[s][1]) !== normal(mod.name)) continue;
+        if (normal(scopes[s].name) !== normal(mod.name)) continue;
         const start = scopes[s].index!, end = scopes[s + 1]?.index ?? clean.length;
         if (!mod.regions.some(r=>r.file===file&&r.start===start)) continue;
         const body = clean.slice(start, end);
@@ -82,7 +81,7 @@ export class ComputationProject {
     }
     for (const a of mod.assignments.filter(a => a.proc === -1)) {
       const raw = this.files.get(a.file)!;
-      const start = lineOffset(raw, a.line);
+      const start = sourceEntry(a.file, raw).lineOffset(a.line);
       const at = raw.indexOf(a.expression, start);
       const name = /^(\w+)/.exec(a.target)?.[1] ?? a.target;
       const expression = /^\w+$/.test(a.target) ? parseExpression(a.expression, lang, at >= 0 ? at : start, vectors)
@@ -96,7 +95,7 @@ export class ComputationProject {
       if (result.issues.length) {
         const names = new Set(mod.assignments.filter(a => a.proc === idx).map(a => a.target));
         // 部分写入也要留下目标边界，不能显示为没有驱动。
-        const body = (lang === "vhdl" ? stripVhdlComments : stripComments)(raw.slice(p.start, p.end), false);
+        const body = sourceEntry(p.file, raw).text(false).slice(p.start, p.end);
         const writes = lang === "vhdl"
           ? /(?:\bbegin\b|\bthen\b|\belse\b|;|=>)\s*(\w+)\s*(?:\([^;]*?\))?\s*(?:<=|:=)/gi
           : /(?:\bbegin\b|\belse\b|;|\))\s*(\w+)\s*(?:\[[^\]]*\])?\s*(?:<=|=(?!=))/g;
@@ -126,7 +125,10 @@ export class ComputationProject {
       const child = this.connections.child(ctx, inst), childMod = this.connections.module(inst.module);
       for (const [i, c] of (inst.connections ?? []).entries()) {
         const port = c.port ? childMod?.ports.find(p => p.name.toLowerCase() === c.port!.toLowerCase()) : childMod?.ports[i];
-        if (norm(c.expr.trim()) === norm(signal) && /^(in|input|inout)$/.test(port?.direction ?? "")) found.push({ path: child.path, signal: port!.name, label: `${inst.inst}.${port!.name}`, source: { file: inst.file, start: lineOffset(this.files.get(inst.file)!, c.line), end: lineOffset(this.files.get(inst.file)!, c.line + 1) } });
+        if (norm(c.expr.trim()) === norm(signal) && /^(in|input|inout)$/.test(port?.direction ?? "")) {
+          const entry = sourceEntry(inst.file, this.files.get(inst.file)!);
+          found.push({ path: child.path, signal: port!.name, label: `${inst.inst}.${port!.name}`, source: { file: inst.file, start: entry.lineOffset(c.line), end: entry.lineOffset(c.line + 1) } });
+        }
       }
     }
     return found;
@@ -183,7 +185,7 @@ export class ComputationProject {
         const conn = ctx.instance?.connections?.find((c, i) => c.port ? c.port.toLowerCase() === port!.name.toLowerCase() : i === index);
         if (conn?.expr && parent) {
           const file = parent.mod.instances.find(inst => inst.inst === ctx.instance!.inst)?.file ?? parent.mod.file;
-          const at = lineOffset(this.files.get(file)!, conn.line);
+          const at = sourceEntry(file, this.files.get(file)!).lineOffset(conn.line);
           const e = parseExpression(conn.expr, parent.lang, at, parent.vectors);
           edge(expression(e, ctx.parent, name, { expression: e, source: { file, start: at, end: at + conn.expr.length } }, remaining, next), id, "端口绑定");
         }

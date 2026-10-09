@@ -138,6 +138,25 @@ module child(input a,output q); assign q=a; endmodule`]]));
     const call = new ComputationProject(new Map([["f.v", "module f(input a,output q); assign q=foo(a); endmodule"]])).trace("f", "q");
     expect(call.nodes.some(n => n.kind === "boundary" && n.label === "foo(a)")).toBe(true);
   });
+  it("同一文件多模块的驱动源码偏移按真实位置计算", () => {
+    const source = [
+      "module first(input a, output q);",
+      "assign q = a;",
+      "endmodule",
+      "module second(input b, output r);",
+      "wire m;",
+      "assign m = b;",
+      "assign r = m;",
+      "endmodule",
+    ].join("\n");
+    const p = new ComputationProject(new Map([["multi.v", source]]));
+    const g = p.trace("second", "r", 5);
+    const rLine = source.indexOf("assign r = m;");
+    expect(g.nodes.find(n => n.id === g.root)?.source).toEqual({ file: "multi.v", start: rLine + 11, end: rLine + 12 });
+    const mLine = source.indexOf("assign m = b;");
+    expect(g.nodes.find(n => n.signal === "m")?.source).toEqual({ file: "multi.v", start: mLine + 11, end: mLine + 12 });
+    expect(g.nodes.some(n => n.signal === "a" || n.signal === "q")).toBe(false);
+  });
   it("多个子模块输出同接一根线也明确列为多来源", () => {
     const p = new ComputationProject(new Map([["t.v", "module t(output q); c u1(.q(q)); c u2(.q(q)); endmodule module c(output q); assign q=1'b0; endmodule"]]));
     const g = p.trace("t", "q");

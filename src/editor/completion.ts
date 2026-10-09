@@ -1,11 +1,11 @@
 /**
  * HDL 补全：当前文件信号/例化名（复用大纲解析，按 model 版本缓存）、语法关键字与
  * 常用块 snippet、双语言例化骨架与连接上下文补全。
- * 性能：击键路径只有单文件解析缓存与内存索引查询，端口解析在 resolve（选中）阶段。
+ * 性能：击键路径只有单文件解析与清洗缓存、内存索引查询，端口解析在 resolve（选中）阶段。
  */
 import { monaco, VERILOG_KEYWORDS, VHDL_KEYWORDS } from "./monaco";
 import { moduleInstSnippet, fileSymbolItems } from "./completion-items";
-import { connectionContext, instantiationContext } from "./completion-context";
+import { connectionContextClean, instantiationContext, stripSourceComments } from "./completion-context";
 import type { ModuleDef } from "../model";
 import type { PortInfo, ParameterInfo } from "../parser";
 
@@ -62,6 +62,17 @@ export function registerCompletionProviders(deps: CompletionDeps): void {
   function makeProvider(lang: "verilog" | "vhdl"): monaco.languages.CompletionItemProvider {
     const keywords = lang === "verilog" ? VERILOG_KEYWORDS : VHDL_KEYWORDS;
     const snippets = lang === "verilog" ? VERILOG_SNIPPETS : VHDL_SNIPPETS;
+    // 连接上下文清洗文本缓存：uri → model 版本对应的去注释文本，击键路径不做全文重复清洗
+    const cleanCache = new Map<string, { version: number; text: string }>();
+    function cleanedSource(model: monaco.editor.ITextModel): string {
+      const key = model.uri.toString();
+      const version = model.getVersionId();
+      const hit = cleanCache.get(key);
+      if (hit?.version === version) return hit.text;
+      const text = stripSourceComments(model.getValue(), lang);
+      cleanCache.set(key, { version, text });
+      return text;
+    }
     return {
       triggerCharacters: [".", "(", ",", ">"],
       async provideCompletionItems(model, position, _context, token) {
@@ -74,7 +85,7 @@ export function registerCompletionProviders(deps: CompletionDeps): void {
         );
         const K = monaco.languages.CompletionItemKind;
         const suggestions: monaco.languages.CompletionItem[] = [];
-        const connection = connectionContext(model.getValue(), model.getOffsetAt(position), lang);
+        const connection = connectionContextClean(cleanedSource(model), model.getOffsetAt(position), lang);
         if (connection && !connection.value) {
           const ports: PortInfo[] = connection.parameters ? deps.moduleParameters(connection.module) : await deps.modulePorts(connection.module);
           if (token.isCancellationRequested || model.isDisposed()) return { suggestions: [] };

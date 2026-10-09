@@ -10,9 +10,17 @@ export interface ConnectionContext {
   parameters: boolean;
 }
 
-/** 不完整的例化仍可补全；按未闭合括号定位连接表，避免把表达式括号当作端口表。 */
+export function stripSourceComments(source: string, lang: HdlLang): string {
+  return (lang === "vhdl" ? stripVhdlComments : stripComments)(source);
+}
+
 export function connectionContext(source: string, offset: number, lang: HdlLang): ConnectionContext | undefined {
-  const clean = (lang === "vhdl" ? stripVhdlComments : stripComments)(source).slice(0, offset);
+  return connectionContextClean(stripSourceComments(source, lang), offset, lang);
+}
+
+/** 不完整的例化仍可补全；按未闭合括号定位连接表，避免把表达式括号当作端口表。 */
+export function connectionContextClean(cleanSource: string, offset: number, lang: HdlLang): ConnectionContext | undefined {
+  const clean = cleanSource.slice(0, offset);
   const stack: number[] = [];
   for (let i = 0; i < clean.length; i++) {
     if (clean[i] === "(") stack.push(i);

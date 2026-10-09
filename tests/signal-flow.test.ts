@@ -182,6 +182,37 @@ describe("信号链：按实例追踪端口与直接赋值", () => {
     expect(contexts.items.map(c => c.path)).toEqual(["top/x", "top/y"]);
     expect(project.module("child")!.assignments).toHaveLength(0);
   });
+  it("同一文件多模块、多赋值的节点各自定位正确行号", async () => {
+    const source = [
+      "module first(input a, output q);",
+      "wire n;",
+      "assign n = a;",
+      "assign q = n;",
+      "endmodule",
+      "module second(input b, output r);",
+      "wire m1; wire m2;",
+      "assign m1 = b;",
+      "assign m2 = m1;",
+      "assign r = m2;",
+      "endmodule",
+    ].join("\n");
+    const rows = (n: TraceNode, out: TraceNode[] = []): TraceNode[] => { out.push(n); n.children.forEach(c => rows(c, out)); return out; };
+    const project = new SignalProject(new Map([["multi.v", source]]));
+    const down = rows(await traceSignal(project, project.root("second")!, "b", "downstream"));
+    expect(down.find(n => n.label === "second.m1")?.line).toBe(8);
+    expect(down.find(n => n.label === "second.m2")?.line).toBe(9);
+    expect(down.find(n => n.label === "second.r")?.line).toBe(10);
+    const up = rows(await traceSignal(project, project.root("first")!, "q", "upstream"));
+    expect(up.find(n => n.label === "first.n")?.line).toBe(4);
+    expect(up.find(n => n.label === "first.a")?.line).toBe(3);
+  });
+  it("同一文件名内容变化后行号按新内容定位", async () => {
+    const rows = (n: TraceNode, out: TraceNode[] = []): TraceNode[] => { out.push(n); n.children.forEach(c => rows(c, out)); return out; };
+    const project = new SignalProject(new Map([["t.v", "module t(input a, output q);\nassign q = a;\nendmodule"]]));
+    expect(rows(await traceSignal(project, project.root("t")!, "q", "upstream")).find(n => n.label === "t.a")?.line).toBe(2);
+    const next = new SignalProject(new Map([["t.v", "\n\nmodule t(input a, output q);\n\nassign q = a;\nendmodule"]]));
+    expect(rows(await traceSignal(next, next.root("t")!, "q", "upstream")).find(n => n.label === "t.a")?.line).toBe(5);
+  });
   it("分析取消不会继续展开", async () => {
     const project = new SignalProject(new Map([["t.v", "module t(input a); endmodule"]]));
     await expect(traceSignal(project, project.root("t")!, "a", "upstream", { cancelled: () => true })).rejects.toThrow("cancelled");
@@ -459,6 +490,33 @@ describe("信号链：VHDL 过程穿透（赋值池模型）", () => {
     const mod = p.module("t")!;
     expect(mod.assignments.map(a => `${a.target}@${a.proc}`)).toEqual(["y@0", "y@1"]);
     expect(mod.multiDriver.has("y")).toBe(true);
+  });
+  it("字符串字面量不产生赋值/读取边", async () => {
+    const v = new SignalProject(new Map([["t.v", `module t(input a, output y);
+      localparam MSG = "assign x = y;";
+      assign y = a;
+    endmodule`]]));
+    expect(v.module("t")!.assignments.map(a => a.target)).toEqual(["y"]);
+    const vhd = new SignalProject(new Map([["t.vhd", `entity t is port(a: in bit; y: out bit); end t;
+      architecture rtl of t is constant MSG : string := "a <= b;"; begin y <= a; end rtl;`]]));
+    expect(vhd.module("t")!.assignments.map(a => a.target)).toEqual(["y"]);
+    const up = collect(await traceSignal(vhd, vhd.root("t")!, "y", "upstream"));
+    expect(up.some(n => n.label === "t.a")).toBe(true);
+    expect(up.some(n => n.label === "t.b")).toBe(false);
+  });
+  it("with...select 选择赋值产生边界，不把选项列表硬拆成条件链", async () => {
+    const p = new SignalProject(new Map([["t.vhd", `entity t is port(sel: in bit; a: in bit; b: in bit; y: out bit); end t;
+      architecture rtl of t is begin
+        with sel select y <= a when '0', b when others;
+      end rtl;`]]));
+    const ctx = p.root("t")!;
+    const up = flatten(await traceSignal(p, ctx, "y", "upstream"));
+    expect(up).toContain("选择赋值（不继续推导）");
+    expect(up).not.toContain("t.a");
+    expect(up).not.toContain("t.b");
+    const bDown = flatten(await traceSignal(p, ctx, "b", "downstream"));
+    expect(bDown).toContain("选择赋值（不继续推导）");
+    expect(bDown).not.toContain("t.y");
   });
   it("并发条件赋值 when/else：条件作标注，数据候选穿透", async () => {
     const p = new SignalProject(new Map([["t.vhd", `entity t is port(en: in bit; a: in bit; b: in bit; y: out bit); end t;

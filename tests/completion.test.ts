@@ -1,7 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { moduleInstSnippet, fileSymbolItems } from "../src/editor/completion-items";
 import type { PortInfo } from "../src/parser";
 import { connectionContext, instantiationContext } from "../src/editor/completion-context";
+import { stripComments } from "../src/parser/verilog";
+import { registerCompletionProviders } from "../src/editor/completion";
+import * as monacoModule from "../src/editor/monaco";
+
+vi.mock("../src/editor/monaco", () => {
+  class Range {
+    constructor(
+      readonly startLineNumber: number,
+      readonly startColumn: number,
+      readonly endLineNumber: number,
+      readonly endColumn: number,
+    ) {}
+  }
+  const providers = new Map<string, unknown>();
+  return {
+    monaco: {
+      Range,
+      languages: {
+        CompletionItemKind: { Field: 5, Module: 8, Keyword: 17, Snippet: 25, Variable: 4, Struct: 22 },
+        CompletionItemInsertTextRule: { InsertAsSnippet: 4 },
+        registerCompletionItemProvider: (lang: string, provider: unknown) => providers.set(lang, provider),
+      },
+    },
+    VERILOG_KEYWORDS: [] as string[],
+    VHDL_KEYWORDS: [] as string[],
+    __providers: providers,
+  };
+});
+
+vi.mock("../src/parser/verilog", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/parser/verilog")>();
+  return { ...actual, stripComments: vi.fn(actual.stripComments) };
+});
 
 describe("例化骨架 snippet", () => {
   it("VHDL 生成 entity 和 port map，保留已输入的例化标签与库", () => {
@@ -79,5 +112,61 @@ endmodule`,
     );
     expect(items.find((i) => i.label === "u_sub")?.detail).toBe("u_sub : sub");
     expect(items.find((i) => i.label === "r_a")?.detail).toBe("信号");
+  });
+});
+
+describe("连接上下文清洗文本按 model 版本缓存", () => {
+  interface TestProvider {
+    provideCompletionItems(
+      model: unknown,
+      position: { lineNumber: number; column: number },
+      context: unknown,
+      token: { isCancellationRequested: boolean },
+    ): Promise<{ suggestions: { label: unknown }[] }>;
+  }
+
+  function fakeModel(text: string) {
+    let value = text;
+    let version = 1;
+    return {
+      uri: { toString: () => "file:///t.v", path: "/t.v" },
+      getValue: () => value,
+      setValue: (v: string) => {
+        value = v;
+        version += 1;
+      },
+      getVersionId: () => version,
+      isDisposed: () => false,
+      getOffsetAt: () => value.length,
+      getLineContent: () => value,
+      getWordUntilPosition: (position: { column: number }) => ({ startColumn: position.column, endColumn: position.column }),
+    };
+  }
+
+  it("同一版本不重复清洗全文，编辑后重新计算且结果一致", async () => {
+    registerCompletionProviders({
+      allDefs: () => [],
+      modulePorts: async () => [{ name: "clk" }, { name: "rst" }],
+      moduleParameters: () => [],
+    });
+    const providers = (monacoModule as unknown as { __providers: Map<string, TestProvider> }).__providers;
+    const provider = providers.get("verilog");
+    expect(provider).toBeDefined();
+    const model = fakeModel("child u (.clk(clk), .");
+    const position = () => ({ lineNumber: 1, column: model.getValue().length + 1 });
+    const token = { isCancellationRequested: false };
+    const strip = vi.mocked(stripComments);
+    strip.mockClear();
+
+    const first = await provider!.provideCompletionItems(model, position(), {}, token);
+    const second = await provider!.provideCompletionItems(model, position(), {}, token);
+    expect(strip).toHaveBeenCalledTimes(1);
+    expect(first.suggestions.map((s) => s.label)).toEqual(["rst"]);
+    expect(second.suggestions.map((s) => s.label)).toEqual(first.suggestions.map((s) => s.label));
+
+    model.setValue("child u (.clk(clk), .r");
+    const third = await provider!.provideCompletionItems(model, position(), {}, token);
+    expect(strip).toHaveBeenCalledTimes(2);
+    expect(third.suggestions.map((s) => s.label)).toEqual(["rst"]);
   });
 });

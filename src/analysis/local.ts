@@ -3,6 +3,7 @@ import { type SignalProject, type SignalContext } from "../model/signal-flow";
 import { type ComputationProject, type Driver, type SourceSpan } from "./project";
 import { type Expr, refs } from "./expression";
 import { findSignalDeclLine } from "../model/signals";
+import { sourceEntry } from "./source-cache";
 
 export interface LogicNode {
   id: string; label: string; signal?: string; path: string;
@@ -25,7 +26,7 @@ export function localLogic(comp: ComputationProject, project: SignalProject, ctx
   const graph:LogicGraph={root:"",nodes,edges,truncated:false};
   const norm=(s:string)=>data?.lang==="vhdl"?s.toLowerCase():s;
   const byKey=new Map<string,LogicNode>(), visiting=new Set<string>();
-  const span=(file:string,line:number):SourceSpan=>{const start=(comp.files.get(file)??"").split("\n").slice(0,line-1).reduce((n,s)=>n+s.length+1,0);return {file,start,end:start+1};};
+  const span=(file:string,line:number):SourceSpan=>{const start=sourceEntry(file,comp.files.get(file)??"").lineOffset(line);return {file,start,end:start+1};};
   const add=(key:string,n:Omit<LogicNode,"id">):LogicNode|undefined=>{
     const old=byKey.get(key);if(old)return old;
     if(nodes.length>=limit){graph.truncated=true;return;}

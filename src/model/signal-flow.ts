@@ -3,6 +3,7 @@ import { analyzeExpression, parseVerilogProcess, parseVhdlProcess, scanVhdlRegio
 import { stripComments } from "../parser/verilog";
 import { stripVhdlComments } from "../parser/vhdl";
 import { processTargetSource } from "../analysis/process";
+import { sourceEntry } from "../analysis/source-cache";
 
 interface Assignment {
   statement?: string;
@@ -56,7 +57,6 @@ export type TraceDirection = "upstream" | "downstream";
 const identifier = /^[A-Za-z_]\w*$/;
 const same = (a: string, b: string, file: string) => detectLang(file) === "vhdl" ? a.toLowerCase() === b.toLowerCase() : a === b;
 const mentions = (text: string, name: string, file: string) => (text.match(/[A-Za-z_]\w*/g) ?? []).some(s => same(s, name, file));
-const lineAt = (src: string, offset: number) => src.slice(0, offset).split("\n").length;
 const localScope = (mod: SignalModule, name: string, proc = -1) =>
   mod.processes[proc]?.locals.has(name.toLowerCase()) ? proc : -1;
 const signalKey = (mod: SignalModule, name: string, proc = -1) => {
@@ -135,13 +135,26 @@ function stmtEnd(body: string, from: number): number {
   return body.length;
 }
 
-/** VHDL 并发条件赋值拆分：`a when c else b` —— when 段作条件标注，其余段作数据候选。 */
-function splitVhdlWhen(expression: string): { valueText: string; conditions: string[] } | undefined {
+/** VHDL 并发条件赋值拆分：`a when c else b` —— when 段作条件标注，其余段作数据候选。
+    when 段含顶层逗号时是 with...select 选择赋值，标记 selected 由调用方产出边界，不硬拆。
+    expression 为字符串已遮蔽的副本，display 为索引对齐的原文（条件展示用）。 */
+function splitVhdlWhen(expression: string, display = expression): { valueText: string; conditions: string[]; selected?: boolean } | undefined {
   if (!/\bwhen\b/i.test(expression)) return undefined;
-  const segs = expression.split(/\b(?:when|else)\b/i);
+  const spans: [number, number][] = [];
+  let pos = 0;
+  for (const t of expression.matchAll(/\b(?:when|else)\b/gi)) { spans.push([pos, t.index!]); pos = t.index! + t[0].length; }
+  spans.push([pos, expression.length]);
+  for (let idx = 1; idx < spans.length; idx += 2) {
+    let depth = 0;
+    for (const c of expression.slice(...spans[idx])) {
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      else if (c === "," && !depth) return { valueText: "", conditions: [], selected: true };
+    }
+  }
   return {
-    valueText: segs.filter((_, idx) => idx % 2 === 0).join("; "),
-    conditions: segs.filter((_, idx) => idx % 2 === 1).map(s => s.trim()).filter(Boolean),
+    valueText: spans.filter((_, idx) => idx % 2 === 0).map(([s, e]) => expression.slice(s, e)).join("; "),
+    conditions: spans.filter((_, idx) => idx % 2 === 1).map(([s, e]) => display.slice(s, e).trim()).filter(Boolean),
   };
 }
 
@@ -187,13 +200,13 @@ export class SignalProject {
   /** 显式源码入口仅绑定当前模块实现；子模块仍按工程绑定规则处理。 */
   forSource(name: string, source: SourcePosition): SignalProject {
     const raw = this.files.get(source.file); if (raw === undefined) return this;
-    const vhdl = detectLang(source.file) === "vhdl";
-    const clean = (vhdl ? stripVhdlComments : stripComments)(raw);
-    const scopes = [...clean.matchAll(vhdl ? /\barchitecture\s+\w+\s+of\s+(\w+)\s+is/gi : /\bmodule\s+(\w+)/g)];
-    const offset = raw.split("\n").slice(0,source.line-1).reduce((n,s)=>n+s.length+1,0)+(source.column??1)-1;
-    const matches = scopes.filter(s=>same(s[1],name,source.file));
-    const selected = matches.length===1 ? matches[0] : matches.find(s=>s.index!<=offset && (scopes[scopes.indexOf(s)+1]?.index??clean.length)>offset);
-    return selected ? new SignalProject(this.files,this.structures,{name,file:source.file,start:selected.index!}) : this;
+    const entry = sourceEntry(source.file, raw);
+    const clean = entry.text(true);
+    const scopes = entry.scopes(true, false);
+    const offset = entry.lineOffset(source.line) + (source.column ?? 1) - 1;
+    const matches = scopes.filter(s => same(s.name, name, source.file));
+    const selected = matches.length === 1 ? matches[0] : matches.find(s => s.index <= offset && (scopes[scopes.indexOf(s) + 1]?.index ?? clean.length) > offset);
+    return selected ? new SignalProject(this.files, this.structures, { name, file: source.file, start: selected.index }) : this;
   }
 
   owner(file: string, line: number, column?: number): string | undefined {
@@ -236,24 +249,25 @@ export class SignalProject {
     for (const { file, source } of sources) {
       if (binding && binding.file !== file) continue;
       const vhdl = detectLang(file) === "vhdl";
-      const clean = (vhdl ? stripVhdlComments : stripComments)(source);
-      const scopes = [...clean.matchAll(vhdl ? /\barchitecture\s+(\w+)\s+of\s+(\w+)\s+is\b/gi : /\bmodule\s+(\w+)\b/g)];
+      const fileEntry = sourceEntry(file, source);
+      const clean = fileEntry.text(true);
+      const scopes = fileEntry.scopes(true, true);
       for (let idx = 0; idx < scopes.length; idx++) {
         const scope = scopes[idx];
-        if (!same(scope[vhdl ? 2 : 1], name, file)) continue;
+        if (!same(scope.name, name, file)) continue;
         if (binding && scope.index !== binding.start) continue;
         if (vhdl) architectureCount++;
         else moduleCount++;
-        const start = scope.index!;
+        const start = scope.index;
         let end = scopes[idx + 1]?.index ?? clean.length;
         if (!vhdl) { const close = clean.indexOf("endmodule", start); if (close >= 0) end = Math.min(end, close); }
         result.regions.push({file,start,end});
-        const body = (vhdl ? stripVhdlComments : stripComments)(source.slice(start, end), false);
+        const body = fileEntry.text(false).slice(start, end);
         if (/\bgenerate\b/i.test(clean.slice(start,end))) result.problem = "generate 需展开后确定实例与连线";
         const procedural = processRanges(clean.slice(start,end), vhdl).map(p=>({...p,text:body.slice(p.index,p.index+p.text.length)}));
         const norm = (s: string) => vhdl ? s.toLowerCase() : s;
         for (const p of procedural) {
-          const line = lineAt(source, start + p.index);
+          const line = fileEntry.lineAt(start + p.index);
           // Verilog 函数/任务与 VHDL 函数/过程保持边界，不做过程内解析
           const head = p.text.trimStart();
           if (vhdl && !/^process\b/i.test(head)) { result.boundaries.push({ text: p.text, file, line, reason: "函数/过程（不继续推导）" }); continue; }
@@ -264,12 +278,12 @@ export class SignalProject {
             result.assignments.push({
               target: pa.target, expression: pa.expression, statement: `${pa.target} ${pa.operator} ${pa.expression};`,
               direct: !pa.hasCall && !pa.blockedReads.length && identifier.test(pa.target) && identifier.test(pa.expression),
-              file, line: lineAt(source, start + p.index + pa.index),
+              file, line: fileEntry.lineAt(start + p.index + pa.index),
               conditions: pa.conditions, clock: pa.clock, proc: procSeq,
               reads: pa.reads, blockedReads: pa.blockedReads, hasCall: pa.hasCall,
             });
           }
-          for (const b of parsed.boundaries) result.boundaries.push({ text: p.text.slice(b.index, b.endIndex), file, line: lineAt(source, start + p.index + b.index), reason: b.reason, proc: procSeq });
+          for (const b of parsed.boundaries) result.boundaries.push({ text: p.text.slice(b.index, b.endIndex), file, line: fileEntry.lineAt(start + p.index + b.index), reason: b.reason, proc: procSeq });
           for (const s of parsed.controlSignals) {
             control.add(signalKey(result, norm(s), procSeq));
             result.controlSites.push({ signal: norm(s), file, line, proc: procSeq });
@@ -278,15 +292,25 @@ export class SignalProject {
           procSeq++;
         }
         const assignments = vhdl
-          ? /\b([A-Za-z_]\w*(?:\s*\([^;]*?\))?)\s*<=\s*([^;]+);/g
-          : /\b(?:assign\s+|wire\s+(?:(?:signed|unsigned)\s+)?(?:\[[^\]]+\]\s*)?)([A-Za-z_]\w*(?:\s*\[[^\]]*\])?)\s*=\s*([^;]+);/g;
-        for (const a of body.matchAll(assignments)) {
+          ? /\b([A-Za-z_]\w*(?:\s*\([^;]*?\))?)\s*<=\s*([^;]+);/gd
+          : /\b(?:assign\s+|wire\s+(?:(?:signed|unsigned)\s+)?(?:\[[^\]]+\]\s*)?)([A-Za-z_]\w*(?:\s*\[[^\]]*\])?)\s*=\s*([^;]+);/gd;
+        // 匹配在字符串已遮蔽且索引对齐的 clean 副本上进行，展示文本仍取 body
+        const masked = clean.slice(start, end);
+        for (const a of masked.matchAll(assignments)) {
           if (procedural.some(p => a.index! >= p.index && a.index! < p.index + p.text.length)) continue;
-          const target = a[1].trim(), expression = a[2].trim();
-          const entry: Assignment = { target, expression, statement: a[0].trim(), direct: identifier.test(target) && identifier.test(expression), file, line: lineAt(source, start + a.index!), proc: -1 };
-          // VHDL 并发条件赋值：when 段作条件标注，其余段作数据候选
-          const vhdlCond = vhdl ? splitVhdlWhen(expression) : undefined;
-          const expr = analyzeExpression(vhdlCond?.valueText ?? expression, vhdl);
+          const statement = body.slice(a.index!, a.index! + a[0].length);
+          // 遮蔽副本里字符串是空白，a[2] 边界不可靠；表达式取目标捕获组之后、结尾分号之前的原文
+          const after = a.indices![1][1];
+          const op = /^\s*(?:<=|=(?!=))\s*/.exec(body.slice(after, a.index! + a[0].length))!;
+          const target = a[1].trim(), expression = body.slice(after + op[0].length, a.index! + a[0].length - 1).trim();
+          const entry: Assignment = { target, expression, statement: statement.trim(), direct: identifier.test(target) && identifier.test(expression), file, line: fileEntry.lineAt(start + a.index!), proc: -1 };
+          // VHDL 并发条件赋值：when 段作条件标注，其余段作数据候选；选择赋值（逗号分隔 when 段）不硬拆
+          const vhdlCond = vhdl ? splitVhdlWhen(masked.slice(after + op[0].length, a.index! + a[0].length - 1), body.slice(after + op[0].length, a.index! + a[0].length - 1)) : undefined;
+          if (vhdlCond?.selected) {
+            result.boundaries.push({ text: statement.trim(), file, line: entry.line, reason: "选择赋值（不继续推导）", proc: -1 });
+            continue;
+          }
+          const expr = analyzeExpression(vhdlCond?.valueText ?? masked.slice(after + op[0].length, a.index! + a[0].length - 1), vhdl);
           entry.reads = expr.reads; entry.blockedReads = expr.blockedReads; entry.hasCall = expr.hasCall;
           if (vhdlCond) { entry.conditions = vhdlCond.conditions; entry.direct = false; }
           data.add(norm(target.replace(/\s*\[.*\]$/, "").replace(/\s*\(.*\)$/, "")));
@@ -310,7 +334,7 @@ export class SignalProject {
     }
     if (architectureCount > 1) result.problem = "存在多个 architecture，尚未确定绑定";
     if (moduleCount > 1) result.problem = "存在多个同名 module，尚未确定绑定";
-    if (binding) result.instances = result.instances.filter(inst=>result.regions.some(r=>r.file===inst.file&&inst.line>=lineAt(this.files.get(r.file)!,r.start)&&inst.line<=lineAt(this.files.get(r.file)!,r.end)));
+    if (binding) result.instances = result.instances.filter(inst=>result.regions.some(r=>{if(r.file!==inst.file)return false;const e=sourceEntry(r.file,this.files.get(r.file)!);return inst.line>=e.lineAt(r.start)&&inst.line<=e.lineAt(r.end);}));
     this.modules.set(key, result);
     return result;
   }
@@ -320,9 +344,9 @@ export class SignalProject {
     const region = mod.processes[proc], source = this.files.get(region.file)!;
     const text = source.slice(region.start, region.end);
     const rows = processTargetSource(text, detectLang(region.file)!, target);
-    if (rows) return rows.map(row => ({text: row.text, line: row.offset === undefined ? undefined : lineAt(source, region.start + row.offset)}));
+    if (rows) return rows.map(row => ({text: row.text, line: row.offset === undefined ? undefined : sourceEntry(region.file, source).lineAt(region.start + row.offset)}));
     // 不支持的过程仅展示原文，不重建或猜测其控制结构。
-    const first = lineAt(source, region.start);
+    const first = sourceEntry(region.file, source).lineAt(region.start);
     const sites = new Set(mod.assignments.filter(a => a.proc === proc && same(a.target.replace(/\s*[\[(].*$/, ""), target, a.file)).map(a => a.line));
     return text.split("\n").map((text, i) => ({text, line: sites.has(first + i) ? first + i : undefined}));
   }
@@ -331,7 +355,7 @@ export class SignalProject {
     let remaining = false;
     for (const region of mod.regions) {
       const vhdl = detectLang(region.file) === "vhdl";
-      let text = (vhdl ? stripVhdlComments : stripComments)(this.files.get(region.file)!.slice(region.start, region.end));
+      let text = sourceEntry(region.file, this.files.get(region.file)!).text(true).slice(region.start, region.end);
       // 局部同名对象不能算模块信号的使用；局部入口也不能跨出所属过程。
       if (scope >= 0) {
         const proc = mod.processes[scope];
@@ -373,7 +397,7 @@ export class SignalProject {
     const mod = this.module(module);
     const text = source && this.files.get(source.file);
     if (!mod || !source || text === undefined) return -1;
-    const offset = text.split("\n").slice(0, source.line - 1).reduce((sum, line) => sum + line.length + 1, 0) + (source.column ?? 1) - 1;
+    const offset = sourceEntry(source.file, text).lineOffset(source.line) + (source.column ?? 1) - 1;
     const proc = mod.processes.findIndex(p => p.file === source.file && offset >= p.start && offset < p.end);
     return localScope(mod, name, proc);
   }

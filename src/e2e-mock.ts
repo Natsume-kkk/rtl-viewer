@@ -3,7 +3,7 @@
  * 中间件 /__e2e_scan 与 /__e2e_fs，对话框固定返回 fixture 工程路径。
  * 仅用于自动化验收，生产构建不受影响（tauri 应用内不存在 ?e2e）。
  */
-const FIXTURE = "D:/workspace/projects/rtl-viewer/.tmp/cp7-acceptance/project";
+const FIXTURE = "D:/workspace/projects/rtl-viewer/tests/fixtures/cp7/project";
 
 interface TauriInternals {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;

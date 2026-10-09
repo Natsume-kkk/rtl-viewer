@@ -99,7 +99,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Invoke-Cargo.ps1 test --ma
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Release.ps1
 ```
 
-产物 `src-tauri/target/release/rtl-viewer.exe` 即为便携可执行文件，双击运行。
+交付物为 `release/rtl-viewer.exe`（脚本构建后自动从 cargo 输出复制至此），双击运行。
 
 前置：Rust stable（本机经 `D:\workspace\toolchains\rust\`，项目 `rust-toolchain.toml` 固定 1.98.1）、Node 24、WebView2 Runtime（Win10/11 自带）。
 
@@ -108,6 +108,9 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Release.ps1
 ```text
 src/         前端：analysis/（按需运算语义与单模块逻辑）、parser/（HDL 解析）、model/（索引、层级树、搜索、导航历史、大纲、信号声明定位）、editor/（Monaco、标签页、代码补全）、ui/（树、搜索面板、大纲、状态栏、对话框、右键菜单、最近工程）
 src-tauri/   Rust 后端
-tests/       Vitest 测试（含真实工程验收：tests/acceptance-cp7.test.ts 夹具在 .tmp 不入库；tests/acceptance-real-projects.test.ts 依赖本机绝对路径工程，路径缺失时自动跳过）
-scripts/     构建辅助（Build-Release.ps1、Invoke-Cargo.ps1、make-icon.mjs）
+tests/       Vitest 测试（含真实工程验收：tests/acceptance-cp7.test.ts 夹具在 tests/fixtures/cp7/，真实工程副本不入 Git、缺失自动跳过；tests/acceptance-real-projects.test.ts 依赖本机绝对路径工程，路径缺失时自动跳过）
+scripts/     构建辅助（Build-Release.ps1、Invoke-Cargo.ps1、make-icon.mjs、Capture-Window.ps1 exe 窗口冒烟截图）
+release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 ```
+
+中间产物位置：`dist/` 为 vite 前端构建输出，`src-tauri/target/` 为 cargo 输出，两者均为中间产物，日常使用只看 `release/`。

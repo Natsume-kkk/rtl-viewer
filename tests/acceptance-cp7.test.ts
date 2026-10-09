@@ -7,11 +7,11 @@ import { buildHierarchy, type TreeNode } from "../src/model/hierarchy";
 import { decode, walk } from "./helpers/fs-scan";
 
 /**
- * CP7 真实工程验收：对 .tmp/cp7-acceptance/project（cameralink 工程副本，
+ * CP7 真实工程验收：对 tests/fixtures/cp7/project（cameralink 工程副本，
  * 含 58 个 GBK 文件、2 个 .xci IP、IP 生成的 VHDL）跑完整解析管线。
- * 夹具缺失时跳过（夹具由 CP7 验收流程生成，不入 Git）。
+ * 夹具缺失时跳过（真实工程副本不入 Git，由 CP7 验收流程生成）。
  */
-const PROJECT = join(__dirname, "..", ".tmp", "cp7-acceptance", "project");
+const PROJECT = join(__dirname, "fixtures", "cp7", "project");
 
 function findNode(node: TreeNode, pred: (n: TreeNode) => boolean): TreeNode | undefined {
   if (pred(node)) return node;

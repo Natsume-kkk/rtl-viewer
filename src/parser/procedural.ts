@@ -4,6 +4,7 @@ import { KEYWORDS } from "./verilog";
 
 export interface ExprAnalysis { reads: string[]; blockedReads: string[]; hasCall: boolean }
 export interface ProcAssign extends ExprAnalysis {
+  operator: "=" | "<=" | ":=";
   target: string;
   expression: string;
   /** 相对过程文本的偏移 */
@@ -20,6 +21,8 @@ export interface ProcInfo {
   controlSignals: string[];
   /** 赋值目标与 RHS 中的信号 */
   dataSignals: string[];
+  /** 当前过程声明的局部对象，不含嵌套子程序的声明。 */
+  locals?: string[];
 }
 
 interface Token { text: string; index: number }
@@ -236,7 +239,7 @@ export function parseVerilogProcess(text: string): ProcInfo {
         for (const r of analyzeExpression(expression).reads) data.add(r);
       } else {
         const expr = analyzeExpression(expression);
-        info.assignments.push({ target: t.text, expression, index: t.index, conditions: conds, clock: [...edges], ...expr });
+        info.assignments.push({ target: t.text, operator: op, expression, index: t.index, conditions: conds, clock: [...edges], ...expr });
         data.add(t.text);
         for (const r of [...expr.reads, ...expr.blockedReads]) data.add(r);
       }
@@ -247,9 +250,67 @@ export function parseVerilogProcess(text: string): ProcInfo {
   }
 }
 
+/** 输入已去注释；按嵌套声明匹配 process/function/procedure 的范围，保留源码偏移。 */
+export function scanVhdlRegion(text: string, from = 0): { end: number; begin: number; nested: { start: number; end: number }[]; closed: boolean } {
+  const words = /[A-Za-z_]\w*|[();]/g;
+  words.lastIndex = from;
+  const stack: { kind: string; start: number }[] = [];
+  const nested: { start: number; end: number }[] = [];
+  let begin = -1, match: RegExpExecArray | null;
+  while ((match = words.exec(text))) {
+    const word = match[0].toLowerCase();
+    if (word === "function" || word === "procedure") {
+      // 参数列表中的分号不是原型声明结尾；只有顶层 is 才引入子程序体。
+      let depth = 0, header: RegExpExecArray | null;
+      while ((header = words.exec(text))) {
+        const token = header[0].toLowerCase();
+        if (token === "(") depth++;
+        else if (token === ")") depth--;
+        else if (!depth && (token === "is" || token === ";")) break;
+      }
+      if (!header) break;
+      if (header[0] === ";") {
+        if (!stack.length) return { end: words.lastIndex, begin, nested, closed: true };
+        if (stack.length === 1) nested.push({ start: match.index, end: words.lastIndex });
+        continue;
+      }
+      stack.push({ kind: word, start: match.index });
+    } else if (word === "process" || word === "record") {
+      stack.push({ kind: word, start: match.index });
+    } else if (word === "begin" && stack.length === 1 && begin < 0) {
+      begin = match.index;
+    } else if (word === "end") {
+      const close = /^\s*(?:([A-Za-z_]\w*)(?:\s+[A-Za-z_]\w*)?)?\s*;/.exec(text.slice(words.lastIndex));
+      if (!close) continue;
+      words.lastIndex += close[0].length;
+      const tag = close[1]?.toLowerCase();
+      if (tag && ["if", "case", "loop"].includes(tag)) continue;
+      if (tag && ["architecture", "entity", "generate", "block"].includes(tag)) break;
+      if (tag && ["process", "function", "procedure", "record"].includes(tag) && stack.at(-1)?.kind !== tag) break;
+      const frame = stack.pop();
+      if (!frame) break;
+      if (stack.length === 1) nested.push({ start: frame.start, end: words.lastIndex });
+      if (!stack.length) return { end: words.lastIndex, begin, nested, closed: true };
+    }
+  }
+  return { end: text.length, begin, nested, closed: false };
+}
+
 /** VHDL process 语句级解析：与 Verilog 侧同为赋值池模型；`(...)` 位选/调用、循环、聚合目标为断点。 */
 export function parseVhdlProcess(text: string): ProcInfo {
   const info: ProcInfo = { assignments: [], boundaries: [], controlSignals: [], dataSignals: [] };
+  const region = scanVhdlRegion(text);
+  if (!region.closed || region.begin < 0) {
+    info.boundaries.push({ index: 0, endIndex: text.length, reason: "过程边界未确定（不继续推导）" });
+    return info;
+  }
+  // 局部子程序按调用处显示边界，不将其声明内的赋值或时钟混入外层过程。
+  let declarations = text.slice(0, region.begin);
+  for (const range of [...region.nested].reverse()) {
+    declarations = declarations.slice(0, range.start) + declarations.slice(range.start, range.end).replace(/[^\n]/g, " ") + declarations.slice(range.end);
+  }
+  info.locals = [...declarations.matchAll(/\b(?:variable|constant)\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*:/gi)]
+    .flatMap(m => m[1].split(",").map(name => name.trim().toLowerCase()));
   const tokens = tokenize(text);
   const control = new Set<string>(), data = new Set<string>();
   const edges: string[] = [];
@@ -262,15 +323,16 @@ export function parseVhdlProcess(text: string): ProcInfo {
     i = close + 1;
   }
   if (tokens[i]?.text.toLowerCase() === "is") i++;
-  for (const m of text.matchAll(/(?:rising_edge|falling_edge)\s*\(\s*([A-Za-z_]\w*)\s*\)/gi)) {
+  const body = text.slice(region.begin);
+  for (const m of body.matchAll(/(?:rising_edge|falling_edge)\s*\(\s*([A-Za-z_]\w*)\s*\)/gi)) {
     if (!edges.some(e => e.toLowerCase() === m[1].toLowerCase())) edges.push(m[1]);
     control.add(m[1].toLowerCase());
   }
-  for (const m of text.matchAll(/([A-Za-z_]\w*)\s*'\s*event\b/gi)) {
+  for (const m of body.matchAll(/([A-Za-z_]\w*)\s*'\s*event\b/gi)) {
     if (!edges.some(e => e.toLowerCase() === m[1].toLowerCase())) edges.push(m[1]);
     control.add(m[1].toLowerCase());
   }
-  while (i < tokens.length && tokens[i].text.toLowerCase() !== "begin") i++;
+  while (i < tokens.length && tokens[i].index < region.begin) i++;
   if (i < tokens.length) parseSeq(i + 1, tokens.length, [], 0, new Set(["end"]));
   info.controlSignals = [...control];
   info.dataSignals = [...data];
@@ -347,15 +409,15 @@ export function parseVhdlProcess(text: string): ProcInfo {
     const first = condUntil(i + 1, end, "then");
     addConditionSignals(first.text);
     i = parseSeq(first.next + 1, end, [...conds, first.text], depth + 1, new Set(["elsif", "else", "end"]));
-    let prev = first.text;
+    const excluded = [`!(${first.text})`];
     while (tokens[i]?.text.toLowerCase() === "elsif") {
       const branch = condUntil(i + 1, end, "then");
       addConditionSignals(branch.text);
-      i = parseSeq(branch.next + 1, end, [...conds, `!(${prev})`, branch.text], depth + 1, new Set(["elsif", "else", "end"]));
-      prev = branch.text;
+      i = parseSeq(branch.next + 1, end, [...conds, ...excluded, branch.text], depth + 1, new Set(["elsif", "else", "end"]));
+      excluded.push(`!(${branch.text})`);
     }
     if (tokens[i]?.text.toLowerCase() === "else") {
-      i = parseSeq(i + 1, end, [...conds, `!(${prev})`], depth + 1, new Set(["end"]));
+      i = parseSeq(i + 1, end, [...conds, ...excluded], depth + 1, new Set(["end"]));
     }
     if (tokens[i]?.text.toLowerCase() === "end" && tokens[i + 1]?.text.toLowerCase() === "if") i += 2;
     if (tokens[i]?.text === ";") i++;
@@ -419,7 +481,7 @@ export function parseVhdlProcess(text: string): ProcInfo {
         for (const r of analyzeExpression(expression, true).reads) data.add(r.toLowerCase());
       } else {
         const expr = analyzeExpression(expression, true);
-        info.assignments.push({ target: t.text, expression, index: t.index, conditions: conds, clock: [...edges], ...expr });
+        info.assignments.push({ target: t.text, operator: op, expression, index: t.index, conditions: conds, clock: [...edges], ...expr });
         data.add(t.text.toLowerCase());
         for (const r of [...expr.reads, ...expr.blockedReads]) data.add(r.toLowerCase());
       }

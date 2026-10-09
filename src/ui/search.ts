@@ -35,7 +35,8 @@ export class SearchPanel {
     const resize = document.createElement("div"); resize.className = "search-resize";
     resize.tabIndex = 0; resize.setAttribute("role", "separator"); resize.setAttribute("aria-label", "调整搜索面板高度"); resize.setAttribute("aria-orientation", "horizontal");
     const height = (value: number) => {
-      const maximum = Math.max(140, (this.rootEl.parentElement?.clientHeight ?? 600) - 180);
+      const flow = this.rootEl.parentElement?.querySelector<HTMLElement>("#signal-flow:not([hidden])")?.clientHeight ?? 0;
+      const maximum = Math.max(140, (this.rootEl.parentElement?.clientHeight ?? 600) - flow - 180);
       const next = Math.min(Math.max(value, 140), maximum);
       this.rootEl.style.height = `${next}px`; resize.setAttribute("aria-valuenow", String(Math.round(next)));
     };

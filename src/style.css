@@ -1333,28 +1333,18 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .status-right { flex: none; }
 #mapping .panel-head { border-bottom: 1px solid var(--border-subtle); padding: 0 13px 0 17px; }
 .result-stale { flex: none; margin: 4px 16px; color: var(--sem-hint); text-align: left; }
-#signal-flow { grid-area: mapping; width: 320px; min-height: 0; display: flex; flex-direction: column; background: var(--surface-app); border-left: 1px solid var(--border-strong); }
+#signal-flow { height: 350px; max-height: 60%; min-height: 150px; flex: 0 1 auto; display: flex; flex-direction: column; background: var(--surface-app); border-top: 1px solid var(--border-strong); }
+#signal-flow[hidden] { display: none; }
+#editor-workspace:has(#signal-flow:not([hidden])) #main-area { min-height: 140px; }
+#editor-workspace:has(#signal-flow:not([hidden])) #search-root { flex-shrink: 1; min-height: 140px; }
 #signal-flow .panel-head { flex: none; border-bottom: 1px solid var(--border-subtle); }
 .flow-tools { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px 0; }
 .flow-following { margin: 0; color: var(--fg-secondary); font-size: 11px; line-height: 1.6; }
 .flow-path { display: block; font-family: var(--font-mono); overflow-wrap: anywhere; }
-.flow-terminal { padding: 4px 0 8px; border-bottom: 1px solid var(--border-subtle); }
-.flow-node.flow-usage { display: block; padding: 0; color: var(--fg-secondary); font: 10px var(--font-ui); }
 .flow-tools select { width: 100%; background: var(--surface-editor); color: var(--fg); border: 1px solid var(--border-strong); padding: 6px; }
 .flow-body { overflow: auto; min-height: 0; padding: 0 14px 18px; }
-.flow-body h3 { margin: 12px 0; font-size: 12px; }
-.flow-body ul { list-style: none; margin: 0; padding-left: 12px; border-left: 1px solid var(--border-subtle); }
-.flow-body section > ul { padding-left: 0; border: 0; }
-.flow-node { color: var(--accent); background: transparent; border: 0; font: 11px var(--font-mono); text-align: left; padding: 6px 0; overflow-wrap: anywhere; cursor: pointer; }
-.flow-node:hover { text-decoration: underline; }
-.flow-node:disabled { color: var(--fg-secondary); cursor: default; }
 .flow-reason { font-size: 10px; color: var(--fg-secondary); margin: 0 0 6px; line-height: 1.6; }
 .flow-selected { display: block; color: var(--fg); font: 15px var(--font-mono); margin-bottom: 6px; overflow-wrap: anywhere; }
-.flow-branch { border-bottom: 1px solid var(--border-subtle); padding: 7px 0; }
-.flow-branch > summary { cursor: pointer; font: 12px var(--font-mono); line-height: 1.8; color: var(--fg); }
-.flow-branch-name { overflow-wrap: anywhere; }
-.flow-count { display: block; margin-left: 15px; color: var(--fg-secondary); font: 10px var(--font-ui); }
-.flow-branch[open] > summary > .flow-count { display: none; }
 .flow-note { color: var(--fg-secondary); font-size: 10px; margin-left: 6px; overflow-wrap: anywhere; }
 .mapping-identity { padding: 21px 20px 20px; position: relative; flex: none; }
 .eyebrow { font-size: 10px; color: var(--fg-secondary); }
@@ -1417,3 +1407,71 @@ button.port-name:hover { color: var(--accent); }
   background-clip: content-box;
   border: 2px solid transparent;
 }
+
+/* 信号链共用已确认预览的横向卡片、源码入口与分支代码区。 */
+#signal-flow .panel-head { height: 42px; padding: 0 16px; gap: 12px; letter-spacing: normal; text-transform: none; font-weight: 500; }
+#signal-flow .panel-head .text-button { margin: 0; padding: 3px 0; font-size: 11px; white-space: nowrap; }
+#signal-flow .panel-head .text-button:disabled { color: var(--fg-faint); cursor: default; text-decoration: none; }
+.flow-identity { display: flex; flex: 1; min-width: 0; margin-right: auto; color: var(--accent); font: 12px var(--font-mono); }
+#signal-flow .flow-path { display: inline; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#signal-flow .flow-path::after { content: "."; }
+#signal-flow .flow-selected { display: inline; min-width: 0; color: inherit; font: inherit; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-mode { color: var(--fg-secondary); font-size: 11px; font-weight: 400; white-space: nowrap; }
+#signal-flow .flow-tools { display: contents; }
+#signal-flow .flow-following { padding: 4px 16px; font-size: 11px; }
+#signal-flow .flow-tools select { flex: none; width: auto; margin: 4px 16px; padding: 3px 6px; font: 11px var(--font-mono); }
+#signal-flow .mapping-note { padding: 4px 16px; margin: 0; flex: none; font-size: 11px; }
+#signal-flow .flow-body { flex: 1; background: var(--surface-editor); }
+#signal-flow .flow-body.logic-body { display: block; padding: 0; position: relative; }
+.logic-canvas { position: relative; min-width: 100%; min-height: 100%; }
+.logic-wires { position: absolute; inset: 0; pointer-events: none; }
+.logic-wire { fill: none; stroke: var(--accent); stroke-width: 1.4; }
+.logic-wire.control { stroke: var(--fg-faint); stroke-dasharray: 4 4; }
+.logic-wires marker path { fill: var(--fg-secondary); }
+.logic-card { position: absolute; width: 236px; min-height: 88px; padding: 10px 12px; background: var(--surface-editor); border: 1px solid var(--border-strong); border-top: 2px solid var(--accent); border-radius: var(--radius-control); }
+.logic-card[hidden] { display: none; }
+.logic-card.boundary,.logic-card.resolved { border-top-color: var(--sem-warning); }
+.logic-card.selected { border-color: var(--accent); background: var(--surface-active); box-shadow: 0 0 0 1px var(--accent); }
+.signal-current { display: block; margin-bottom: 7px; color: var(--accent); font: 600 11px var(--font-ui); }
+.signal-match { color: var(--mark-fg); background: var(--mark-bg); font-weight: 600; }
+.logic-card-head { display: flex; align-items: center; gap: 6px; }
+.operation-name { font: 13px/1.5 var(--font-mono); overflow-wrap: anywhere; }
+.source-jump { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--fg-secondary); cursor: pointer; flex: none; }
+.source-jump:hover { color: var(--accent); }
+.source-jump:focus-visible { outline: 1px solid var(--accent); }
+.logic-detail { display: block; font: 11px/1.6 var(--font-mono); color: var(--fg-secondary); overflow-wrap: anywhere; margin: 4px 0 0; }
+.logic-clock { display: block; font: 11px/1.6 var(--font-mono); color: var(--sem-module); margin-top: 4px; }
+.logic-tag { color: var(--sem-warning); font-size: 11px; }
+.logic-expression { display: block; font: 12px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 10px 0 1px; }
+.assignment-block { margin-top: 10px; font: 12px/1.65 var(--font-mono); }
+.assignment-header { cursor: pointer; color: var(--accent); overflow-wrap: anywhere; }
+.assignment-body { max-height: 260px; overflow: auto; padding-top: 6px; }
+.assignment-row { display: flex; align-items: flex-start; gap: 4px; }
+.assignment-row .logic-expression { flex: 1; min-width: 0; margin: 0; }
+.assignment-source { margin-top: 2px; }
+.logic-driver + .logic-driver { border-top: 1px solid var(--border-subtle); margin-top: 8px; padding-top: 5px; }
+.logic-branches { margin-top: 8px; max-height: 260px; overflow-y: auto; }
+.branch-heading { display: block; margin-top: 10px; font: 12px/1.6 var(--font-mono); color: var(--accent); overflow-wrap: anywhere; }
+.logic-card-head .branch-heading { margin-top: 0; }
+.logic-branch { padding: 7px 8px; border: 1px solid var(--border-subtle); border-bottom: 0; background: var(--surface-app); }
+.logic-branch:last-child { border-bottom: 1px solid var(--border-subtle); }
+.logic-branch summary { list-style: none; cursor: pointer; position: relative; padding: 0 18px 0 16px; }
+.branch-toggle { position: absolute; left: -3px; top: 1px; width: 16px; height: 16px; color: var(--fg-secondary); }
+.branch-source { position: absolute; right: -3px; top: 1px; }
+.logic-branch summary::-webkit-details-marker { display: none; }
+.logic-branch summary:focus-visible { outline: 1px solid var(--accent); }
+.branch-guard,.branch-preview { display: block; font: 11px/1.6 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.branch-guard { color: var(--accent); }
+.branch-preview { padding-left: 12px; color: var(--fg); }
+.logic-branch[open] { border-left: 2px solid var(--accent); background: var(--surface-active); }
+.logic-enter,.flow-enter { display: block; font-size: 11px; margin: 7px 0 0; }
+.port-card .flow-note { display: block; margin: 7px 0 0; font: 11px/1.6 var(--font-mono); }
+.port-card .flow-reason { margin: 7px 0 0; font-size: 11px; }
+.port-pin { color: var(--sem-port-dir); }
+.port-boundary { display: block; margin-top: 9px; color: var(--fg-secondary); font: 11px/1.5 var(--font-ui); }
+@media(max-width:1100px) { #signal-flow .panel-head { gap: 8px; padding: 0 12px; } .flow-mode { font-size: 10px; } }
+
+.path-continue { display: block; margin-top: 10px; }
+.path-continue[hidden] { display: none; }
+.route-pending { cursor: pointer; }
+.route-pending:hover { border-color: var(--accent); }

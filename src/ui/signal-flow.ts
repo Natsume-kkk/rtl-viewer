@@ -1,14 +1,31 @@
 import { setIcon } from "./icons";
 import type { TraceNode, SignalContext } from "../model/signal-flow";
+import type { LogicGraph } from "../analysis/local";
+import { SignalLogicView, type LogicViewState } from "./signal-logic";
+import { SignalPortsView, type PortViewState } from "./signal-ports";
+
+export interface FlowViewState { open: boolean[]; left: number; top: number; logic?: LogicViewState; ports?: PortViewState }
 
 export class SignalFlowPanel {
   private body: HTMLElement;
+  private logic?: SignalLogicView;
+  private ports?: SignalPortsView;
+  private identity: HTMLElement;
+  private mode: HTMLElement;
+  private back: HTMLButtonElement;
   private contexts: HTMLSelectElement;
   private status: HTMLElement;
   private stale: HTMLButtonElement;
   private following: HTMLElement;
-  constructor(root: HTMLElement, actions: { close(): void; refresh?(): void; context(index: number): void; navigate(file: string, line: number): void }) {
-    const head = document.createElement("div"); head.className = "panel-head"; head.textContent = "信号链分析";
+  constructor(root: HTMLElement, private actions: { close(): void; refresh?(): void; context(index: number): void; navigate(file: string, line: number): void; enter?(context: SignalContext, signal: string, source?: {file:string;line:number}): void; back?(): void }) {
+    const head = document.createElement("div"); head.className = "panel-head"; head.textContent = "信号链";
+    this.identity = document.createElement("span"); this.identity.className="flow-identity"; head.append(this.identity);
+    this.mode = document.createElement("span"); this.mode.className = "flow-mode"; head.append(this.mode);
+    this.back = document.createElement("button"); this.back.className="text-button"; this.back.textContent="返回"; this.back.disabled=true; this.back.onclick=()=>actions.back?.(); head.append(this.back);
+    const all = document.createElement("button"); all.className="text-button"; all.textContent="全部展开";
+    all.onclick=()=>{ if(this.logic)this.logic.expandAll();else this.ports?.expandAll(); };head.append(all);
+    const collapse = document.createElement("button");collapse.className="text-button";collapse.textContent="全部收起";
+    collapse.onclick=()=>{if(this.logic)this.logic.collapseAll();else this.ports?.collapseAll();};head.append(collapse);
     const close = document.createElement("button"); close.className = "icon-button"; close.setAttribute("aria-label", "收起信号链分析");
     setIcon(close, "close"); close.onclick = actions.close; head.append(close);
     const tools = document.createElement("div"); tools.className = "flow-tools";
@@ -21,7 +38,11 @@ export class SignalFlowPanel {
     this.body = document.createElement("div"); this.body.className = "flow-body";
     this.stale = document.createElement("button"); this.stale.className = "text-button result-stale";
     this.stale.textContent = "源码已变化，刷新当前信号链"; this.stale.hidden = true; this.stale.onclick = () => actions.refresh?.();
-    root.append(head, tools, this.stale, this.status, this.body);
+    const resize=document.createElement("div");resize.className="search-resize";resize.tabIndex=0;resize.setAttribute("role","separator");resize.setAttribute("aria-label","调整信号链高度");resize.setAttribute("aria-orientation","horizontal");
+    const height=(h:number)=>{const parent=root.parentElement;const other=parent?.querySelector<HTMLElement>("#search-root:not([hidden])")?.clientHeight??0;const maximum=Math.max(150,(parent?.clientHeight??600)-other-140);const next=Math.max(150,Math.min(h,maximum));root.style.height=`${next}px`;resize.setAttribute("aria-valuenow",String(Math.round(next)));};
+    resize.onkeydown=e=>{if(e.key==="ArrowUp"||e.key==="ArrowDown"){e.preventDefault();height(root.clientHeight+(e.key==="ArrowUp"?24:-24));}};
+    resize.onpointerdown=e=>{if(e.button!==0)return;e.preventDefault();resize.setPointerCapture(e.pointerId);const y=e.clientY,start=root.clientHeight;const move=(m:PointerEvent)=>height(start+y-m.clientY);const end=()=>{resize.removeEventListener("pointermove",move);resize.removeEventListener("pointerup",end);resize.removeEventListener("pointercancel",end);resize.removeEventListener("lostpointercapture",end);};resize.addEventListener("pointermove",move);resize.addEventListener("pointerup",end);resize.addEventListener("pointercancel",end);resize.addEventListener("lostpointercapture",end);};
+    root.append(resize, head, tools, this.stale, this.status, this.body);
     root.addEventListener("click", event => {
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-file]");
       if (button?.dataset.file) {
@@ -29,10 +50,23 @@ export class SignalFlowPanel {
         actions.navigate(button.dataset.file, Number(button.dataset.line));
       }
     });
-    this.hint("点击源码中的信号，即可自动查看链路。");
+    this.hint("在源码信号上右键，选择“追踪此信号”。");
   }
-  hint(text: string): void { this.following.textContent = text; }
-  message(text: string): void { this.status.textContent = text; this.body.replaceChildren(); }
+  hint(text: string): void { this.following.textContent = text; this.following.hidden=!text; }
+  message(text: string): void { this.logic?.dispose(); this.logic=undefined; this.ports?.dispose(); this.ports=undefined; this.body.classList.remove("logic-body"); this.status.textContent = text; this.status.hidden=!text; this.identity.replaceChildren(); this.body.replaceChildren(); this.body.scrollLeft=0; this.body.scrollTop=0; }
+  setBack(enabled:boolean):void { this.back.disabled=!enabled; }
+  capture():FlowViewState { return {open:[...this.body.querySelectorAll<HTMLDetailsElement>("details")].map(d=>d.open),left:this.body.scrollLeft,top:this.body.scrollTop,logic:this.logic?.capture(),ports:this.ports?.capture()}; }
+  restore(s:FlowViewState):void { if(this.logic&&s.logic)this.logic.restore(s.logic);else if(this.ports&&s.ports)this.ports.restore(s.ports);else [...this.body.querySelectorAll<HTMLDetailsElement>("details")].forEach((d,i)=>d.open=s.open[i]??false);this.body.scrollLeft=s.left;this.body.scrollTop=s.top; }
+  private identify(signal:string,path:string):void {
+    const selected=document.createElement("strong");selected.className="flow-selected";selected.textContent=signal;
+    const context=document.createElement("span");context.className="flow-path";context.textContent=path;
+    this.identity.replaceChildren(context,selected);this.identity.title=`${path}.${signal}`;
+  }
+  logicResult(signal:string,ctx:SignalContext,graph:LogicGraph,files:ReadonlyMap<string,string>,note:string):void {
+    this.message(note);this.mode.textContent="模块内逻辑";this.identify(signal,ctx.path);
+    if(graph.truncated){this.status.append("达到分析预算，部分路径未展开");this.status.hidden=false;}
+    this.logic=new SignalLogicView(graph,this.body,this.actions,files);
+  }
   markStale(): void { this.stale.hidden = false; }
   clearStale(): void { this.stale.hidden = true; }
   setContexts(items: SignalContext[], selected: number): void {
@@ -40,126 +74,9 @@ export class SignalFlowPanel {
     this.contexts.selectedIndex = selected;
     this.contexts.hidden = items.length < 2;
   }
-  result(signal: string, upstream: TraceNode, downstream: TraceNode, note: string): void {
-    this.message(note);
-    const selected = document.createElement("strong"); selected.className = "flow-selected"; selected.textContent = signal;
-    this.status.prepend(selected);
-    const path = document.createElement("span"); path.className = "flow-path";
-    path.textContent = upstream.label.slice(0, upstream.label.lastIndexOf("."));
-    path.title = path.textContent; selected.after(path);
-    this.status.title = "端口、连续赋值与过程内赋值的分析快照；修改源码后重新分析。";
-    const briefReason = (reason: string) => reason
-      .replace("存在多个 architecture，尚未确定绑定", "多个实现，尚未确定绑定")
-      .replace("未发现可继续追踪的连线（不代表未使用）", "没有可继续解析的连线")
-      .replace("运算或范围转换（不继续推导）", "到达运算或范围转换")
-      .replace("黑盒或缺失定义", "黑盒 · 方向未知，无法追踪内部")
-      .replace("控制/时钟信号，不作为数据链展开", "用作时钟或控制条件，数据链在此停止");
-    const link = (node: TraceNode, label: string) => {
-      const button = document.createElement("button"); button.className = "flow-node"; button.textContent = label;
-      button.title = [node.label, node.tip, node.note].filter(Boolean).join("\n");
-      if (node.file) { button.dataset.file = node.file; button.dataset.line = String(node.line ?? 1); }
-      else button.disabled = true;
-      return button;
-    };
-    const rel = (node: TraceNode, base: string) =>
-      node.label.startsWith(base + "/") || node.label.startsWith(base + ".") ? node.label.slice(base.length + 1) : node.label;
-    const noteSpan = (node: TraceNode) => {
-      const span = document.createElement("span"); span.className = "flow-note"; span.textContent = node.note ?? ""; return span;
-    };
-    const reasonP = (reason: string) => {
-      const p = document.createElement("p"); p.className = "flow-reason"; p.textContent = briefReason(reason); p.title = reason; return p;
-    };
-    const render = (node: TraceNode, base: string, depth = 0): HTMLElement => {
-      const terminal = node.children.length === 1 ? node.children[0] : undefined;
-      if (terminal && !terminal.children.length && terminal.reason?.startsWith("控制/时钟信号")) {
-        const item = document.createElement("li"); item.className = "flow-terminal";
-        item.append(link(node, rel(node, base)));
-        if (node.note) item.append(noteSpan(node));
-        const usage = link(terminal, "用作时钟或控制条件 · 查看使用位置");
-        usage.classList.add("flow-usage"); item.append(usage);
-        return item;
-      }
-      if (!node.children.length) {
-        const item = document.createElement("li");
-        item.append(link(node, rel(node, base)));
-        if (node.note) item.append(noteSpan(node));
-        if (node.reason) item.append(reasonP(node.reason));
-        return item;
-      }
-      const item = document.createElement("li");
-      const details = document.createElement("details"), summary = document.createElement("summary");
-      details.className = "flow-branch";
-      details.open = depth < 2;
-      const name = link(node, rel(node, base)); name.classList.add("flow-branch-name");
-      const count = document.createElement("span"); count.className = "flow-count";
-      count.textContent = node.children.length === 1 ? rel(node.children[0], base) : `${node.children.length} 个分支`;
-      summary.append(name, count); details.append(summary);
-      if (node.note) summary.append(noteSpan(node));
-      const list = document.createElement("ul");
-      renderChildren(node, base, list, depth + 1);
-      details.append(list);
-      item.append(details);
-      if (node.reason) item.append(reasonP(node.reason));
-      return item;
-    };
-    /** 简单链默认可读；长链平铺以免缩进挤压名称，复杂分支才收起。 */
-    const renderChain = (chain: TraceNode[], base: string, depth: number): HTMLElement => {
-      const item = document.createElement("li");
-      const details = document.createElement("details"), summary = document.createElement("summary");
-      details.className = "flow-branch flow-chain";
-      details.open = depth < 2;
-      const name = link(chain[0], rel(chain[0], base)); name.classList.add("flow-branch-name");
-      const count = document.createElement("span"); count.className = "flow-count";
-      count.textContent = `${chain.length - 1} 级直通 · ${rel(chain.at(-1)!, base)}`;
-      summary.append(name, count); details.append(summary);
-      const list = document.createElement("ul");
-      for (const node of chain.slice(1, -1)) {
-        const li = document.createElement("li");
-        li.append(link(node, rel(node, base)));
-        if (node.note) li.append(noteSpan(node));
-        list.append(li);
-      }
-      list.append(render(chain[chain.length - 1], base, depth + 1));
-      details.append(list);
-      item.append(details);
-      return item;
-    };
-    const renderChildren = (node: TraceNode, base: string, list: HTMLUListElement, depth = 0) => {
-      let target = list;
-      for (const [index, child] of node.children.entries()) {
-        if (index === 8) {
-          const item = document.createElement("li"), more = document.createElement("details"), summary = document.createElement("summary");
-          more.className = "flow-branch flow-more";
-          summary.textContent = `另外 ${node.children.length - 8} 条连接`;
-          target = document.createElement("ul"); more.append(summary, target); item.append(more); list.append(item);
-        }
-        const chain = [child];
-        while (!chain.at(-1)!.note && !chain.at(-1)!.reason && chain[chain.length - 1].children.length === 1) {
-          const next = chain[chain.length - 1].children[0];
-          if (!next.children.length) { chain.push(next); break; }
-          if (next.reason || next.note) break;
-          chain.push(next);
-        }
-        target.append(chain.length >= 3 ? renderChain(chain, base, depth) : render(child, base, depth));
-      }
-    };
-    const unknown = new Map<string, TraceNode>();
-    const known = (root: TraceNode): TraceNode => ({ ...root, children: root.children.filter(node => {
-      if (!/黑盒或缺失定义|端口方向未知/.test(node.reason ?? "")) return true;
-      unknown.set([node.label, node.file, node.line].join(":"), node);
-      return false;
-    }) });
-    const sections: [string, TraceNode][] = [["谁驱动它", known(upstream)], ["它连接到哪里", known(downstream)]];
-    if (unknown.size) sections.push(["方向待确认", { label: upstream.label, children: [...unknown.values()] }]);
-    for (const [label, root] of sections) {
-      const section = document.createElement("section"), title = document.createElement("h3"), list = document.createElement("ul");
-      const base = root.label.slice(0, root.label.lastIndexOf("."));
-      title.textContent = `${label}${root.children.length ? ` · ${root.children.length}` : ""}`;
-      renderChildren(root, base, list);
-      if (!root.children.length) {
-        const reason = document.createElement("li"); reason.className = "flow-reason"; reason.textContent = briefReason(root.reason ?? "没有可继续解析的连线"); list.append(reason);
-      }
-      section.append(title, list); this.body.append(section);
-    }
+  result(signal: string, upstream: TraceNode, downstream: TraceNode, note: string, mode = "端口连接"): void {
+    this.message(note);this.mode.textContent=mode;
+    this.identify(signal,upstream.label.slice(0,upstream.label.lastIndexOf(".")));
+    this.ports=new SignalPortsView(signal,upstream,downstream,this.body,this.actions.enter);
   }
 }

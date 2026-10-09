@@ -1,13 +1,125 @@
 import { describe, it, expect } from "vitest";
 import { SignalProject, traceSignal, type TraceNode } from "../src/model/signal-flow";
+import { parseVhdlProcess } from "../src/parser/procedural";
 
 const flatten = (n: TraceNode): string => [n.label, n.reason ?? "", ...n.children.map(flatten)].join("\n");
+it("当前信号定位保留追踪入口行，跨层节点保留实例与端口身份", async () => {
+  const files=new Map([["top.vhd",`entity top is
+port (
+  rx : in bit
+);
+end top;
+architecture rtl of top is begin
+u: entity work.child port map(i => rx);
+end rtl;`],["child.vhd",`entity child is port(i: in bit); end child;
+architecture rtl of child is signal x: bit; begin x <= i; end rtl;`]]);
+  const p=new SignalProject(files),ctx=p.root("top")!;
+  const trace=await traceSignal(p,ctx,"rx","downstream",{stopAtAssignments:true,source:{file:"top.vhd",line:3,column:3}});
+  expect(trace.line).toBe(3);expect(trace.file).toBe("top.vhd");
+  expect(trace.port).toEqual({path:"top",name:"rx",direction:"in"});
+  expect(trace.children[0].port).toEqual({path:"top/u",name:"i",direction:"in"});
+  expect(trace.children[0].line).toBe(7);
+});
 interface Flat { label: string; note?: string; tip?: string; reason?: string }
 const collect = (n: TraceNode, out: Flat[] = []): Flat[] => {
   out.push({ label: n.label, note: n.note, tip: n.tip, reason: n.reason });
   n.children.forEach(c => collect(c, out));
   return out;
 };
+
+describe("信号链：过程作用域与嵌套边界回归", () => {
+  const localsSource = `entity t is port(a,b,tmp: in bit; y,z,w: out bit); end t;
+architecture rtl of t is begin
+p1: process(a) variable tmp, spare: bit; begin TMP := a; y <= tmp; end process;
+p2: process(b) variable TMP: bit; begin tmp := b; z <= TMP; end process;
+w <= tmp;
+end rtl;`;
+  it("同名过程变量双向隔离，并保留模块同名端口的连线", async () => {
+    const p = new SignalProject(new Map([["t.vhd", localsSource]])), ctx = p.root("t")!;
+    const y = collect(await traceSignal(p, ctx, "y", "upstream"));
+    expect(y.some(n => n.label === "t.a")).toBe(true);
+    expect(y.some(n => n.label === "t.b" || n.reason === "顶层输入" && n.label === "tmp")).toBe(false);
+    expect(y.some(n => n.note?.includes("多驱动"))).toBe(false);
+    const a = flatten(await traceSignal(p, ctx, "a", "downstream"));
+    expect(a).toContain("t.y");
+    expect(a).not.toContain("t.z");
+    expect(a).not.toContain("t.w");
+    const w = flatten(await traceSignal(p, ctx, "w", "upstream"));
+    expect(w).toContain("顶层输入");
+    expect(w).not.toContain("t.a");
+    expect(w).not.toContain("t.b");
+  });
+  it("直接选择局部变量时用源码位置区分两个过程", async () => {
+    const p = new SignalProject(new Map([["t.vhd", localsSource]])), ctx = p.root("t")!;
+    const first = flatten(await traceSignal(p, ctx, "tmp", "upstream", { source: { file: "t.vhd", line: 3, column: 27 } }));
+    const second = flatten(await traceSignal(p, ctx, "tmp", "upstream", { source: { file: "t.vhd", line: 4, column: 27 } }));
+    expect(first).toContain("t.a"); expect(first).not.toContain("t.b");
+    expect(second).toContain("t.b"); expect(second).not.toContain("t.a");
+  });
+  it("局部变量的位选断点不会泄漏到另一个过程", async () => {
+    const p = new SignalProject(new Map([["t.vhd", `entity t is port(a,b: in bit; y,z: out bit); end t;
+architecture rtl of t is begin
+process(a) variable tmp: bit_vector(0 to 0); begin tmp(0) := a; y <= tmp(0); end process;
+process(b) variable tmp: bit; begin tmp := b; z <= tmp; end process;
+end rtl;`]]));
+    const z = flatten(await traceSignal(p, p.root("t")!, "z", "upstream"));
+    expect(z).toContain("t.b"); expect(z).not.toContain("位选/切片赋值");
+  });
+  it("同一行的不同过程仍按光标列区分局部对象", async () => {
+    const source = localsSource.replaceAll("\n", " ");
+    const p = new SignalProject(new Map([["t.vhd", source]]));
+    const column = source.indexOf("variable TMP") + "variable ".length + 1;
+    const tree = flatten(await traceSignal(p, p.root("t")!, "tmp", "upstream", { source: { file: "t.vhd", line: 1, column } }));
+    expect(tree).toContain("t.b"); expect(tree).not.toContain("t.a");
+  });
+  it("尚未写完或错误配对的嵌套过程显示边界，不伪造并发赋值", async () => {
+    for (const ending of ["", "end process;"]) {
+      const p = new SignalProject(new Map([["t.vhd", `entity t is port(a: in bit; y: out bit); end t;
+architecture rtl of t is begin
+process(a) function helper return bit is begin return '0'; ${ending}
+begin y <= a;
+end architecture;`]]));
+      expect(p.module("t")!.assignments).toEqual([]);
+      expect(flatten(await traceSignal(p, p.root("t")!, "y", "upstream"))).toContain("过程边界未确定");
+    }
+  });
+  it("elsif 和 else 累积此前所有否定条件，并保留外层条件", () => {
+    const parsed = parseVhdlProcess(`process(all) begin if en then
+      if c1 then y <= a; elsif c2 then y <= b; elsif c3 then y <= c; else y <= d; end if;
+      z <= a;
+    end if; end process;`);
+    expect(parsed.assignments.map(a => a.conditions)).toEqual([
+      ["en", "c1"], ["en", "!(c1)", "c2"], ["en", "!(c1)", "!(c2)", "c3"],
+      ["en", "!(c1)", "!(c2)", "!(c3)"], ["en"],
+    ]);
+  });
+  it.each(["end;", "end helper;", "end function;", "end function helper;"])("内层函数以 %s 收尾，不截断时钟过程或吞掉后续过程", async closing => {
+    const p = new SignalProject(new Map([["t.vhd", `entity t is port(clk,a,b: in bit; y,z: out bit); end t;
+architecture rtl of t is begin
+process(clk)
+  function helper(x: bit) return bit is begin return x; ${closing}
+begin if rising_edge(clk) then y <= a; end if; end process;
+process(b) begin z <= b; end process;
+end rtl;`]]));
+    expect(p.module("t")!.assignments.map(a => [a.target, a.proc])).toEqual([["y", 0], ["z", 1]]);
+    const y = collect(await traceSignal(p, p.root("t")!, "y", "upstream"));
+    expect(y.some(n => n.label === "t.a" && n.tip?.includes("clk"))).toBe(true);
+  });
+  it("函数原型、嵌套子程序和 record 声明不混入外层过程赋值", () => {
+    const p = new SignalProject(new Map([["t.vhd", `entity t is port(a: in bit; y: out bit); end t;
+architecture rtl of t is begin
+process(a)
+  function helper(x: bit) return bit;
+  function helper(x: bit) return bit is
+    procedure nested is begin y <= '0'; end procedure nested;
+  begin return x; end function helper;
+  type pair is record left_value: bit; right_value: bit; end record pair;
+  variable tmp: bit;
+begin tmp := a; y <= tmp; end process;
+end rtl;`]]));
+    expect(p.module("t")!.assignments.map(a => [a.target, a.expression, a.proc])).toEqual([["tmp", "a", 0], ["y", "tmp", 0]]);
+  });
+});
 describe("信号链：按实例追踪端口与直接赋值", () => {
   it("时钟终点定位每个实际过程的使用行", async () => {
     const project = new SignalProject(new Map([["t.v", "module t(input clk, input d, output reg q, output reg r);\nalways @(posedge clk) q <= d;\nalways @(posedge clk) r <= d;\nendmodule"]]));

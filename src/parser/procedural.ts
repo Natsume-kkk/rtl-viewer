@@ -45,9 +45,34 @@ function tokenize(text: string): Token[] {
   return [...text.matchAll(tokenRe)].map(m => ({ text: m[0], index: m.index! }));
 }
 
+/** 遮蔽字符串内容（保留长度与索引）供匹配用；展示文本仍取原文。VHDL 的字符字面量 'U' 与基符位串 x"FF" 整体是值不是标识符，一并遮蔽。 */
+function maskLiterals(text: string, vhdl: boolean): string {
+  const out = text.split("");
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"') {
+      let start = i;
+      if (vhdl) while (start > 0 && /[A-Za-z]/.test(text[start - 1])) start--;
+      let j = i + 1;
+      while (j < text.length && text[j] !== "\n") {
+        if (!vhdl && text[j] === "\\") { j += 2; continue; }
+        if (text[j] === '"') { if (vhdl && text[j + 1] === '"') { j += 2; continue; } break; }
+        j++;
+      }
+      for (let k = start; k <= j && k < text.length; k++) out[k] = " ";
+      i = j + 1;
+    } else if (vhdl && c === "'" && text[i + 2] === "'") {
+      out[i] = out[i + 1] = out[i + 2] = " ";
+      i += 3;
+    } else i++;
+  }
+  return out.join("");
+}
+
 /** 分析表达式：可追踪的标识符、带位选被阻断的标识符、是否含函数/系统调用。VHDL 模式下标识符后跟 `(...)` 视为位选/调用，括号内不产生边。 */
 export function analyzeExpression(expression: string, vhdl = false): ExprAnalysis {
-  const tokens = tokenize(expression);
+  const tokens = tokenize(maskLiterals(expression, vhdl));
   const reads: string[] = [], blockedReads: string[] = [];
   let hasCall = false;
   const ident = vhdl ? isVhdlIdent : isIdent;
@@ -75,7 +100,7 @@ export function analyzeExpression(expression: string, vhdl = false): ExprAnalysi
 
 export function parseVerilogProcess(text: string): ProcInfo {
   const info: ProcInfo = { assignments: [], boundaries: [], controlSignals: [], dataSignals: [] };
-  const tokens = tokenize(text);
+  const tokens = tokenize(maskLiterals(text, false));
   const control = new Set<string>(), data = new Set<string>();
   const edges: string[] = [];
   let i = 0;
@@ -229,10 +254,11 @@ export function parseVerilogProcess(text: string): ProcInfo {
     while (tokens[j]?.text === "[") { selected = true; j = matchPair(j, "[", "]") + 1; }
     const op = tokens[j]?.text;
     if (op === "<=" || op === "=") {
-      const exprStart = tokens[j + 1]?.index;
+      // 从运算符之后切原文：RHS 为纯字面量（遮蔽后无 token）时仍能保留展示文本
+      const exprStart = tokens[j].index + tokens[j].text.length;
       const semi = findSemi(j + 1, end);
       const semiTok = tokens[semi];
-      const expression = exprStart === undefined ? "" : text.slice(exprStart, semiTok ? semiTok.index : text.length).trim();
+      const expression = text.slice(exprStart, semiTok ? semiTok.index : text.length).trim();
       if (selected) {
         info.boundaries.push({ index: t.index, endIndex: semiTok ? semiTok.index + 1 : text.length, reason: "位选/切片赋值（范围转换）" });
         data.add(t.text);
@@ -299,19 +325,20 @@ export function scanVhdlRegion(text: string, from = 0): { end: number; begin: nu
 /** VHDL process 语句级解析：与 Verilog 侧同为赋值池模型；`(...)` 位选/调用、循环、聚合目标为断点。 */
 export function parseVhdlProcess(text: string): ProcInfo {
   const info: ProcInfo = { assignments: [], boundaries: [], controlSignals: [], dataSignals: [] };
-  const region = scanVhdlRegion(text);
+  const masked = maskLiterals(text, true);
+  const region = scanVhdlRegion(masked);
   if (!region.closed || region.begin < 0) {
     info.boundaries.push({ index: 0, endIndex: text.length, reason: "过程边界未确定（不继续推导）" });
     return info;
   }
   // 局部子程序按调用处显示边界，不将其声明内的赋值或时钟混入外层过程。
-  let declarations = text.slice(0, region.begin);
+  let declarations = masked.slice(0, region.begin);
   for (const range of [...region.nested].reverse()) {
     declarations = declarations.slice(0, range.start) + declarations.slice(range.start, range.end).replace(/[^\n]/g, " ") + declarations.slice(range.end);
   }
   info.locals = [...declarations.matchAll(/\b(?:variable|constant)\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*:/gi)]
     .flatMap(m => m[1].split(",").map(name => name.trim().toLowerCase()));
-  const tokens = tokenize(text);
+  const tokens = tokenize(masked);
   const control = new Set<string>(), data = new Set<string>();
   const edges: string[] = [];
   let i = 0;
@@ -323,7 +350,7 @@ export function parseVhdlProcess(text: string): ProcInfo {
     i = close + 1;
   }
   if (tokens[i]?.text.toLowerCase() === "is") i++;
-  const body = text.slice(region.begin);
+  const body = masked.slice(region.begin);
   for (const m of body.matchAll(/(?:rising_edge|falling_edge)\s*\(\s*([A-Za-z_]\w*)\s*\)/gi)) {
     if (!edges.some(e => e.toLowerCase() === m[1].toLowerCase())) edges.push(m[1]);
     control.add(m[1].toLowerCase());
@@ -471,10 +498,11 @@ export function parseVhdlProcess(text: string): ProcInfo {
     while (tokens[j]?.text === "(") { selected = true; j = matchPair(j, "(", ")") + 1; }
     const op = tokens[j]?.text;
     if (op === "<=" || op === ":=") {
-      const exprStart = tokens[j + 1]?.index;
+      // 从运算符之后切原文：RHS 为纯字面量（遮蔽后无 token）时仍能保留展示文本
+      const exprStart = tokens[j].index + tokens[j].text.length;
       const semi = findSemi(j + 1, end);
       const semiTok = tokens[semi];
-      const expression = exprStart === undefined ? "" : text.slice(exprStart, semiTok ? semiTok.index : text.length).trim();
+      const expression = text.slice(exprStart, semiTok ? semiTok.index : text.length).trim();
       if (selected) {
         info.boundaries.push({ index: t.index, endIndex: semiTok ? semiTok.index + 1 : text.length, reason: "位选/切片赋值（范围转换）" });
         data.add(t.text.toLowerCase());
@@ -487,7 +515,7 @@ export function parseVhdlProcess(text: string): ProcInfo {
       }
       return semi < end ? semi + 1 : end;
     }
-    if (op === "(") boundaryAt(t.index, Math.max(i, findSemi(i + 1, end) - 1), "函数/过程调用（不继续推导）");
+    if (selected) boundaryAt(t.index, Math.max(i, findSemi(i + 1, end) - 1), "函数/过程调用（不继续推导）");
     return skipToSemi(i, end);
   }
 }

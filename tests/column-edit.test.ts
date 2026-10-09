@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { columnTargets, columnValues, type ColumnOptions } from "../src/editor/column-edit";
+import { COLUMN_MAX_TARGETS, columnTargets, columnValues, type ColumnOptions } from "../src/editor/column-edit";
 
 const options: Extract<ColumnOptions, { mode: "number" }> = { mode: "number", initial: "14", step: "1", repeat: "1", base: 10, leading: "none", uppercase: true };
 const range = (line: number, start: number, end = start) => ({ startLineNumber: line, endLineNumber: line, startColumn: start, endColumn: end });
@@ -46,5 +46,16 @@ describe("column editor", () => {
   it("Unicode 字符不拆开，中文和表情按编辑器显示列对齐", () => {
     expect(columnTargets(["😀x", "中文", "ab"], [range(1, 3)], 4).map(t => t.range)).toEqual([range(1, 3), range(2, 2), range(3, 3)]);
     expect(columnTargets(["a", "😀x"], [range(1, 2)], 4)[1]).toEqual({ range: range(2, 1), before: "", after: "" });
+  });
+  it("单光标延伸超过上限拒绝，恰好到达上限仍可用", () => {
+    const big = Array(COLUMN_MAX_TARGETS + 1).fill("x");
+    expect(() => columnTargets(big, [range(1, 2)], 4)).toThrow("范围过大");
+    expect(columnTargets(big.slice(0, COLUMN_MAX_TARGETS), [range(1, 2)], 4)).toHaveLength(COLUMN_MAX_TARGETS);
+    expect(() => columnTargets(Array(3).fill("x"), [range(2, 1)], 4)).not.toThrow();
+    expect(() => columnTargets(Array(COLUMN_MAX_TARGETS + 3).fill("x"), [range(3, 1)], 4)).toThrow("范围过大");
+  });
+  it("多光标处数超过上限拒绝", () => {
+    const cursors = Array.from({ length: COLUMN_MAX_TARGETS + 1 }, (_, i) => range(i + 1, 1));
+    expect(() => columnTargets(Array(COLUMN_MAX_TARGETS + 1).fill("x"), cursors, 4)).toThrow("范围过大");
   });
 });

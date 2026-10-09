@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseFile, parseFileDetail, parseXci, scanDefinitions } from "../src/parser";
+import { parseVerilogProcess, parseVhdlProcess } from "../src/parser/procedural";
 
 describe("verilog 定义扫描（第一级）", () => {
   it("提取 module 定义名与行号", () => {
@@ -543,6 +544,92 @@ end architecture;
       { expr: "data_o", line: 11 },
     ]);
     expect(inst.endLine).toBe(12);
+  });
+});
+
+describe("vhdl 过程体语句解析", () => {
+  it("子程序调用语句产生调用边界，不静默跳过", () => {
+    const parsed = parseVhdlProcess(`process(clk) begin
+  incr(cnt);
+  y <= a;
+end process;`);
+    expect(parsed.boundaries.some(b => b.reason.includes("调用"))).toBe(true);
+    expect(parsed.assignments.map(a => a.target)).toEqual(["y"]);
+  });
+
+  it("位选/索引赋值保持位选边界，不判为调用", () => {
+    const parsed = parseVhdlProcess(`process(clk) begin
+  a(3) <= x;
+  arr(i) := x;
+end process;`);
+    expect(parsed.assignments).toEqual([]);
+    expect(parsed.boundaries.map(b => b.reason)).toEqual([
+      "位选/切片赋值（范围转换）",
+      "位选/切片赋值（范围转换）",
+    ]);
+  });
+});
+
+describe("过程表达式字面量遮蔽", () => {
+  it("verilog 字符串内容不产生读取，表达式展示保留原文", () => {
+    const parsed = parseVerilogProcess(`always @(*) begin
+  x = "hello";
+  y = c;
+end`);
+    expect(parsed.assignments).toHaveLength(2);
+    expect(parsed.assignments[0].reads).toEqual([]);
+    expect(parsed.assignments[0].expression).toBe('"hello"');
+    expect(parsed.assignments[1].reads).toEqual(["c"]);
+  });
+
+  it("verilog 字符串内的分号与括号不打断语句切分", () => {
+    const parsed = parseVerilogProcess(`always @(*) begin
+  x = "a;(b";
+  y = c;
+end`);
+    expect(parsed.assignments.map(a => a.target)).toEqual(["x", "y"]);
+    expect(parsed.assignments[0].reads).toEqual([]);
+  });
+
+  it("verilog 转义引号不提前结束字符串", () => {
+    const parsed = parseVerilogProcess(`always @(*) begin
+  x = "a\\"b";
+  y = c;
+end`);
+    expect(parsed.assignments.map(a => a.target)).toEqual(["x", "y"]);
+    expect(parsed.assignments[0].reads).toEqual([]);
+  });
+
+  it("verilog 条件中的字符串不产生控制信号", () => {
+    const parsed = parseVerilogProcess(`always @(*) begin
+  if (mode == "run") x = a;
+end`);
+    expect(parsed.controlSignals).toEqual(["mode"]);
+    expect(parsed.assignments[0].reads).toEqual(["a"]);
+  });
+
+  it("vhdl 字符串与字符/基符字面量是值不是标识符", () => {
+    const parsed = parseVhdlProcess(`process(clk) begin
+  a <= "hello";
+  b <= 'U';
+  c <= x"FF";
+  d <= e;
+end process;`);
+    expect(parsed.assignments.map(a => a.target)).toEqual(["a", "b", "c", "d"]);
+    expect(parsed.assignments[0].reads).toEqual([]);
+    expect(parsed.assignments[0].expression).toBe('"hello"');
+    expect(parsed.assignments[1].reads).toEqual([]);
+    expect(parsed.assignments[2].reads).toEqual([]);
+    expect(parsed.assignments[3].reads).toEqual(["e"]);
+  });
+
+  it("vhdl 字符串内的分号不打断语句切分", () => {
+    const parsed = parseVhdlProcess(`process(clk) begin
+  a <= "x;y";
+  b <= c;
+end process;`);
+    expect(parsed.assignments.map(a => a.target)).toEqual(["a", "b"]);
+    expect(parsed.assignments[0].reads).toEqual([]);
   });
 });
 

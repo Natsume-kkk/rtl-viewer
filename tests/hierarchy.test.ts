@@ -172,6 +172,32 @@ end architecture;`,
     expect(sub.kind).toBe("module");
   });
 
+  it("前缀与原语相近的用户模块按 unresolved 处理，不猜测归类为原语", () => {
+    const userModules = ["buffer_ctrl", "buf_ctrl", "fdma", "ld_data", "srl_fifo", "keepalive"];
+    const insts = userModules.map((m, i) => `  ${m} u_${i} ();`).join("\n");
+    const h = buildFromFiles({ "top.v": `module top;\n${insts}\nendmodule` });
+    for (const [i, name] of userModules.entries()) {
+      const node = h.tops[0].children[i];
+      expect(node.moduleName).toBe(name);
+      expect(node.kind, `${name} 应为 unresolved 而非原语`).toBe("unresolved");
+    }
+  });
+
+  it("真实 UNISIM 原语族名仍识别为原语叶子", () => {
+    const primitives = [
+      "FDRE", "FDCE", "LDCE", "SRLC32E", "RAMB36E1", "DSP48E1",
+      "MMCME2_ADV", "PLLE2_ADV", "DCM_ADV", "IBUFDS", "OBUFDS",
+      "IBUFG", "IBUFGDS", "BUFGCE", "BUFIO", "BUFR", "BUFMRCE", "IDELAYCTRL",
+    ];
+    const insts = primitives.map((m, i) => `  ${m} u_${i} ();`).join("\n");
+    const h = buildFromFiles({ "top.v": `module top;\n${insts}\nendmodule` });
+    for (const [i, name] of primitives.entries()) {
+      const node = h.tops[0].children[i];
+      expect(node.kind, `${name} 应为原语`).toBe("primitive");
+      expect(node.children).toEqual([]);
+    }
+  });
+
   it("VHDL entity 与 architecture 分文件时例化边不丢失", () => {
     const files = {
       "top.vhd": `entity top is end entity;`,

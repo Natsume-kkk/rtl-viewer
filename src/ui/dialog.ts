@@ -4,6 +4,9 @@
  * appConfirm/appAlert 是其两键/单键封装，替代 Tauri 原生 confirm（原生弹窗
  * 跟随系统主题且 warning 级会播放系统提示音，应用内弹窗则静默并贴合主题）。
  */
+/** 弹窗栈：仅栈顶弹窗响应键盘，堆叠时一次按键不得同时驱动多个弹窗。 */
+const dialogStack: object[] = [];
+
 export function choiceDialog(message: string, options: string[], defaultIndex = 0): Promise<number> {
   return new Promise((resolve) => {
     const overlay = document.createElement("div");
@@ -19,15 +22,21 @@ export function choiceDialog(message: string, options: string[], defaultIndex = 
     const prevFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
     let done = false;
+    const token = {};
+    dialogStack.push(token);
     const finish = (index: number) => {
       if (done) return;
       done = true;
+      const at = dialogStack.indexOf(token);
+      if (at >= 0) dialogStack.splice(at, 1);
       document.removeEventListener("keydown", onKey, true);
       overlay.remove();
       prevFocus?.focus();
       resolve(index);
     };
     const onKey = (e: KeyboardEvent) => {
+      // 非栈顶弹窗对键盘完全无感（上层弹窗会先拦截并 stopPropagation）
+      if (dialogStack[dialogStack.length - 1] !== token) return;
       // 捕获阶段拦下全部按键：弹窗期间 Monaco/全局快捷键不得响应（键盘模态）
       e.stopPropagation();
       const btns = [...buttons.querySelectorAll("button")];

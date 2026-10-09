@@ -181,13 +181,20 @@ export class TabManager {
   async reopenWithEncoding(encoding: string): Promise<void> {
     const tab = this.active;
     if (!tab) return;
+    const model = tab.model;
+    const version = model.getVersionId();
     if (tab.dirty && !(await appConfirm("当前修改未保存，重新打开将丢弃修改，继续？"))) {
       return;
     }
     if (!tab.path) return; // 未命名文件无盘可读
     try {
       const { content, mtime } = await readFile(tab.path, encoding);
-      tab.model.setValue(content);
+      if (!this.tabs.includes(tab) || tab.model !== model || model.isDisposed()) return;
+      if (model.getVersionId() !== version) {
+        await appAlert("重新打开已停止：缓冲区在读取期间发生变化，请重新操作。");
+        return;
+      }
+      model.setValue(content);
       tab.encoding = encoding;
       tab.mtime = mtime;
       tab.dirty = false;

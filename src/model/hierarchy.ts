@@ -6,9 +6,10 @@ export type NodeKind = "module" | "ip" | "unresolved" | "primitive";
 /**
  * 常见厂商原语（Xilinx UNISIM 家族）。只在例化无定义时生效：
  * 命中按原语叶子显示、不标 unresolved；已定义的同名模块仍按 module 处理。
+ * 按族名精确匹配（无裸 \w* 通配），前缀相近的用户模块（buffer_ctrl、fdma、srl_fifo 等）不误命中。
  */
 const PRIMITIVE_RE =
-  /^(?:gnd|vcc|pulldown|pullup|inv|bufg\w*|bufio\w*|i?o?buf\w*|dcm\w*|mmcm\w*|pll\w*|ramb?\d\w*|dsp48\w*|fd\w*|ld\w*|iddr\w*|oddr\w*|(?:i|o)serdes\w*|idelay\w*|odelay\w*|carry\d|muxcy\w*|xorcy\w*|muxf\d|srl\w*|lut\d|and\d|or\d|nand\d|nor\d|xor\d|xnor\d|startupe?\w*|gt[phex]\w*|bscan\w*|icap\w*|keep\w*)$/i;
+  /^(?:gnd|vcc|pulldown|pullup|inv|bufg(?:ce(?:_1)?|ctrl|mux(?:_(?:1|ctrl|virtex4))?|p)?|buf(?:r|h(?:ce)?|mr(?:ce)?|io(?:2(?:_2clk)?|2fb|dqs)?|pll(?:_mcb)?)|ibufg(?:ds(?:_(?:blvds|diff_out(?:_term)?))?)?|i?o?buf(?:ds(?:_diff_out)?|t(?:ds)?)?(?:_(?:gte\d|blvds|dcien|ibufdisable|intermdisable|term)|e\d)?|dcm(?:_(?:adv|base|ps|sp|clkgen))?|mmcm(?:e\d)?(?:_(?:adv|base))?|pll(?:e\d)?(?:_(?:adv|base))?|ramb(?:fifo)?(?:4|8|16|18|36)(?:e\d|sdp|bwer)?(?:_s\d+){0,2}|ram(?:16|32|64|128|256)x\d+[ds]|ram(?:32|64)m(?:16)?|rom(?:32|64|128|256)x\d+|dsp48(?:a1?|e\d?)?|fd(?:_1|ddr(?:cpe|rse)?|[cdeprsg]{1,3})|ld(?:_1|[cegp]{1,3}|4ce|8ce)?|iddr(?:_2clk|e\d|2)?|oddr(?:e\d|2)?|(?:i|o)serdes(?:e\d|2|_nodelay)?|idelay(?:ctrl|e\d|2)?|odelay(?:e\d|2)?|carry\d|muxcy(?:_[dl])?|xorcy(?:_[dl])?|muxf\d|srlc?(?:16|32)e?(?:_1)?|lut\d|and\d|or\d|nand\d|nor\d|xor\d|xnor\d|startup(?:e\d|_(?:spartan|virtex)[a-z0-9]+)?|gt[phex][a-z0-9]*(?:_(?:channel|common|dual|clk(?:_mgt)?))?|bscan(?:e\d|_(?:spartan|virtex)[a-z0-9]+)?|icap(?:e\d|_(?:spartan|virtex)[a-z0-9]+)?|keep(?:er)?)$/i;
 
 export function isVendorPrimitive(name: string): boolean {
   return PRIMITIVE_RE.test(name);

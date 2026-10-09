@@ -14,6 +14,19 @@ const field = (name: string) => document.querySelector<HTMLInputElement>(`[name=
 function fill(name: string, value: string) { field(name).value = value; field(name).dispatchEvent(new Event("input", { bubbles: true })); }
 const submit = () => document.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 describe("column editor dialog", () => {
+  it("处数超过上限时不开面板，提示后确认关闭并归还焦点", async () => {
+    const { editor, open } = setup();
+    editor.getModel().getLinesContent = () => Array(10_001).fill("x");
+    const pending = open();
+    await Promise.resolve();
+    expect(document.querySelector(".column-editor")).toBeNull();
+    const alert = document.querySelector(".choice-overlay")!;
+    expect(alert.textContent).toContain("范围过大");
+    alert.querySelector<HTMLButtonElement>("button")!.click();
+    await pending;
+    expect(document.querySelector(".choice-overlay")).toBeNull();
+    expect(editor.focus).toHaveBeenCalled();
+  });
   it("提交前不改源码，取消归还焦点", async () => {
     const { editor, open } = setup(); await open();
     expect(document.querySelector(".column-scope")?.textContent).toContain("2 行");

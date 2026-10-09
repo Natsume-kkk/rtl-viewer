@@ -66,6 +66,30 @@ describe("choiceDialog", () => {
     await expect(p).resolves.toBe(0);
   });
 
+  it("堆叠时仅顶层弹窗响应键盘，关闭顶层后底层恢复", async () => {
+    let bottomResult: number | null = null;
+    const bottom = choiceDialog("底层", ["确定", "取消"]);
+    void bottom.then((i) => { bottomResult = i; });
+    const top = choiceDialog("顶层", ["确定", "取消"]);
+
+    pressKey("Enter");
+    await expect(top).resolves.toBe(0);
+    await Promise.resolve();
+    expect(bottomResult).toBeNull(); // 顶层的 Enter 不得误触发底层默认「确定」
+    expect(document.querySelectorAll(".choice-overlay")).toHaveLength(1);
+
+    const top2 = choiceDialog("顶层2", ["确定"]);
+    pressKey("Escape");
+    await expect(top2).resolves.toBe(-1);
+    await Promise.resolve();
+    expect(bottomResult).toBeNull(); // 顶层的 Escape 同样不影响底层
+    expect(document.querySelectorAll(".choice-overlay")).toHaveLength(1);
+
+    pressKey("Escape"); // 顶层已关闭，底层恢复响应
+    await expect(bottom).resolves.toBe(-1);
+    expect(document.querySelector(".choice-overlay")).toBeNull();
+  });
+
   it("弹窗期间按键不传播给外层（键盘模态）", async () => {
     const seen: string[] = [];
     document.addEventListener("keydown", (e) => seen.push(e.key));

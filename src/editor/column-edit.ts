@@ -3,6 +3,12 @@ import { CursorColumns } from "monaco-editor/editor/common/core/cursorColumns";
 
 export interface ColumnRange { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number }
 export interface ColumnTarget { range: ColumnRange; before: string; after: string }
+
+/** 单次列编辑的处数上限：防止单光标在超大文件上展开为数十万处导致界面冻结。 */
+export const COLUMN_MAX_TARGETS = 10_000;
+function checkCount(count: number): void {
+  if (count > COLUMN_MAX_TARGETS) throw new Error(`范围过大：一次最多处理 ${COLUMN_MAX_TARGETS} 处，请先用 Alt+Shift+方向键或 Alt+拖动框选更小的范围。`);
+}
 export type ColumnOptions = { mode: "text"; text: string } | {
   mode: "number"; initial: string; step: string; repeat: string;
   base: 2 | 8 | 10 | 16; leading: "none" | "zeros" | "spaces"; uppercase: boolean;
@@ -47,12 +53,14 @@ export function columnTargets(lines: string[], selections: ColumnRange[], tabSiz
   const sorted = [...selections].sort((a, b) => a.startLineNumber - b.startLineNumber || a.startColumn - b.startColumn);
   const selection = sorted[0];
   if (sorted.length > 1 || selection.startColumn !== selection.endColumn) {
+    checkCount(sorted.length);
     for (let i = 1; i < sorted.length; i++) {
       const a = sorted[i - 1], b = sorted[i];
       if (a.startLineNumber === b.startLineNumber && (a.endColumn > b.startColumn || a.startColumn === b.startColumn)) throw new Error("选区重叠，请重新选择。");
     }
     return sorted.map(range => ({ range, before: "", after: "" }));
   }
+  checkCount(lines.length - selection.startLineNumber + 1);
   const visible = (text: string, column: number): number => CursorColumns.visibleColumnFromColumn(text, column, tabSize);
   const visual = visible(lines[selection.startLineNumber - 1], selection.startColumn);
   return lines.slice(selection.startLineNumber - 1).map((text, i) => {

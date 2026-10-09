@@ -395,6 +395,45 @@ describe("TabManager", () => {
     expect(ed.restoreViewState).not.toHaveBeenCalled();
   });
 
+  it("按编码重新打开正常路径：按指定编码读盘并更新编码状态", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    tm.openContent("D:/p/a.v", "old", "utf8", 100); const tab = tm.activeTab!;
+    mocks.readFile.mockResolvedValue({ content: "gbk content", encoding: "gbk", mtime: 300 });
+    await tm.reopenWithEncoding("gbk");
+    expect(mocks.readFile).toHaveBeenCalledWith("D:/p/a.v", "gbk");
+    expect(tab.model.getValue()).toBe("gbk content"); expect(tab.dirty).toBe(false);
+    expect(tab.encoding).toBe("gbk"); expect(tab.mtime).toBe(300);
+  });
+
+  it("按编码重新打开读盘期间继续编辑时停止，不覆盖新修改", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    tm.openContent("D:/p/a.v", "old", "utf8", 100); const tab = tm.activeTab!;
+    let resolve!: (file: { content: string; encoding: string; mtime: number }) => void;
+    mocks.readFile.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const pending = tm.reopenWithEncoding("gbk");
+    tab.model.setValue("new edit while reading");
+    resolve({ content: "disk", encoding: "gbk", mtime: 300 });
+    await pending;
+    expect(tab.model.getValue()).toBe("new edit while reading"); expect(tab.dirty).toBe(true);
+    expect(tab.encoding).toBe("utf8"); expect(tab.mtime).toBe(100);
+    expect(mocks.appAlert).toHaveBeenCalledWith(expect.stringContaining("读取期间发生变化"));
+  });
+
+  it("按编码重新打开读盘期间关闭标签时静默停止，不写入已释放的 model", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    tm.openContent("D:/p/a.v", "old", "utf8", 100); const tab = tm.activeTab!;
+    let resolve!: (file: { content: string; encoding: string; mtime: number }) => void;
+    mocks.readFile.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const pending = tm.reopenWithEncoding("gbk");
+    await tm.close(tab);
+    expect(tab.model.isDisposed()).toBe(true);
+    const setValue = vi.spyOn(tab.model, "setValue");
+    resolve({ content: "disk", encoding: "gbk", mtime: 300 });
+    await pending;
+    expect(setValue).not.toHaveBeenCalled(); expect(tm.count).toBe(0);
+    expect(mocks.appAlert).not.toHaveBeenCalled();
+  });
+
   it("编辑标脏，保存后清脏并更新 mtime", async () => {
     const { make, mocks } = await setup();
     mocks.readFile.mockResolvedValue({ content: "module a;", encoding: "utf8", mtime: 100 });

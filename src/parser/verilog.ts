@@ -1,4 +1,4 @@
-import type { DefinitionRef, InstanceInfo, ModuleInfo, PortInfo } from "./types";
+import type { InstanceInfo, ModuleInfo, PortInfo } from "./types";
 import { parseParameters } from "./parameters";
 
 export const KEYWORDS = new Set([
@@ -116,19 +116,6 @@ function computeLineStarts(s: string): number[] {
     if (s[i] === "\n") starts.push(i + 1);
   }
   return starts;
-}
-
-/** 第一级扫描：只提取 module/interface 定义名与行号。 */
-export function scanVerilogDefinitions(src: string): DefinitionRef[] {
-  const stripped = stripComments(src);
-  const lineStarts = computeLineStarts(stripped);
-  const out: DefinitionRef[] = [];
-  const re = /\b(?:(?:macro)?module|interface)\s+([A-Za-z_]\w*)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(stripped))) {
-    out.push({ name: m[1], line: lineAt(lineStarts, m.index) });
-  }
-  return out;
 }
 
 function parsePortList(portListSrc: string): PortInfo[] {

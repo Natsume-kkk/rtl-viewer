@@ -1,4 +1,4 @@
-import type { DefinitionRef, InstanceInfo, ModuleInfo, PortInfo } from "./types";
+import type { InstanceInfo, ModuleInfo, PortInfo } from "./types";
 import { parseParameters } from "./parameters";
 
 function computeLineStarts(s: string): number[] {
@@ -77,19 +77,6 @@ export function stripVhdlComments(src: string, maskStrings = true): string {
     }
   }
   return out.join("");
-}
-
-/** 第一级扫描：只提取 entity 定义名与行号。 */
-export function scanVhdlDefinitions(src: string): DefinitionRef[] {
-  const stripped = stripVhdlComments(src);
-  const lineStarts = computeLineStarts(stripped);
-  const out: DefinitionRef[] = [];
-  const re = /\bentity\s+([A-Za-z_]\w*)\s+is\b/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(stripped))) {
-    out.push({ name: m[1], line: lineAt(lineStarts, m.index) });
-  }
-  return out;
 }
 
 function parseVhdlPorts(portListSrc: string): PortInfo[] {
@@ -203,7 +190,7 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
   }
 
   const instRe =
-    /([A-Za-z_]\w*)\s*:\s*(?:entity\s+(?:(\w+)\s*\.\s*)?(\w+)(?:\s*\(\s*\w+\s*\))?|component\s+(\w+)|(\w+))\s+(?:generic\s+map|port\s+map)/gi;
+    /([A-Za-z_]\w*)\s*:\s*(?:entity\s+(?:(\w+)\s*\.\s*)?(\w+)(?:\s*\(\s*\w+\s*\))?(?=\s*;|\s+(?:generic\s+map|port\s+map))|component\s+(\w+)(?=\s*;|\s+(?:generic\s+map|port\s+map))|(\w+)\s+(?:generic\s+map|port\s+map))/gi;
   const archRe = /\barchitecture\s+(\w+)\s+of\s+([A-Za-z_]\w*)\s+is\b/gi;
   while ((m = archRe.exec(stripped))) {
     const archEnd = findEnd(stripped, archRe.lastIndex, "architecture", m[1]);

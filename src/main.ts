@@ -11,7 +11,7 @@ import { extractOutline, breadcrumbAt, OUTLINE_KIND_LABELS } from "./model/outli
 import type { OutlineItem } from "./model/outline";
 import { searchContents } from "./model/search";
 import { NavHistory, type NavEntry } from "./model/history";
-import { scanStructure, parseFile, parseFileDetail, parseXci } from "./parser";
+import { scanStructure, parseFileDetail, parseXci } from "./parser";
 import type { ModuleInfo, IpInfo } from "./parser";
 import { findSignalDeclLine } from "./model/signals";
 import { scanFolder, readFile, openFolderDialog, openFileDialog, pathExists, showInFolder, openDirectory, isDirectory, normalizePath } from "./ipc";
@@ -324,14 +324,24 @@ const portMapLoader = createPortMapLoader({
   ips: () => state.ips,
   resolveModule: (name) => state.index.resolve(name),
   fileContent,
+  fileToken,
 });
-const { detailForModel, modulePorts, buildPortMapRows } = portMapLoader;
+const { detailForModel, modulePorts, moduleParameters, buildPortMapRows } = portMapLoader;
 
 /** 打开中的标签页用当前缓冲区（含未保存修改），否则用扫描缓存。两组标签都查。 */
 function fileContent(file: string): string | undefined {
   for (const g of groups) {
     const tab = g.tabs.findTab(file);
     if (tab) return tab.model.getValue();
+  }
+  return state.contents.get(file)?.content;
+}
+
+/** 与 fileContent 同源的缓存令牌：标签页用 model 版本号，否则用扫描缓存内容引用。 */
+function fileToken(file: string): unknown {
+  for (const g of groups) {
+    const tab = g.tabs.findTab(file);
+    if (tab) return tab.model.getVersionId();
   }
   return state.contents.get(file)?.content;
 }
@@ -413,10 +423,7 @@ monaco.languages.registerHoverProvider("vhdl", hoverProvider);
 registerCompletionProviders({
   allDefs: () => state.index.allDefs(),
   modulePorts,
-  moduleParameters: name => {
-    const def = state.index.resolve(name), content = def && fileContent(def.file);
-    return def && content ? parseFile(content, def.file).find(m => m.name.toLowerCase() === name.toLowerCase())?.parameters ?? [] : [];
-  },
+  moduleParameters,
 });
 
 // ---------- Ctrl+Shift+O 文件符号（与侧栏大纲共用 extractOutline） ----------

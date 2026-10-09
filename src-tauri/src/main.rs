@@ -68,7 +68,13 @@ fn normalize(path: &Path) -> String {
 }
 
 #[tauri::command]
-fn scan_folder(path: String) -> Result<ScanResult, String> {
+async fn scan_folder(path: String) -> Result<ScanResult, String> {
+    tauri::async_runtime::spawn_blocking(move || scan_folder_sync(path))
+        .await
+        .map_err(|e| format!("scan_folder task failed: {e}"))?
+}
+
+fn scan_folder_sync(path: String) -> Result<ScanResult, String> {
     let root = PathBuf::from(&path);
     if !root.is_dir() {
         return Err(format!("not a directory: {path}"));
@@ -99,7 +105,13 @@ fn mtime_ms(path: &str) -> u64 {
 }
 
 #[tauri::command]
-fn file_states(paths: Vec<String>) -> Vec<Option<u64>> {
+async fn file_states(paths: Vec<String>) -> Vec<Option<u64>> {
+    tauri::async_runtime::spawn_blocking(move || file_states_sync(paths))
+        .await
+        .unwrap_or_default()
+}
+
+fn file_states_sync(paths: Vec<String>) -> Vec<Option<u64>> {
     paths
         .iter()
         .map(|p| {
@@ -110,37 +122,55 @@ fn file_states(paths: Vec<String>) -> Vec<Option<u64>> {
 }
 
 #[tauri::command]
-fn path_exists(path: String) -> bool {
+async fn path_exists(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || path_exists_sync(path))
+        .await
+        .unwrap_or(false)
+}
+
+fn path_exists_sync(path: String) -> bool {
     PathBuf::from(&path).exists()
 }
 
 /// 拖放打开前的目录判定。
 #[tauri::command]
-fn is_directory(path: String) -> bool {
-    std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false)
+async fn is_directory(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// 在资源管理器中定位文件（explorer /select）。
 #[tauri::command]
-fn show_in_folder(path: String) -> Result<(), String> {
-    std::process::Command::new("explorer")
-        .arg(format!("/select,{}", path.replace('/', "\\")))
-        .spawn()
-        .map_err(|e| format!("explorer failed: {e}"))?;
-    Ok(())
+async fn show_in_folder(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.replace('/', "\\")))
+            .spawn()
+            .map_err(|e| format!("explorer failed: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("explorer failed: {e}"))?
 }
 
 #[tauri::command]
-fn open_directory(path: String) -> Result<(), String> {
-    let directory = PathBuf::from(&path);
-    if !directory.is_absolute() || !directory.is_dir() {
-        return Err("Directory does not exist or is not absolute".into());
-    }
-    std::process::Command::new("explorer")
-        .arg(path.replace('/', "\\"))
-        .spawn()
-        .map_err(|e| format!("explorer failed: {e}"))?;
-    Ok(())
+async fn open_directory(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory = PathBuf::from(&path);
+        if !directory.is_absolute() || !directory.is_dir() {
+            return Err("Directory does not exist or is not absolute".into());
+        }
+        std::process::Command::new("explorer")
+            .arg(path.replace('/', "\\"))
+            .spawn()
+            .map_err(|e| format!("explorer failed: {e}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("explorer failed: {e}"))?
 }
 
 pub fn decode(bytes: &[u8]) -> (String, &'static str) {
@@ -238,7 +268,13 @@ fn decode_as(bytes: &[u8], encoding: &str) -> Result<(String, String), String> {
 }
 
 #[tauri::command]
-fn read_file(path: String, encoding: Option<String>) -> Result<FileContent, String> {
+async fn read_file(path: String, encoding: Option<String>) -> Result<FileContent, String> {
+    tauri::async_runtime::spawn_blocking(move || read_file_sync(path, encoding))
+        .await
+        .map_err(|e| format!("read_file task failed: {e}"))?
+}
+
+fn read_file_sync(path: String, encoding: Option<String>) -> Result<FileContent, String> {
     let bytes = fs::read(&path).map_err(|e| format!("read {path} failed: {e}"))?;
     let (content, encoding) = match encoding.as_deref() {
         Some(enc) => decode_as(&bytes, enc)?,
@@ -274,7 +310,13 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 #[tauri::command]
-fn write_file(path: String, content: String, encoding: String) -> Result<u64, String> {
+async fn write_file(path: String, content: String, encoding: String) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || write_file_sync(path, content, encoding))
+        .await
+        .map_err(|e| format!("write_file task failed: {e}"))?
+}
+
+fn write_file_sync(path: String, content: String, encoding: String) -> Result<u64, String> {
     let bytes = encode(&content, &encoding)?;
     atomic_write(Path::new(&path), &bytes).map_err(|e| format!("write {path} failed: {e}"))?;
     Ok(mtime_ms(&path))
@@ -390,18 +432,18 @@ mod tests {
         let original = "// 时钟模块\nmodule top;\n";
         let path = temp_file("gbk_edit.v", &encode(original, "gbk").unwrap());
 
-        let read1 = read_file(path.clone(), None).unwrap();
+        let read1 = read_file_sync(path.clone(), None).unwrap();
         assert_eq!(read1.encoding, "gbk");
         assert_eq!(read1.content, original);
 
         let edited = read1.content.replace("时钟模块", "时钟模块改");
-        write_file(path.clone(), edited.clone(), read1.encoding.clone()).unwrap();
+        write_file_sync(path.clone(), edited.clone(), read1.encoding.clone()).unwrap();
 
         // 落盘字节仍是 GBK（不是合法 UTF-8）
         let raw = fs::read(&path).unwrap();
         assert!(std::str::from_utf8(&raw).is_err());
 
-        let read2 = read_file(path, None).unwrap();
+        let read2 = read_file_sync(path, None).unwrap();
         assert_eq!(read2.encoding, "gbk");
         assert_eq!(read2.content, edited);
     }
@@ -410,13 +452,13 @@ mod tests {
     #[test]
     fn utf8_bom_file_edit_save_roundtrip() {
         let path = temp_file("bom_edit.v", &encode("module a;\n", "utf8-bom").unwrap());
-        let read1 = read_file(path.clone(), None).unwrap();
+        let read1 = read_file_sync(path.clone(), None).unwrap();
         assert_eq!(read1.encoding, "utf8-bom");
-        write_file(path.clone(), read1.content.replace("module a", "module b"), read1.encoding)
+        write_file_sync(path.clone(), read1.content.replace("module a", "module b"), read1.encoding)
             .unwrap();
         let raw = fs::read(&path).unwrap();
         assert!(raw.starts_with(&[0xEF, 0xBB, 0xBF]));
-        let read2 = read_file(path, None).unwrap();
+        let read2 = read_file_sync(path, None).unwrap();
         assert!(read2.content.starts_with("module b"));
     }
 
@@ -425,10 +467,10 @@ mod tests {
     fn gbk_save_as_utf8() {
         let original = "// 中文注释\nmodule c;\n";
         let path = temp_file("transcode.v", &encode(original, "gbk").unwrap());
-        let read1 = read_file(path.clone(), None).unwrap();
+        let read1 = read_file_sync(path.clone(), None).unwrap();
         assert_eq!(read1.encoding, "gbk");
-        write_file(path.clone(), read1.content.clone(), "utf8".to_owned()).unwrap();
-        let read2 = read_file(path, None).unwrap();
+        write_file_sync(path.clone(), read1.content.clone(), "utf8".to_owned()).unwrap();
+        let read2 = read_file_sync(path, None).unwrap();
         assert_eq!(read2.encoding, "utf8");
         assert_eq!(read2.content, original);
     }
@@ -438,17 +480,17 @@ mod tests {
     #[test]
     fn file_states_and_mtime() {
         let path = temp_file("mtime.v", b"module m;\n");
-        let states = file_states(vec![path.clone(), "definitely/missing.v".to_owned()]);
+        let states = file_states_sync(vec![path.clone(), "definitely/missing.v".to_owned()]);
         assert!(states[0].unwrap() > 0);
         assert_eq!(states[1], None);
 
-        let read = read_file(path.clone(), None).unwrap();
+        let read = read_file_sync(path.clone(), None).unwrap();
         assert_eq!(read.mtime, states[0].unwrap());
-        assert!(path_exists(path.clone()));
-        assert!(!path_exists("definitely/missing.v".to_owned()));
+        assert!(path_exists_sync(path.clone()));
+        assert!(!path_exists_sync("definitely/missing.v".to_owned()));
 
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let new_mtime = write_file(path, "module m2;\n".to_owned(), "utf8".to_owned()).unwrap();
+        let new_mtime = write_file_sync(path, "module m2;\n".to_owned(), "utf8".to_owned()).unwrap();
         assert!(new_mtime >= read.mtime);
     }
 
@@ -478,7 +520,7 @@ mod tests {
     #[test]
     fn atomic_write_leaves_no_tmp() {
         let path = temp_file("atomic.v", b"module a;\n");
-        write_file(path.clone(), "module b;\n".to_owned(), "utf8".to_owned()).unwrap();
+        write_file_sync(path.clone(), "module b;\n".to_owned(), "utf8".to_owned()).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"module b;\n");
         assert!(!PathBuf::from(format!("{path}.rtlviewer-tmp")).exists());
     }
@@ -490,7 +532,7 @@ mod tests {
         let target = dir.join("as_dir.v");
         fs::create_dir_all(&target).unwrap();
         let target_str = target.to_string_lossy().into_owned();
-        let result = write_file(target_str.clone(), "module x;".to_owned(), "utf8".to_owned());
+        let result = write_file_sync(target_str.clone(), "module x;".to_owned(), "utf8".to_owned());
         assert!(result.is_err());
         // 目标仍是目录，未被截断成文件
         assert!(target.is_dir());

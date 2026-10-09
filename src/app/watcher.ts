@@ -30,6 +30,7 @@ export interface ExternalWatchContext {
 export function createExternalWatcher(ctx: ExternalWatchContext): { start(): void } {
   let watchTimer: number | undefined;
   let watchPollCount = 0;
+  let polling = false;
 
   function start(): void {
     window.clearInterval(watchTimer);
@@ -38,6 +39,18 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
 
   /** 轮询已索引文件的 mtime：干净标签静默重载，脏标签打警示徽章，未打开的增量重扫；每 4 轮 diff 一次目录增删。 */
   async function pollExternalChanges(): Promise<void> {
+    // 单轮 poll 含全量目录 diff，可能超过轮询间隔；无守卫时 setInterval 并发重入，
+    // 两轮 rescanFolderDiff 基于同一旧快照会把同一新 xci 重复 push 进 ips
+    if (polling) return;
+    polling = true;
+    try {
+      await pollOnce();
+    } finally {
+      polling = false;
+    }
+  }
+
+  async function pollOnce(): Promise<void> {
     if (!ctx.folder() || document.hidden) return;
     const files = [...ctx.contents.keys()];
     if (files.length > 0) {

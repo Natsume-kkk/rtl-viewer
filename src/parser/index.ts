@@ -1,6 +1,6 @@
-import type { DefinitionRef, ModuleInfo } from "./types";
-import { parseVerilog, scanVerilogDefinitions } from "./verilog";
-import { parseVhdl, scanVhdlDefinitions } from "./vhdl";
+import type { ModuleInfo } from "./types";
+import { parseVerilog } from "./verilog";
+import { parseVhdl } from "./vhdl";
 
 export type HdlLang = "verilog" | "vhdl";
 
@@ -9,14 +9,6 @@ export function detectLang(file: string): HdlLang | null {
   if (ext === "v" || ext === "sv" || ext === "vh" || ext === "svh") return "verilog";
   if (ext === "vhd" || ext === "vhdl") return "vhdl";
   return null;
-}
-
-/** 第一级：只提取模块定义名（最小代价）。 */
-export function scanDefinitions(src: string, file: string): DefinitionRef[] {
-  const lang = detectLang(file);
-  if (lang === "verilog") return scanVerilogDefinitions(src);
-  if (lang === "vhdl") return scanVhdlDefinitions(src);
-  return [];
 }
 
 /** 第一级结构扫描：模块定义 + 例化边，跳过端口提取。用于建树。 */

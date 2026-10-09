@@ -33,11 +33,6 @@ export interface ModuleInfo {
   instances: InstanceInfo[];
 }
 
-export interface DefinitionRef {
-  name: string;
-  line: number;
-}
-
 export interface IpInfo {
   name: string;
   file: string;

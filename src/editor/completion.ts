@@ -44,33 +44,31 @@ const VHDL_SNIPPETS: { label: string; snippet: string; detail: string }[] = [
 ];
 
 export function registerCompletionProviders(deps: CompletionDeps): void {
-  // 当前文件符号缓存：uri → model 版本对应的补全项
-  const symbolCache = new Map<string, { version: number; items: { label: string; detail: string }[] }>();
+  // 当前文件符号缓存：model → 版本对应的补全项；model dispose 后随 GC 回收
+  const symbolCache = new WeakMap<monaco.editor.ITextModel, { version: number; items: { label: string; detail: string }[] }>();
   // resolve 阶段找回模块名（item 对象同一引用流经 resolve）
   const moduleItemMeta = new WeakMap<object, { name: string; lang: "verilog" | "vhdl"; label?: string; library?: string }>();
 
   function symbolsFor(model: monaco.editor.ITextModel): { label: string; detail: string }[] {
-    const key = model.uri.toString();
     const version = model.getVersionId();
-    const hit = symbolCache.get(key);
+    const hit = symbolCache.get(model);
     if (hit?.version === version) return hit.items;
     const items = fileSymbolItems(model.getValue(), model.uri.path);
-    symbolCache.set(key, { version, items });
+    symbolCache.set(model, { version, items });
     return items;
   }
 
   function makeProvider(lang: "verilog" | "vhdl"): monaco.languages.CompletionItemProvider {
     const keywords = lang === "verilog" ? VERILOG_KEYWORDS : VHDL_KEYWORDS;
     const snippets = lang === "verilog" ? VERILOG_SNIPPETS : VHDL_SNIPPETS;
-    // 连接上下文清洗文本缓存：uri → model 版本对应的去注释文本，击键路径不做全文重复清洗
-    const cleanCache = new Map<string, { version: number; text: string }>();
+    // 连接上下文清洗文本缓存：model → 版本对应的去注释文本，击键路径不做全文重复清洗
+    const cleanCache = new WeakMap<monaco.editor.ITextModel, { version: number; text: string }>();
     function cleanedSource(model: monaco.editor.ITextModel): string {
-      const key = model.uri.toString();
       const version = model.getVersionId();
-      const hit = cleanCache.get(key);
+      const hit = cleanCache.get(model);
       if (hit?.version === version) return hit.text;
       const text = stripSourceComments(model.getValue(), lang);
-      cleanCache.set(key, { version, text });
+      cleanCache.set(model, { version, text });
       return text;
     }
     return {

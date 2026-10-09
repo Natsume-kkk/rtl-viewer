@@ -1,32 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseFile, parseFileDetail, parseXci, scanDefinitions } from "../src/parser";
+import { parseFile, parseFileDetail, parseXci } from "../src/parser";
 import { parseVerilogProcess, parseVhdlProcess } from "../src/parser/procedural";
-
-describe("verilog 定义扫描（第一级）", () => {
-  it("提取 module 定义名与行号", () => {
-    const src = `// header
-module top(input clk);
-endmodule
-
-module sub_mod;
-endmodule
-`;
-    const defs = scanDefinitions(src, "a.v");
-    expect(defs.map((d) => d.name)).toEqual(["top", "sub_mod"]);
-    expect(defs[0].line).toBe(2);
-    expect(defs[1].line).toBe(5);
-  });
-
-  it("注释与字符串中的 module 不算定义", () => {
-    const src = `// module fake1;
-/* module fake2; */
-module real_mod;
-// "module fake3;"
-endmodule
-`;
-    expect(scanDefinitions(src, "a.v").map((d) => d.name)).toEqual(["real_mod"]);
-  });
-});
 
 describe("verilog 完整解析（第二级）", () => {
   it("解析 ANSI 端口与参数化例化", () => {
@@ -154,11 +128,6 @@ begin
 end architecture;
 `;
 
-  it("第一级提取 entity 定义", () => {
-    const defs = scanDefinitions(src, "top.vhd");
-    expect(defs.map((d) => d.name)).toEqual(["top", "sub_mod"]);
-  });
-
   it("解析端口、例化归属到正确 entity，process 标签不误判", () => {
     const mods = parseFile(src, "top.vhd");
     expect(mods.map((m) => m.name)).toEqual(["top", "sub_mod"]);
@@ -271,7 +240,6 @@ module top(input clk);
   bus_if u_bus (.clk(clk));
 endmodule
 `;
-    expect(scanDefinitions(src, "top.sv").map((d) => d.name)).toEqual(["bus_if", "top"]);
     const mods = parseFile(src, "top.sv");
     expect(mods.map((m) => m.name)).toEqual(["bus_if", "top"]);
     expect(mods[0].instances).toEqual([]);
@@ -404,6 +372,24 @@ end architecture;
     expect(mods[0].instances.map((i) => [i.module, i.inst])).toEqual([
       ["sub_mod", "u_g"],
       ["old_mod", "u_c"],
+    ]);
+  });
+
+  it("无 map 的直接实体例化与 component 例化产生例化边", () => {
+    const src = `entity top is end entity;
+architecture rtl of top is
+  signal s_clk : std_logic;
+begin
+  u1 : entity work.foo;
+  u2 : component bar;
+  u3 : entity work.baz(rtl);
+end architecture;
+`;
+    const mods = parseFile(src, "t.vhd");
+    expect(mods[0].instances.map((i) => [i.module, i.inst])).toEqual([
+      ["foo", "u1"],
+      ["bar", "u2"],
+      ["baz", "u3"],
     ]);
   });
 

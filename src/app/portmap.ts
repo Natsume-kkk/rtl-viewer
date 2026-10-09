@@ -1,5 +1,5 @@
 import { parseFile, parseFileDetail } from "../parser";
-import type { ModuleInfo, IpInfo, PortInfo, PortConnection } from "../parser";
+import type { ModuleInfo, IpInfo, PortInfo, PortConnection, ParameterInfo } from "../parser";
 import { readFile } from "../ipc";
 import type { ModuleDef } from "../model";
 import type { monaco } from "../editor/monaco";
@@ -12,6 +12,8 @@ export interface PortMapContext {
   resolveModule(name: string): ModuleDef | undefined;
   /** 打开中的标签页用当前缓冲区（含未保存修改），否则用扫描缓存。 */
   fileContent(file: string): string | undefined;
+  /** 与 fileContent 同源的变化令牌：打开的标签页用 model 版本号，否则用扫描缓存内容引用。 */
+  fileToken(file: string): unknown;
 }
 
 /** 光标位于例化语句任意一行即可命中；instance 指定时收窄到该实例，唯一候选兜底。 */
@@ -37,20 +39,22 @@ export function findInstanceAt(
 export function createPortMapLoader(ctx: PortMapContext): {
   detailForModel(model: monaco.editor.ITextModel): ModuleInfo[];
   modulePorts(moduleName: string): Promise<PortInfo[]>;
+  moduleParameters(moduleName: string): ParameterInfo[];
   buildPortMapRows(moduleName: string, connections: PortConnection[]): Promise<PortMapRow[]>;
   reset(): void;
 } {
   /** 当前编辑内容的第三级解析缓存（按 model 版本失效），悬停高频触发不能每次重解析。 */
-  const detailCache = new Map<string, { version: number; modules: ModuleInfo[] }>();
+  let detailCache = new WeakMap<monaco.editor.ITextModel, { version: number; modules: ModuleInfo[] }>();
   const ipPortsCache = new Map<string, { ports: PortInfo[]; source: string }>();
+  /** 工程内模块文件解析缓存（按 fileToken 失效），modulePorts 与 moduleParameters 共享。 */
+  const moduleFileCache = new Map<string, { token: unknown; modules: ModuleInfo[] }>();
 
   function detailForModel(model: monaco.editor.ITextModel): ModuleInfo[] {
-    const key = model.uri.toString();
     const version = model.getVersionId();
-    const hit = detailCache.get(key);
+    const hit = detailCache.get(model);
     if (hit?.version === version) return hit.modules;
     const modules = parseFileDetail(model.getValue(), model.uri.path);
-    detailCache.set(key, { version, modules });
+    detailCache.set(model, { version, modules });
     return modules;
   }
 
@@ -88,18 +92,33 @@ export function createPortMapLoader(ctx: PortMapContext): {
     return empty;
   }
 
+  function moduleFileModules(def: ModuleDef): ModuleInfo[] | undefined {
+    const content = ctx.fileContent(def.file);
+    if (content === undefined) return undefined;
+    const token = ctx.fileToken(def.file);
+    const hit = moduleFileCache.get(def.file);
+    if (hit && hit.token === token) return hit.modules;
+    const modules = parseFile(content, def.file);
+    moduleFileCache.set(def.file, { token, modules });
+    return modules;
+  }
+
   /** 子模块端口元数据：工程内模块取解析结果，IP 取 stub。 */
   async function modulePorts(moduleName: string): Promise<PortInfo[]> {
     const def = ctx.resolveModule(moduleName);
     const key = moduleName.toLowerCase();
     if (def && !def.isIp) {
-      const content = ctx.fileContent(def.file);
-      if (content !== undefined) {
-        const mod = parseFile(content, def.file).find((m) => m.name.toLowerCase() === key);
-        if (mod) return mod.ports;
-      }
+      const mod = moduleFileModules(def)?.find((m) => m.name.toLowerCase() === key);
+      if (mod) return mod.ports;
     }
     return (await loadIpPorts(moduleName)).ports;
+  }
+
+  function moduleParameters(moduleName: string): ParameterInfo[] {
+    const def = ctx.resolveModule(moduleName);
+    if (!def || def.isIp) return [];
+    const key = moduleName.toLowerCase();
+    return moduleFileModules(def)?.find((m) => m.name.toLowerCase() === key)?.parameters ?? [];
   }
 
   /** 连接表对齐端口元数据：命名按名（大小写不敏感），位置按序；未连接的端口补空行。 */
@@ -137,11 +156,12 @@ export function createPortMapLoader(ctx: PortMapContext): {
     return rows;
   }
 
-  /** 端口与 detail 缓存按工程失效：换工程后同名 IP（clk_wiz_0 等）不得沿用旧定义。 */
+  /** 端口与解析缓存按工程失效：换工程后同名 IP（clk_wiz_0 等）不得沿用旧定义。 */
   function reset(): void {
     ipPortsCache.clear();
-    detailCache.clear();
+    moduleFileCache.clear();
+    detailCache = new WeakMap();
   }
 
-  return { detailForModel, modulePorts, buildPortMapRows, reset };
+  return { detailForModel, modulePorts, moduleParameters, buildPortMapRows, reset };
 }

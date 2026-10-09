@@ -14,7 +14,8 @@ import { NavHistory, type NavEntry } from "./model/history";
 import { scanStructure, parseFile, parseFileDetail, parseXci } from "./parser";
 import type { ModuleInfo, IpInfo, PortInfo, PortConnection } from "./parser";
 import { findSignalDeclLine } from "./model/signals";
-import { scanFolder, readFile, openFolderDialog, fileStates, pathExists, showInFolder, openDirectory, isDirectory, normalizePath } from "./ipc";
+import { scanFolder, readFile, openFolderDialog, openFileDialog, fileStates, pathExists, showInFolder, openDirectory, isDirectory, normalizePath } from "./ipc";
+import { registerAppShortcuts } from "./ui/shortcuts";
 import { initMonaco, createEditor, monaco } from "./editor/monaco";
 import { registerCompletionProviders } from "./editor/completion";
 import { TabManager } from "./editor/tabs";
@@ -84,7 +85,8 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   const recentBtn = document.createElement("button");
   recentBtn.className = "btn btn-primary recent-btn";
   setIcon(recentBtn, "chevron-down");
-  recentBtn.title = "最近打开的工程 (Ctrl+R)";
+  openBtn.title = "打开源码文件夹 (Ctrl+Alt+O)";
+  recentBtn.title = "最近打开的工程 (Ctrl+Alt+R)";
   recentBtn.setAttribute("aria-label", "最近打开的工程");
   recentBtn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -95,7 +97,7 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   const saveBtn = action("保存", "save", () => void activeGroup().tabs.save());
   saveBtn.title = "保存 (Ctrl+S)";
   const columnBtn = action("列编辑", "split", () => void openColumnEditor(activeGroup().editor));
-  columnBtn.title = "列编辑 (Alt+C)；Alt+Shift+方向键或拖动选择矩形区域";
+  columnBtn.title = "列编辑 (Alt+C)；Alt+拖动或 Alt+Shift+方向键选择矩形区域";
   const end = document.createElement("div");
   end.className = "toolbar-end";
   const searchBtn = action("搜索", "search", () => setSearchVisible(searchRoot.hidden));
@@ -112,10 +114,10 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
     else void openInOtherGroup();
   });
   splitBtn.id = "split-action";
-  splitBtn.title = "分屏 (Ctrl+\\)";
+  splitBtn.title = "分屏 (Ctrl+Alt+V)；F8 切换编辑视图";
   const mapBtn = action("", "ports", togglePortMap);
   mapBtn.id = "map-action";
-  mapBtn.title = "端口映射 (Ctrl+K)";
+  mapBtn.title = "端口映射 (Ctrl+Alt+K)";
   mapBtn.setAttribute("aria-label", "切换端口映射");
   mapBtn.setAttribute("aria-expanded", "false");
   const flowBtn = action("信号链", "ports", toggleSignalFlow);
@@ -858,7 +860,8 @@ function registerEditorActions(): void {
   monaco.editor.addEditorAction({
     id: "rtl.view-portmap",
     label: "查看端口连接",
-    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyK],
+    precondition: "editorTextFocus",
     contextMenuGroupId: "navigation",
     run: () => {
       setMappingVisible(true);
@@ -917,8 +920,9 @@ function registerEditorActions(): void {
   // 分屏：当前文件在另一侧视图打开（共享 model，编辑互通）。
   monaco.editor.addEditorAction({
     id: "rtl.split-other",
-    label: "在另一侧视图打开 (Ctrl+\\)",
-    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Backslash],
+    label: "在另一侧视图打开 (Ctrl+Alt+V)",
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyV],
+    precondition: "editorTextFocus",
     contextMenuGroupId: "view",
     contextMenuOrder: 0,
     run: () => void openInOtherGroup(),
@@ -943,11 +947,17 @@ function makeTabEvents(idx: number): TabEvents {
       if (idx === activeGroupIdx) syncChrome();
     },
     onFileReloaded: (path, content, encoding, mtime) => {
+      // Ctrl+O 可独立查看文件，只有扫描接纳的工程文件才进入工程缓存与索引。
+      if (!state.contents.has(path)) return;
       if (state.contents.get(path)?.content !== content) markResultsStale();
       state.contents.set(path, { content, encoding, mtime });
       updateStructure(path, content);
     },
     onFileSaved: (path, content, encoding, mtime) => {
+      if (!state.contents.has(path)) {
+        // 新建／另存为的文件由既有目录监视扫描接纳，不能绕过 EDA 与 IP 边界。
+        return;
+      }
       if (state.contents.get(path)?.content !== content) markResultsStale();
       state.contents.set(path, { content, encoding, mtime });
       updateStructure(path, content);
@@ -1044,7 +1054,7 @@ function collapseSplit(): void {
   groups[0].editor.focus();
 }
 
-/** 当前文件在另一侧视图打开（Ctrl+\ / 编辑器右键）。 */
+/** 当前文件在另一侧视图打开（Ctrl+Alt+V / 编辑器右键）。 */
 async function openInOtherGroup(): Promise<void> {
   const src = activeGroup();
   const tab = src.tabs.activeTab;
@@ -1097,7 +1107,7 @@ if (!new URLSearchParams(location.search).has("e2e") && (await import("@tauri-ap
 function updateStructure(path: string, content: string): void {
   if (!state.folder) return;
   // 只索引当前工程内的文件：换工程后残留旧标签的保存/重载不得写入新索引（Windows 路径大小写不敏感）
-  if (!path.toLowerCase().startsWith(state.folder.toLowerCase() + "/")) return;
+  if (!path.toLowerCase().startsWith(state.folder.toLowerCase() + "/") || !state.structures.has(path)) return;
   state.structures.set(path, scanStructure(content, path));
   state.parsed.delete(path);
   rebuildIndex();
@@ -1553,20 +1563,33 @@ initSplitter();
 
 // ---------- 全局快捷键与编辑联动 ----------
 
-window.addEventListener("keydown", (e) => {
-  if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
-    e.preventDefault(); activeGroup().tabs.newFile(preferredNewFileType(), state.folder);
-  } else if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === "ArrowLeft") {
-    e.preventDefault();
-    navBack();
-  } else if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === "ArrowRight") {
-    e.preventDefault();
-    navForward();
-  } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "f") {
-    e.preventDefault();
-    searchPanel.focus();
-  } else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "r") {
-    e.preventDefault();
-    recentMenu.toggle();
-  }
+registerAppShortcuts({
+  newFile: () => activeGroup().tabs.newFile(preferredNewFileType(), state.folder),
+  openFile: async () => {
+    const idx = activeGroupIdx;
+    const file = await openFileDialog(activeGroup().tabs.activeTab?.path || state.folder || undefined);
+    if (file) await openProjectFile(file, undefined, idx);
+  },
+  openProject,
+  save: () => activeGroup().tabs.save(),
+  saveAs: () => activeGroup().tabs.saveAs(),
+  saveAll: () => TabManager.saveGroups(groups.map(group => group.tabs)),
+  close: async () => {
+    const tab = activeGroup().tabs.activeTab;
+    if (tab) await activeGroup().tabs.close(tab);
+  },
+  closeAll: () => TabManager.closeGroups(groups.map(group => group.tabs)),
+  reload: () => activeGroup().tabs.reload(),
+  cycleTab: delta => activeGroup().tabs.cycleTab(delta),
+  switchView: () => {
+    if (!splitVisible) return;
+    const idx = activeGroupIdx === 0 ? 1 : 0;
+    focusGroup(idx);
+    groups[idx].editor.focus();
+  },
+  recent: () => recentMenu.toggle(),
+  search: () => searchPanel.focus(),
+  back: navBack,
+  forward: navForward,
+  error: error => statusbar.hint(`快捷操作失败：${String(error)}`),
 });

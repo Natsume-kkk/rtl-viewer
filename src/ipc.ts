@@ -62,6 +62,20 @@ export async function openFolderDialog(): Promise<string | null> {
   return typeof selected === "string" ? normalizePath(selected) : null;
 }
 
+export async function openFileDialog(defaultPath?: string): Promise<string | null> {
+  const selected = await open({
+    directory: false,
+    multiple: false,
+    title: "打开源码文件",
+    defaultPath,
+    filters: [
+      { name: "HDL / Constraints", extensions: ["v", "sv", "vh", "svh", "vhd", "vhdl", "xdc", "sdc"] },
+      { name: "All", extensions: ["*"] },
+    ],
+  });
+  return typeof selected === "string" ? normalizePath(selected) : null;
+}
+
 export async function saveFileDialog(defaultPath?: string): Promise<string | null> {
   const selected = await save({
     title: "另存为",

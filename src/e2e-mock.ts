@@ -50,7 +50,7 @@ const internals: TauriInternals = {
         return null; // e2e 环境不起资源管理器
       // 对话框：选文件夹固定返回 fixture，另存为写到 fixture 下的输出文件
       case "plugin:dialog|open":
-        return FIXTURE;
+        return (args.options as { directory?: boolean } | undefined)?.directory ? FIXTURE : null;
       case "plugin:dialog|save":
         return `${FIXTURE}/e2e-out.v`;
       default:

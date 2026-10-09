@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("../src/editor/monaco", () => {
   class FakeModel {
     disposed = false;
+    private version = 1;
     private listeners = new Set<() => void>();
     constructor(
       private value: string,
@@ -15,7 +16,14 @@ vi.mock("../src/editor/monaco", () => {
     }
     setValue(v: string): void {
       this.value = v;
+      this.version += 1;
       for (const l of [...this.listeners]) l();
+    }
+    getVersionId(): number {
+      return this.version;
+    }
+    isDisposed(): boolean {
+      return this.disposed;
     }
     getLanguageId(): string {
       return this.lang;
@@ -82,7 +90,7 @@ function makeEditor() {
     },
     getPosition: () => ({ lineNumber: 1, column: 1 }),
     setPosition: vi.fn(),
-    saveViewState: () => null,
+    saveViewState: vi.fn<() => unknown>(() => null),
     restoreViewState: vi.fn(),
     focus: vi.fn(),
     revealLineInCenter: vi.fn(),
@@ -235,22 +243,156 @@ describe("TabManager", () => {
     tm.activeTab!.model.setValue("discard"); mocks.writeFile.mockClear(); mocks.choiceDialog.mockResolvedValue(1);
     await expect(tm.closeAll()).resolves.toBe(true); expect(mocks.writeFile).not.toHaveBeenCalled();
   });
-  it("Ctrl+S 只保存聚焦编辑组，另一侧关闭后仍可保存左侧", async () => {
+  it("TabManager 不重复注册 Ctrl+S，保存交给应用层统一处理", async () => {
+    await setup();
+    const { TabManager } = await import("../src/editor/tabs");
+    const editors = [makeEditor(), makeEditor()];
+    const managers = editors.map(ed => new TabManager(ed as unknown as ConstructorParameters<typeof TabManager>[0], document.createElement("ul"), makeEvents()));
+    expect(managers).toHaveLength(2);
+    for (const ed of editors) expect(ed.addCommand).not.toHaveBeenCalled();
+  });
+
+  it("标签循环支持空组、单标签及双向环绕，并恢复已有阅读位置", async () => {
+    await setup();
+    const { TabManager } = await import("../src/editor/tabs");
+    const ed = makeEditor();
+    const tm = new TabManager(ed as unknown as ConstructorParameters<typeof TabManager>[0], document.createElement("ul"), makeEvents());
+    tm.cycleTab(1);
+    expect(tm.activeTab).toBeNull();
+    tm.openContent("D:/p/a.v", "a", "utf8", 0);
+    tm.cycleTab(-1);
+    expect(tm.activeTab!.path).toBe("D:/p/a.v");
+    const state = { cursorState: ["saved cursor"], viewState: "saved scroll" };
+    ed.saveViewState.mockReturnValue(state);
+    tm.openContent("D:/p/b.v", "b", "utf8", 0);
+    tm.openContent("D:/p/c.v", "c", "utf8", 0);
+    tm.cycleTab(1);
+    expect(tm.activeTab!.path).toBe("D:/p/a.v");
+    expect(ed.restoreViewState).toHaveBeenCalledWith(state);
+    tm.cycleTab(-1);
+    expect(tm.activeTab!.path).toBe("D:/p/c.v");
+    tm.cycleTab(-1);
+    expect(tm.activeTab!.path).toBe("D:/p/b.v");
+    expect(ed.focus).toHaveBeenCalled();
+  });
+
+  it("全部保存跳过干净标签，跨组共享缓冲区只写一次", async () => {
+    const { make, mocks } = await setup();
+    const { TabManager } = await import("../src/editor/tabs");
+    const a = make(), b = make();
+    await expect(TabManager.saveGroups([a, b])).resolves.toBe(true);
+    a.openContent("D:/p/clean.v", "clean", "utf8", 0);
+    for (const tm of [a, b]) tm.openContent("D:/p/shared.v", "old", "gbk", 0);
+    a.activeTab!.model.setValue("edited");
+    b.openContent("D:/p/other.v", "old", "utf8", 0);
+    b.activeTab!.model.setValue("other edit");
+    mocks.writeFile.mockResolvedValue(200);
+    await expect(TabManager.saveGroups([a, b])).resolves.toBe(true);
+    expect(mocks.writeFile.mock.calls).toEqual([
+      ["D:/p/shared.v", "edited", "gbk"], ["D:/p/other.v", "other edit", "utf8"],
+    ]);
+    expect(a.activeTab!.dirty).toBe(false);
+    expect(b.findTab("D:/p/shared.v")!.dirty).toBe(false);
+    expect(a.count).toBe(2); expect(b.count).toBe(2);
+  });
+
+  it.each(["cancel", "failure"])("全部保存遇 %s 停止后续保存并保留标签和缓冲区", async mode => {
+    const { make, mocks } = await setup();
+    const { TabManager } = await import("../src/editor/tabs");
+    const tm = make();
+    tm.newFile(); const first = tm.activeTab!; first.model.setValue("new source");
+    tm.openContent("D:/p/later.v", "old", "utf8", 0); tm.activeTab!.model.setValue("later edit");
+    mocks.saveFileDialog.mockResolvedValue(mode === "cancel" ? null : "D:/p/new.v");
+    mocks.writeFile.mockRejectedValue(new Error("disk full"));
+    await expect(TabManager.saveGroups([tm])).resolves.toBe(false);
+    expect(mocks.writeFile).toHaveBeenCalledTimes(mode === "cancel" ? 0 : 1);
+    expect(tm.count).toBe(2); expect(first.path).toBe(""); expect(first.dirty).toBe(true);
+    expect(first.model.getValue()).toBe("new source");
+    expect(tm.activeTab!.model.getValue()).toBe("later edit"); expect(tm.activeTab!.dirty).toBe(true);
+  });
+
+  it("显式重载按当前编码读盘，同步共享状态并保留两侧阅读位置", async () => {
     const { mocks } = await setup();
     const { TabManager } = await import("../src/editor/tabs");
     const editors = [makeEditor(), makeEditor()];
     const managers = editors.map(ed => new TabManager(ed as unknown as ConstructorParameters<typeof TabManager>[0], document.createElement("ul"), makeEvents()));
-    managers[0].openContent("D:/p/left.v", "left", "utf8", 0);
-    managers[1].openContent("D:/p/right.v", "right", "utf8", 0);
-    await managers[1].closeAll();
-    managers[0].activeTab!.model.setValue("left edited");
-    mocks.writeFile.mockResolvedValue(200);
-    // Monaco 的动态快捷键共享注册表，后注册者优先；只有 context 匹配才生效。
-    const commands = editors.flatMap(ed => ed.addCommand.mock.calls);
-    const applicable = commands.filter(([, , context]) => !context || context.includes(editors[0].getId()));
-    applicable.at(-1)![1]();
-    await vi.waitFor(() => expect(mocks.writeFile).toHaveBeenCalledWith("D:/p/left.v", "left edited", "utf8"));
-    expect(managers[0].activeTab!.dirty).toBe(false);
+    for (const tm of managers) {
+      tm.openContent("D:/p/shared.v", "old", "gbk", 100);
+      tm.markExternalChanged("D:/p/shared.v", true);
+    }
+    managers[0].activeTab!.model.setValue("mine");
+    const states = [{ cursor: "left" }, { cursor: "right" }];
+    editors.forEach((ed, i) => ed.saveViewState.mockReturnValue(states[i]));
+    mocks.readFile.mockResolvedValue({ content: "disk", encoding: "gbk", mtime: 300 });
+    await expect(managers[0].reload()).resolves.toBe(true);
+    expect(mocks.appConfirm).toHaveBeenCalledTimes(1);
+    expect(mocks.readFile).toHaveBeenCalledWith("D:/p/shared.v", "gbk");
+    for (const tm of managers) {
+      expect(tm.activeTab!.model.getValue()).toBe("disk"); expect(tm.activeTab!.dirty).toBe(false);
+      expect(tm.activeTab!.externalChanged).toBe(false); expect(tm.activeTab!.mtime).toBe(300);
+    }
+    editors.forEach((ed, i) => expect(ed.restoreViewState).toHaveBeenCalledWith(states[i]));
+  });
+
+  it("重载空组和未命名文件无操作，拒绝丢弃或读取失败保留原缓冲区", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    await expect(tm.reload()).resolves.toBe(false);
+    tm.newFile(); tm.activeTab!.model.setValue("new source");
+    await expect(tm.reload()).resolves.toBe(false);
+    expect(mocks.appConfirm).not.toHaveBeenCalled(); expect(mocks.readFile).not.toHaveBeenCalled();
+    tm.openContent("D:/p/a.v", "old", "utf8", 100); const tab = tm.activeTab!;
+    tab.model.setValue("mine"); tm.markExternalChanged(tab.path, true);
+    mocks.appConfirm.mockResolvedValue(false);
+    await expect(tm.reload()).resolves.toBe(false); expect(mocks.readFile).not.toHaveBeenCalled();
+    mocks.appConfirm.mockResolvedValue(true); mocks.readFile.mockRejectedValue(new Error("gone"));
+    await expect(tm.reload()).resolves.toBe(false);
+    expect(tab.model.getValue()).toBe("mine"); expect(tab.dirty).toBe(true);
+    expect(tab.externalChanged).toBe(true); expect(tab.mtime).toBe(100);
+    expect(mocks.appAlert).toHaveBeenCalledWith(expect.stringContaining("重新加载失败"));
+  });
+
+  it("重载读盘期间继续编辑时停止，不覆盖新修改", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    tm.openContent("D:/p/a.v", "old", "utf8", 100); const tab = tm.activeTab!;
+    let resolve!: (file: { content: string; encoding: string; mtime: number }) => void;
+    mocks.readFile.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const pending = tm.reload();
+    tab.model.setValue("new edit while reading");
+    resolve({ content: "disk", encoding: "utf8", mtime: 300 });
+    await expect(pending).resolves.toBe(false);
+    expect(tab.model.getValue()).toBe("new edit while reading"); expect(tab.dirty).toBe(true); expect(tab.mtime).toBe(100);
+    expect(mocks.appAlert).toHaveBeenCalledWith(expect.stringContaining("读取期间发生变化"));
+  });
+
+  it("重载读盘期间关闭标签时停止，不写入已释放的 model", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    tm.openContent("D:/p/a.v", "old", "utf8", 100); const tab = tm.activeTab!;
+    let resolve!: (file: { content: string; encoding: string; mtime: number }) => void;
+    mocks.readFile.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const pending = tm.reload();
+    await tm.close(tab);
+    expect(tab.model.isDisposed()).toBe(true);
+    const setValue = vi.spyOn(tab.model, "setValue");
+    resolve({ content: "disk", encoding: "utf8", mtime: 300 });
+    await expect(pending).resolves.toBe(false);
+    expect(setValue).not.toHaveBeenCalled(); expect(tm.count).toBe(0);
+  });
+
+  it("重载读盘期间切换标签，更新原目标但不把旧阅读位置恢复到另一文件", async () => {
+    const { mocks } = await setup();
+    const { TabManager } = await import("../src/editor/tabs"); const ed = makeEditor();
+    const tm = new TabManager(ed as unknown as ConstructorParameters<typeof TabManager>[0], document.createElement("ul"), makeEvents());
+    tm.openContent("D:/p/a.v", "old", "utf8", 100); const tab = tm.activeTab!;
+    ed.saveViewState.mockReturnValue({ cursor: "a cursor" });
+    let resolve!: (file: { content: string; encoding: string; mtime: number }) => void;
+    mocks.readFile.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const pending = tm.reload();
+    tm.openContent("D:/p/b.v", "other", "utf8", 100); ed.restoreViewState.mockClear();
+    resolve({ content: "disk", encoding: "utf8", mtime: 300 });
+    await expect(pending).resolves.toBe(true);
+    expect(tab.model.getValue()).toBe("disk"); expect(tab.dirty).toBe(false);
+    expect(tm.activeTab!.path).toBe("D:/p/b.v"); expect(tm.activeTab!.model.getValue()).toBe("other");
+    expect(ed.restoreViewState).not.toHaveBeenCalled();
   });
 
   it("编辑标脏，保存后清脏并更新 mtime", async () => {
@@ -339,6 +481,50 @@ describe("TabManager", () => {
     await expect(tm.save()).resolves.toBe(true);
     expect(tab.path).toBe("D:/p/sub/new.v");
     expect(tab.uriKey).toBe("file:///D:/p/sub/new.v");
+  });
+
+  it("已命名文件另存为迁移当前标签，旧路径分屏保留未保存状态", async () => {
+    const { make, mocks } = await setup(); const a = make(), b = make();
+    for (const tm of [a, b]) tm.openContent("D:/p/source.v", "old", "gbk", 100);
+    const oldModel = a.activeTab!.model; oldModel.setValue("mine");
+    mocks.saveFileDialog.mockResolvedValue("D:/p/copy.v"); mocks.writeFile.mockResolvedValue(500);
+    await expect(a.saveAs()).resolves.toBe(true);
+    expect(mocks.writeFile).toHaveBeenCalledWith("D:/p/copy.v", "mine", "gbk");
+    expect(a.activeTab!.path).toBe("D:/p/copy.v"); expect(a.activeTab!.title).toBe("copy.v");
+    expect(a.activeTab!.uriKey).toBe("file:///D:/p/copy.v"); expect(a.activeTab!.dirty).toBe(false);
+    expect(a.activeTab!.model).not.toBe(oldModel); expect(a.activeTab!.model.getValue()).toBe("mine");
+    expect(b.activeTab!.path).toBe("D:/p/source.v"); expect(b.activeTab!.model).toBe(oldModel);
+    expect(b.activeTab!.dirty).toBe(true); expect(b.activeTab!.mtime).toBe(100);
+    oldModel.setValue("source edited again");
+    expect(a.activeTab!.model.getValue()).toBe("mine");
+    expect((oldModel as unknown as { disposed: boolean }).disposed).toBe(false);
+  });
+
+  it.each([false, true])("另存为阻止覆盖同组／跨组已打开的其他缓冲区（跨组：%s）", async crossGroup => {
+    const { make, mocks } = await setup(); const a = make(), b = crossGroup ? make() : a;
+    b.openContent("D:/p/target.v", "target", "utf8", 100);
+    const target = b.activeTab!; target.model.setValue("target unsaved");
+    a.openContent("D:/p/source.v", "source", "utf8", 100); const source = a.activeTab!;
+    source.model.setValue("source unsaved");
+    mocks.saveFileDialog.mockResolvedValue("d:\\p\\TARGET.v");
+    await expect(a.saveAs()).resolves.toBe(false);
+    expect(mocks.writeFile).not.toHaveBeenCalled(); expect(mocks.appAlert).toHaveBeenCalledWith(expect.stringContaining("目标文件已"));
+    expect(source.path).toBe("D:/p/source.v"); expect(source.dirty).toBe(true);
+    expect(target.model.getValue()).toBe("target unsaved"); expect(target.dirty).toBe(true);
+  });
+
+  it("已命名文件另存为取消／失败保留旧路径，原路径保存不迁移 model", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    tm.openContent("D:/p/source.v", "old", "utf8", 0); const tab = tm.activeTab!;
+    tab.model.setValue("edited"); const model = tab.model;
+    mocks.saveFileDialog.mockResolvedValueOnce(null).mockResolvedValueOnce("D:/p/copy.v").mockResolvedValueOnce(tab.path);
+    await expect(tm.saveAs()).resolves.toBe(false);
+    mocks.writeFile.mockRejectedValueOnce(new Error("disk full"));
+    await expect(tm.saveAs()).resolves.toBe(false);
+    expect(tab.path).toBe("D:/p/source.v"); expect(tab.model).toBe(model); expect(tab.dirty).toBe(true);
+    mocks.writeFile.mockResolvedValue(200);
+    await expect(tm.saveAs()).resolves.toBe(true);
+    expect(tab.path).toBe("D:/p/source.v"); expect(tab.model).toBe(model); expect(tab.dirty).toBe(false);
   });
 
   it("M3: close 后共享 model 的变化不再触达已关闭标签", async () => {

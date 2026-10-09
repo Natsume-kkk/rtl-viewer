@@ -43,7 +43,7 @@ export function columnValues(options: ColumnOptions, count: number): string[] {
 /** 单光标从所在列处理到末行；矩形/多光标仅处理其选区，不跨行删除文本。 */
 export function columnTargets(lines: string[], selections: ColumnRange[], tabSize: number): ColumnTarget[] {
   if (!selections.length) throw new Error("没有可编辑的选区。");
-  if (selections.some(s => s.startLineNumber !== s.endLineNumber)) throw new Error("请先用 Alt+Shift+方向键或 Alt+Shift+拖动选择矩形区域，再打开列编辑。");
+  if (selections.some(s => s.startLineNumber !== s.endLineNumber)) throw new Error("请先用 Alt+Shift+方向键或 Alt+拖动选择矩形区域，再打开列编辑。");
   const sorted = [...selections].sort((a, b) => a.startLineNumber - b.startLineNumber || a.startColumn - b.startColumn);
   const selection = sorted[0];
   if (sorted.length > 1 || selection.startColumn !== selection.endColumn) {

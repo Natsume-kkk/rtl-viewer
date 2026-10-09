@@ -82,6 +82,7 @@ import "../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon
 // monaco-editor 0.57 的 exports 映射未开放深层 esm 路径，改用直接文件路径引入 worker
 import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
 import type { ModuleDef } from "../model";
+import { installAltColumnDrag, registerNotepadKeymap } from "./notepad-keymap";
 
 self.MonacoEnvironment = {
   getWorker: () => new EditorWorker(),
@@ -440,11 +441,12 @@ function registerOnce(resolve: ResolveFn): void {
   registerVerilog();
   registerVhdl();
   registerDefinitionProvider(resolve);
+  registerNotepadKeymap();
 }
 
 /** 新建一个编辑器实例（分屏的第二视图用）；语言与 provider 须已通过 initMonaco 注册。 */
 export function createEditor(container: HTMLElement): monaco.editor.IStandaloneCodeEditor {
-  return monaco.editor.create(container, {
+  const editor = monaco.editor.create(container, {
     theme: editorThemeName(),
     automaticLayout: true,
     fontSize: window.innerWidth <= 1320 ? 13 : 14,
@@ -457,6 +459,8 @@ export function createEditor(container: HTMLElement): monaco.editor.IStandaloneC
     mouseWheelZoom: true,
     tabSize: 4,
   });
+  installAltColumnDrag(editor);
+  return editor;
 }
 
 export function initMonaco(container: HTMLElement, resolve: ResolveFn): monaco.editor.IStandaloneCodeEditor {

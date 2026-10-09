@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { appAlert, appConfirm, choiceDialog } from "../src/ui/dialog";
-import { openFolderDialog, saveFileDialog } from "../src/ipc";
+import { openFolderDialog, openFileDialog, saveFileDialog } from "../src/ipc";
 import { open as tauriOpen, save as tauriSave } from "@tauri-apps/plugin-dialog";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
@@ -119,6 +119,13 @@ describe("appConfirm / appAlert", () => {
 });
 
 describe("对话框入站路径归一", () => {
+  it("打开单文件使用文件对话框并归一路径，取消不产生文件", async () => {
+    vi.mocked(tauriOpen).mockResolvedValue("D:\\p\\a.v");
+    await expect(openFileDialog("D:/p")).resolves.toBe("D:/p/a.v");
+    expect(tauriOpen).toHaveBeenLastCalledWith(expect.objectContaining({ directory: false, multiple: false, defaultPath: "D:/p" }));
+    vi.mocked(tauriOpen).mockResolvedValue(null);
+    await expect(openFileDialog()).resolves.toBeNull();
+  });
   it("openFolderDialog 将 Windows 反斜杠归一为正斜杠", async () => {
     vi.mocked(tauriOpen).mockResolvedValue("D:\\proj\\rtl");
     await expect(openFolderDialog()).resolves.toBe("D:/proj/rtl");

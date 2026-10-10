@@ -65,6 +65,7 @@ export class ComputationProject {
         for (const m of body.matchAll(declarations)) {
           const at = start + m.index!;
           if (mod.processes.some(p => p.file === file && at >= p.start && at < p.end)) continue;
+          if (mod.boundaries.some(b => b.file === file && b.start !== undefined && b.end !== undefined && at >= b.start && at < b.end)) continue;
           if (lang === "vhdl") {
             for (const name of m[1].split(",").map(s => s.trim().toLowerCase())) {
               widths.set(name, m[2].trim()); if (/\b(?:unsigned|signed|std_logic_vector|bit_vector)\s*\(/i.test(m[2])) vectors.add(name);
@@ -82,7 +83,7 @@ export class ComputationProject {
     for (const a of mod.assignments.filter(a => a.proc === -1)) {
       const raw = this.files.get(a.file)!;
       const start = sourceEntry(a.file, raw).lineOffset(a.line);
-      const at = raw.indexOf(a.expression, start);
+      const at = a.expressionStart ?? start;
       const name = /^(\w+)/.exec(a.target)?.[1] ?? a.target;
       const expression = /^\w+$/.test(a.target) ? parseExpression(a.expression, lang, at >= 0 ? at : start, vectors)
         : { kind: "unknown" as const, value: "部分目标写入", args: [], text: `${a.target} <= ${a.expression}`, start, end: start + a.target.length };

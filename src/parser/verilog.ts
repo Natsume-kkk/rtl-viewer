@@ -21,7 +21,7 @@ export const KEYWORDS = new Set([
   "trireg", "scalared", "vectored", "strong0", "strong1", "weak0", "weak1",
   "deassign", "disable", "force", "release", "fork", "join", "join_any",
   "join_none", "wait", "event", "int", "bit", "byte", "shortint", "longint",
-  "shortreal", "string", "void", "type", "ref",
+  "shortreal", "string", "void", "type", "ref", "checker", "endchecker",
 ]);
 
 function skipWs(s: string, i: number): number {

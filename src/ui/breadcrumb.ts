@@ -17,14 +17,21 @@ export class PathBreadcrumb {
   private path = "";
   private title = "";
   private observer: ResizeObserver;
+  private onContextMenu = (event: MouseEvent) => {
+    if (!this.path) return;
+    event.preventDefault(); showCtxMenu(event.clientX, event.clientY, filePathMenuItems(this.path, this.reveal));
+  };
+  private onPageHide = () => this.dispose();
   constructor(private root: HTMLElement, private openDirectory: (path: string) => void, private reveal: (path: string) => void) {
     this.observer = new ResizeObserver(() => this.render());
     this.observer.observe(root);
-    root.addEventListener("contextmenu", event => {
-      if (!this.path) return;
-      event.preventDefault(); showCtxMenu(event.clientX, event.clientY, filePathMenuItems(this.path, reveal));
-    });
-    window.addEventListener("pagehide", () => this.observer.disconnect(), { once: true });
+    root.addEventListener("contextmenu", this.onContextMenu);
+    window.addEventListener("pagehide", this.onPageHide, { once: true });
+  }
+  dispose(): void {
+    this.observer.disconnect();
+    this.root.removeEventListener("contextmenu", this.onContextMenu);
+    window.removeEventListener("pagehide", this.onPageHide);
   }
   setPath(path: string, title: string): void { this.path = path; this.title = title; this.render(); }
   private render(): void {

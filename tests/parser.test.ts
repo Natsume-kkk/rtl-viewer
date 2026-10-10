@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { parseFile, parseFileDetail, parseXci } from "../src/parser";
 import { parseVerilogProcess, parseVhdlProcess } from "../src/parser/procedural";
 
+it("checker 关键字不被当作模块例化", () => {
+  const source = "module top; checker check_clk(input clk); endchecker endmodule";
+  expect(parseFile(source, "check.sv")[0].instances).toEqual([]);
+});
+
+it("过深 Verilog if/case 保留分析边界而不栈溢出", () => {
+  for (const kind of ["if", "case"]) {
+    const body = kind === "if" ? "if (en) ".repeat(5000) + "q <= d;" : "case (sel) 0: ".repeat(5000) + "q <= d;" + " endcase".repeat(5000);
+    const result = parseVerilogProcess(`always @* ${body}`);
+    expect(result.boundaries.some(b => b.reason.includes("嵌套"))).toBe(true);
+    expect(result.assignments).toEqual([]);
+  }
+});
+
 describe("verilog 完整解析（第二级）", () => {
   it("解析 ANSI 端口与参数化例化", () => {
     const src = `module top #(

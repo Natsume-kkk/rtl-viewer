@@ -18,6 +18,19 @@ function makeTree(callbacks: ConstructorParameters<typeof HierarchyTree>[1]) {
 }
 
 describe("HierarchyTree", () => {
+  it("重渲染保留跳转按钮焦点及滚动位置，只有一行参与 Tab 导航", () => {
+    const { rootEl, tree } = makeTree({ onOpen: vi.fn() }); document.body.append(rootEl);
+    const h = { tops: [node({ key: "top", label: "top", moduleName: "top", children: [node({ key: "top/u", label: "u", moduleName: "sub", instFile: "top.v", instLine: 2 })] })], topCandidates: ["top"], unused: [] };
+    tree.render(h);
+    rootEl.querySelectorAll<HTMLElement>(".tree-row")[1].click();
+    rootEl.querySelector<HTMLButtonElement>(".tree-inst")!.focus();
+    rootEl.scrollTop = 123; rootEl.scrollLeft = 45;
+    tree.render(h);
+    expect(document.activeElement).toBe(rootEl.querySelector(".tree-inst"));
+    expect(rootEl.scrollTop).toBe(123); expect(rootEl.scrollLeft).toBe(45);
+    expect(rootEl.querySelectorAll('.tree-row[tabindex="0"]')).toHaveLength(1);
+    rootEl.remove();
+  });
   it("键盘可展开、逐行导航、打开定义及聚焦跳转按钮，完整名称留在提示中", () => {
     const onOpen = vi.fn();
     const onOpenInst = vi.fn();

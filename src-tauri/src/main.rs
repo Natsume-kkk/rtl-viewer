@@ -20,6 +20,7 @@ struct ScanResult {
 
 /** 目录递归深度上限：junction/硬链接环等异常结构的兜底，避免栈溢出崩进程。 */
 const MAX_WALK_DEPTH: usize = 64;
+const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
 fn walk(dir: &Path, out: &mut ScanResult) {
     walk_depth(dir, out, 0);
@@ -64,7 +65,12 @@ fn walk_depth(dir: &Path, out: &mut ScanResult, depth: usize) {
 }
 
 fn normalize(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let text = path.to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        format!("//{}", unc.replace('\\', "/"))
+    } else {
+        text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/")
+    }
 }
 
 #[tauri::command]
@@ -79,6 +85,7 @@ fn scan_folder_sync(path: String) -> Result<ScanResult, String> {
     if !root.is_dir() {
         return Err(format!("not a directory: {path}"));
     }
+    fs::read_dir(&root).map_err(|e| format!("scan {path} failed: {e}"))?;
     let mut out = ScanResult { hdl: vec![], xci: vec![], con: vec![] };
     walk(&root, &mut out);
     out.hdl.sort();
@@ -105,18 +112,25 @@ fn mtime_ms(path: &str) -> u64 {
 }
 
 #[tauri::command]
-async fn file_states(paths: Vec<String>) -> Vec<Option<u64>> {
+async fn file_states(paths: Vec<String>) -> Result<Vec<Option<u64>>, String> {
     tauri::async_runtime::spawn_blocking(move || file_states_sync(paths))
         .await
-        .unwrap_or_default()
+        .map_err(|e| format!("file_states task failed: {e}"))?
 }
 
-fn file_states_sync(paths: Vec<String>) -> Vec<Option<u64>> {
+fn file_states_sync(paths: Vec<String>) -> Result<Vec<Option<u64>>, String> {
     paths
         .iter()
         .map(|p| {
-            let m = mtime_ms(p);
-            if m == 0 { None } else { Some(m) }
+            match fs::metadata(p) {
+                Ok(meta) if meta.is_file() => meta.modified()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other))
+                    .map(|d| Some(d.as_millis() as u64))
+                    .map_err(|e| format!("stat {p} failed: {e}")),
+                Ok(_) => Err(format!("not a file: {p}")),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(format!("stat {p} failed: {e}")),
+            }
         })
         .collect()
 }
@@ -173,38 +187,36 @@ async fn open_directory(path: String) -> Result<(), String> {
     .map_err(|e| format!("explorer failed: {e}"))?
 }
 
-pub fn decode(bytes: &[u8]) -> (String, &'static str) {
+fn strict_decode(bytes: &[u8], encoding: &'static encoding_rs::Encoding) -> Result<String, String> {
+    let (text, _, had_errors) = encoding.decode(bytes);
+    if had_errors { Err(format!("文件内容不是有效的 {}，已停止读取以避免保存损坏", encoding.name())) }
+    else { Ok(text.into_owned()) }
+}
+
+pub fn decode(bytes: &[u8]) -> Result<(String, &'static str), String> {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         let body = &bytes[3..];
         // BOM 声明 UTF-8 但内容不符（如 GBK 文件被加了 UTF-8 BOM）时落 GBK 兜底，
         // 不得 lossy 解出替换字符——否则保存会把 U+FFFD 写回，静默损坏原文件
         return match std::str::from_utf8(body) {
-            Ok(s) => (s.to_owned(), "utf8-bom"),
-            Err(_) => (encoding_rs::GBK.decode(body).0.into_owned(), "gbk"),
+            Ok(s) => Ok((s.to_owned(), "utf8-bom")),
+            Err(_) => Ok((strict_decode(body, encoding_rs::GBK)?, "gbk")),
         };
     }
     // UTF-32 BOM 必须先于 UTF-16 嗅探：FF FE 00 00 会被 UTF-16LE 抢先命中解出乱码。
-    // UTF-32 不支持解码，剥离 BOM 后落到下方严格 UTF-8 / GBK 兜底。
-    let bytes = if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) || bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF])
-    {
-        &bytes[4..]
-    } else {
-        bytes
-    };
+    // 不支持 UTF-32 时拒绝读取，不能剥掉 BOM 后冒充其他编码供编辑保存。
+    if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) || bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF]) {
+        return Err("暂不支持 UTF-32，请先转换为 UTF-8 或 UTF-16".into());
+    }
     if bytes.starts_with(&[0xFF, 0xFE]) {
-        let (s, _, _) = encoding_rs::UTF_16LE.decode(&bytes[2..]);
-        return (s.into_owned(), "utf16le");
+        return Ok((strict_decode(&bytes[2..], encoding_rs::UTF_16LE)?, "utf16le"));
     }
     if bytes.starts_with(&[0xFE, 0xFF]) {
-        let (s, _, _) = encoding_rs::UTF_16BE.decode(&bytes[2..]);
-        return (s.into_owned(), "utf16be");
+        return Ok((strict_decode(&bytes[2..], encoding_rs::UTF_16BE)?, "utf16be"));
     }
     match std::str::from_utf8(bytes) {
-        Ok(s) => (s.to_owned(), "utf8"),
-        Err(_) => {
-            let (s, _, _) = encoding_rs::GBK.decode(bytes);
-            (s.into_owned(), "gbk")
-        }
+        Ok(s) => Ok((s.to_owned(), "utf8")),
+        Err(_) => Ok((strict_decode(bytes, encoding_rs::GBK)?, "gbk")),
     }
 }
 
@@ -257,12 +269,12 @@ fn decode_as(bytes: &[u8], encoding: &str) -> Result<(String, String), String> {
         "utf8" | "utf8-bom" => String::from_utf8(body.to_vec())
             .map(|s| (s, name))
             .map_err(|_| format!("文件内容不是有效的 UTF-8: {encoding}")),
-        "utf16le" => Ok((encoding_rs::UTF_16LE.decode(body).0.into_owned(), name)),
-        "utf16be" => Ok((encoding_rs::UTF_16BE.decode(body).0.into_owned(), name)),
+        "utf16le" => Ok((strict_decode(body, encoding_rs::UTF_16LE)?, name)),
+        "utf16be" => Ok((strict_decode(body, encoding_rs::UTF_16BE)?, name)),
         other => {
             let enc = encoding_rs::Encoding::for_label(other.as_bytes())
                 .ok_or_else(|| format!("unsupported encoding: {other}"))?;
-            Ok((enc.decode(body).0.into_owned(), name))
+            Ok((strict_decode(body, enc)?, name))
         }
     }
 }
@@ -275,18 +287,28 @@ async fn read_file(path: String, encoding: Option<String>) -> Result<FileContent
 }
 
 fn read_file_sync(path: String, encoding: Option<String>) -> Result<FileContent, String> {
-    let bytes = fs::read(&path).map_err(|e| format!("read {path} failed: {e}"))?;
+    use std::io::Read;
+    let before = fs::metadata(&path).map_err(|e| format!("stat {path} failed: {e}"))?;
+    if before.len() > MAX_FILE_BYTES { return Err("文件超过 64 MiB 读取上限".into()); }
+    let file = fs::File::open(&path).map_err(|e| format!("read {path} failed: {e}"))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("read {path} failed: {e}"))?;
+    if bytes.len() as u64 > MAX_FILE_BYTES { return Err("文件超过 64 MiB 读取上限".into()); }
+    let after = fs::metadata(&path).map_err(|e| format!("stat {path} failed: {e}"))?;
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() || bytes.len() as u64 != after.len() {
+        return Err("文件在读取期间发生变化，请重新打开".into());
+    }
     let (content, encoding) = match encoding.as_deref() {
         Some(enc) => decode_as(&bytes, enc)?,
         None => {
-            let (s, enc) = decode(&bytes);
+            let (s, enc) = decode(&bytes)?;
             (s, enc.to_owned())
         }
     };
     Ok(FileContent {
         content,
         encoding,
-        mtime: mtime_ms(&path),
+        mtime: after.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(0),
     })
 }
 
@@ -294,10 +316,13 @@ fn read_file_sync(path: String, encoding: Option<String>) -> Result<FileContent,
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut tmp_name = path.as_os_str().to_owned();
-    tmp_name.push(".rtlviewer-tmp");
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    tmp_name.push(format!(".rtlviewer-{}-{sequence}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp_name);
+    // create_new 不覆盖其他进程或遗留文件；只有创建成功后才拥有清理权。
+    let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
     let result = (|| -> std::io::Result<()> {
-        let mut f = fs::File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
@@ -344,8 +369,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn size_limit_and_stat_errors_are_explicit() {
+        let path = temp_file("oversize.v", b"");
+        fs::File::options().write(true).open(&path).unwrap().set_len(MAX_FILE_BYTES + 1).unwrap();
+        assert!(read_file_sync(path.clone(), None).err().unwrap().contains("64 MiB"));
+        let parent = Path::new(&path).parent().unwrap().to_string_lossy().into_owned();
+        assert!(file_states_sync(vec![parent]).is_err());
+    }
+
+    #[test]
+    fn scan_filters_user_sources_and_generated_directories() {
+        let path = temp_file("scan_root_anchor", b"");
+        let root = Path::new(&path).parent().unwrap().join("scan_filters");
+        for relative in ["rtl/top.V", "sim/tb.sv", "ipcore_dir/core.v", "rtl/pins.XDC", "ip/core.xci", "target.v"] {
+            let file = root.join(relative);
+            fs::create_dir_all(file.parent().unwrap()).unwrap(); fs::write(file, b"").unwrap();
+        }
+        for dir in ["node_modules", "target", "dist", ".hidden", "p.runs", "p.sim", "p.cache", "p.hw", "p.gen", "p.ip_user_files"] {
+            let directory = root.join(dir); fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("excluded.v"), b"").unwrap();
+        }
+        let out = scan_folder_sync(normalize(&root)).unwrap();
+        assert_eq!(out.hdl.len(), 4); assert_eq!(out.xci.len(), 1); assert_eq!(out.con.len(), 1);
+        assert!(!out.hdl.iter().any(|p| p.ends_with("excluded.v")));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn normalized_verbatim_and_long_paths_remain_readable() {
+        assert_eq!(normalize(Path::new(r"\\?\D:\rtl\top.v")), "D:/rtl/top.v");
+        assert_eq!(normalize(Path::new(r"\\?\UNC\server\share\top.v")), "//server/share/top.v");
+        let anchor = temp_file("long_path_anchor", b"");
+        let mut directory = fs::canonicalize(Path::new(&anchor).parent().unwrap()).unwrap();
+        for _ in 0..4 { directory.push("x".repeat(70)); }
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("long.v"); fs::write(&path, b"module long; endmodule").unwrap();
+        let norm = normalize(&path); assert!(norm.len() > 260);
+        assert_eq!(read_file_sync(norm.clone(), None).unwrap().content, "module long; endmodule");
+        write_file_sync(norm.clone(), "module edited; endmodule".into(), "utf8".into()).unwrap();
+        assert_eq!(read_file_sync(norm, None).unwrap().content, "module edited; endmodule");
+    }
+
+    #[test]
+    fn malformed_encodings_refuse_read_instead_of_lossy_edit() {
+        for (name, bytes) in [
+            ("bad_utf16.v", vec![0xff, 0xfe, 0x00, 0xd8]),
+            ("odd_utf16.v", vec![0xff, 0xfe, 0x61]),
+            ("utf32.v", vec![0xff, 0xfe, 0, 0, 0x61, 0, 0, 0]),
+            ("bad_gbk.v", vec![0x81]),
+        ] {
+            let path = temp_file(name, &bytes);
+            assert!(read_file_sync(path.clone(), None).is_err(), "{name}");
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        assert!(decode_as(&[0, 0xd8], "utf16le").is_err());
+        assert!(decode_as(&[0x81], "gbk").is_err());
+    }
+
+    #[test]
+    fn atomic_write_preserves_preexisting_temporary_name() {
+        let path = temp_file("preserve_legacy_atomic.v", b"old");
+        let legacy_tmp = format!("{path}.rtlviewer-tmp");
+        fs::write(&legacy_tmp, b"unrelated").unwrap();
+        atomic_write(Path::new(&path), b"new").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(fs::read(&legacy_tmp).unwrap(), b"unrelated");
+    }
+
+    #[test]
     fn utf8_no_bom() {
-        let (s, enc) = decode("中文 module".as_bytes());
+        let (s, enc) = decode("中文 module".as_bytes()).unwrap();
         assert_eq!(enc, "utf8");
         assert_eq!(s, "中文 module");
     }
@@ -354,7 +447,7 @@ mod tests {
     fn utf8_bom() {
         let mut b = vec![0xEF, 0xBB, 0xBF];
         b.extend_from_slice("abc".as_bytes());
-        let (s, enc) = decode(&b);
+        let (s, enc) = decode(&b).unwrap();
         assert_eq!(enc, "utf8-bom");
         assert_eq!(s, "abc");
     }
@@ -364,7 +457,7 @@ mod tests {
         // BOM 声明 UTF-8 但内容是 GBK：不得 lossy 解出替换字符（保存即毁原文件），落 GBK 兜底
         let mut b = vec![0xEF, 0xBB, 0xBF];
         b.extend_from_slice(&[0xD6, 0xD0, 0xCE, 0xC4]); // "中文" 的 GBK 编码
-        let (s, enc) = decode(&b);
+        let (s, enc) = decode(&b).unwrap();
         assert_eq!(enc, "gbk");
         assert_eq!(s, "中文");
     }
@@ -373,21 +466,21 @@ mod tests {
     fn gbk_fallback() {
         // "中文" 的 GBK 编码
         let gbk_bytes = [0xD6, 0xD0, 0xCE, 0xC4];
-        let (s, enc) = decode(&gbk_bytes);
+        let (s, enc) = decode(&gbk_bytes).unwrap();
         assert_eq!(enc, "gbk");
         assert_eq!(s, "中文");
     }
 
     #[test]
     fn ascii_is_utf8() {
-        let (_, enc) = decode(b"module top;");
+        let (_, enc) = decode(b"module top;").unwrap();
         assert_eq!(enc, "utf8");
     }
 
     #[test]
     fn gbk_roundtrip() {
         let bytes = encode("中文注释", "gbk").unwrap();
-        let (s, enc) = decode(&bytes);
+        let (s, enc) = decode(&bytes).unwrap();
         assert_eq!(enc, "gbk");
         assert_eq!(s, "中文注释");
     }
@@ -413,7 +506,7 @@ mod tests {
     fn utf16le_roundtrip() {
         let bytes = encode("中文", "utf16le").unwrap();
         assert_eq!(&bytes[..2], &[0xFF, 0xFE]);
-        let (s, enc) = decode(&bytes);
+        let (s, enc) = decode(&bytes).unwrap();
         assert_eq!(enc, "utf16le");
         assert_eq!(s, "中文");
     }
@@ -480,7 +573,7 @@ mod tests {
     #[test]
     fn file_states_and_mtime() {
         let path = temp_file("mtime.v", b"module m;\n");
-        let states = file_states_sync(vec![path.clone(), "definitely/missing.v".to_owned()]);
+        let states = file_states_sync(vec![path.clone(), "definitely/missing.v".to_owned()]).unwrap();
         assert!(states[0].unwrap() > 0);
         assert_eq!(states[1], None);
 
@@ -495,23 +588,20 @@ mod tests {
     }
 
     /// UTF-32 BOM 不得被误判为 UTF-16（FF FE 00 00 会先命中 UTF-16LE 前缀）。
-    /// UTF-32 不支持解码，剥离 BOM 后走 UTF-8/GBK 兜底。
+    /// UTF-32 不支持时明确拒绝，避免用户编辑保存时损坏文件。
     #[test]
     fn utf32_bom_not_misread_as_utf16() {
         // UTF-32LE BOM + "ab" 的 UTF-32LE 编码
         let le = [
             0xFF, 0xFE, 0x00, 0x00, 0x61, 0x00, 0x00, 0x00, 0x62, 0x00, 0x00, 0x00,
         ];
-        let (_, enc) = decode(&le);
-        assert_ne!(enc, "utf16le");
+        assert!(decode(&le).is_err());
         // UTF-32BE BOM
         let be = [0x00, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x00, 0x61];
-        let (_, enc) = decode(&be);
-        assert_ne!(enc, "utf16be");
-        assert_ne!(enc, "utf16le");
+        assert!(decode(&be).is_err());
         // UTF-16LE BOM 不受影响
         let b16 = [0xFF, 0xFE, 0x61, 0x00];
-        let (s, enc) = decode(&b16);
+        let (s, enc) = decode(&b16).unwrap();
         assert_eq!(enc, "utf16le");
         assert_eq!(s, "a");
     }

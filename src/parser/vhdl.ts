@@ -54,6 +54,10 @@ export function stripVhdlComments(src: string, maskStrings = true): string {
       }
       i = j;
     } else if (c === '"') {
+      if (maskStrings) {
+        const prefix = /\b(?:\d+)?[us]?[boxd]$/i.exec(src.slice(Math.max(0, i - 16), i));
+        if (prefix) for (let k = i - prefix[0].length; k < i; k++) out[k] = " ";
+      }
       out[i] = " ";
       let j = i + 1;
       while (j < src.length) {

@@ -48,14 +48,14 @@ export function walk(dir: string, out: ScanOut, depth = 0): void {
   }
 }
 
-/** 与 Rust decode 同策略：UTF-8 BOM（严格校验失败落 GBK）→ UTF-32 BOM 剥离 → UTF-16 BOM → 严格 UTF-8 → GBK 兜底。 */
+/** 与 Rust decode 同策略：BOM → 严格 UTF-8 → 严格 GBK；UTF-32 与损坏编码拒绝读取。 */
 export function decode(buf: Buffer): { content: string; encoding: string } {
   if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
     const body = buf.subarray(3);
     try {
       return { content: new TextDecoder("utf-8", { fatal: true }).decode(body), encoding: "utf8-bom" };
     } catch {
-      return { content: new TextDecoder("gbk").decode(body), encoding: "gbk" };
+      return { content: new TextDecoder("gbk", { fatal: true }).decode(body), encoding: "gbk" };
     }
   }
   // UTF-32 BOM 先于 UTF-16 嗅探（FF FE 00 00 会被 UTF-16LE 抢先命中）
@@ -65,18 +65,18 @@ export function decode(buf: Buffer): { content: string; encoding: string } {
     ((buf[0] === 0xff && buf[1] === 0xfe && buf[2] === 0x00 && buf[3] === 0x00) ||
       (buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0xfe && buf[3] === 0xff))
   ) {
-    body = buf.subarray(4);
+    throw new Error("暂不支持 UTF-32，请先转换为 UTF-8 或 UTF-16");
   }
   if (body.length >= 2 && body[0] === 0xff && body[1] === 0xfe) {
-    return { content: new TextDecoder("utf-16le").decode(body.subarray(2)), encoding: "utf16le" };
+    return { content: new TextDecoder("utf-16le", { fatal: true }).decode(body.subarray(2)), encoding: "utf16le" };
   }
   if (body.length >= 2 && body[0] === 0xfe && body[1] === 0xff) {
-    return { content: new TextDecoder("utf-16be").decode(body.subarray(2)), encoding: "utf16be" };
+    return { content: new TextDecoder("utf-16be", { fatal: true }).decode(body.subarray(2)), encoding: "utf16be" };
   }
   try {
     return { content: new TextDecoder("utf-8", { fatal: true }).decode(body), encoding: "utf8" };
   } catch {
-    return { content: new TextDecoder("gbk").decode(body), encoding: "gbk" };
+    return { content: new TextDecoder("gbk", { fatal: true }).decode(body), encoding: "gbk" };
   }
 }
 
@@ -98,5 +98,6 @@ export function decodeAs(buf: Buffer, encoding: string): { content: string; enco
       throw new Error(`文件内容不是有效的 UTF-8: ${encoding}`);
     }
   }
-  return { content: new TextDecoder(encoding).decode(body), encoding };
+  const label = encoding === "utf16le" ? "utf-16le" : encoding === "utf16be" ? "utf-16be" : encoding;
+  return { content: new TextDecoder(label, { fatal: true }).decode(body), encoding };
 }

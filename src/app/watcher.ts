@@ -27,13 +27,21 @@ export interface ExternalWatchContext {
   renderTree(): void;
 }
 
-export function createExternalWatcher(ctx: ExternalWatchContext): { start(): void } {
+export function createExternalWatcher(ctx: ExternalWatchContext): { start(): void; stop(): void } {
   let watchTimer: number | undefined;
   let watchPollCount = 0;
-  let polling = false;
+  let generation = 0;
+  let polling: number | undefined;
+
+  function stop(): void {
+    window.clearInterval(watchTimer);
+    watchTimer = undefined;
+    generation++;
+    watchPollCount = 0;
+  }
 
   function start(): void {
-    window.clearInterval(watchTimer);
+    stop();
     watchTimer = window.setInterval(() => void pollExternalChanges(), 4000);
   }
 
@@ -41,16 +49,18 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
   async function pollExternalChanges(): Promise<void> {
     // 单轮 poll 含全量目录 diff，可能超过轮询间隔；无守卫时 setInterval 并发重入，
     // 两轮 rescanFolderDiff 基于同一旧快照会把同一新 xci 重复 push 进 ips
-    if (polling) return;
-    polling = true;
+    const request = generation, folder = ctx.folder();
+    if (polling === request) return;
+    polling = request;
+    const current = () => request === generation && folder === ctx.folder();
     try {
-      await pollOnce();
+      await pollOnce(current);
     } finally {
-      polling = false;
+      if (polling === request) polling = undefined;
     }
   }
 
-  async function pollOnce(): Promise<void> {
+  async function pollOnce(current: () => boolean): Promise<void> {
     if (!ctx.folder() || document.hidden) return;
     const files = [...ctx.contents.keys()];
     if (files.length > 0) {
@@ -60,6 +70,7 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
       } catch {
         return;
       }
+      if (!current() || states.length !== files.length) return;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const cached = ctx.contents.get(file);
@@ -72,6 +83,7 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
         }
         try {
           const fresh = await readFile(file);
+          if (!current()) return;
           if (fresh.content !== cached.content) ctx.markResultsStale();
           const openTabs = ctx.tabs.filter((t) => t.findTab(file));
           const anyDirty = openTabs.some((t) => t.findTab(file)!.dirty);
@@ -89,12 +101,13 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
             ctx.updateStructure(file, fresh.content);
           }
         } catch (e) {
+          if (!current()) return;
           console.error("reload failed:", file, e);
         }
       }
     }
     watchPollCount += 1;
-    if (watchPollCount % 4 === 1) await rescanFolderDiff();
+    if (watchPollCount % 4 === 1) await rescanFolderDiff(current);
   }
 
   /** 文件在磁盘被删除：打开中的标签保留缓冲区并打警示徽章，未打开的从索引移除。 */
@@ -112,13 +125,14 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
   }
 
   /** 目录级 diff：新增 HDL/xci 纳入索引，删除的 xci 移除。 */
-  async function rescanFolderDiff(): Promise<void> {
+  async function rescanFolderDiff(current: () => boolean): Promise<void> {
     let scan;
     try {
       scan = await scanFolder(ctx.folder());
     } catch {
       return;
     }
+    if (!current()) return;
     const xciDirs = scan.xci.map((f) => f.slice(0, f.lastIndexOf("/")));
     const isIpGenerated = (file: string) => xciDirs.some((dir) => file.startsWith(dir + "/"));
     let changed = false;
@@ -126,10 +140,12 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
       if (isIpGenerated(file) || ctx.structures.has(file)) continue;
       try {
         const { content, encoding, mtime } = await readFile(file);
+        if (!current()) return;
         ctx.contents.set(file, { content, encoding, mtime });
         ctx.structures.set(file, scanStructure(content, file));
         changed = true;
       } catch (e) {
+        if (!current()) return;
         console.error("read failed:", file, e);
       }
     }
@@ -138,9 +154,11 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
       if (knownXci.has(file)) continue;
       try {
         const { content } = await readFile(file);
+        if (!current()) return;
         ctx.ips().push(parseXci(content, file));
         changed = true;
       } catch (e) {
+        if (!current()) return;
         console.error("xci parse failed:", file, e);
       }
     }
@@ -154,8 +172,10 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
       if (ctx.contents.has(file)) continue;
       try {
         const { content, encoding, mtime } = await readFile(file);
+        if (!current()) return;
         ctx.contents.set(file, { content, encoding, mtime });
       } catch (e) {
+        if (!current()) return;
         console.error("read failed:", file, e);
       }
     }
@@ -177,5 +197,5 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
     }
   }
 
-  return { start };
+  return { start, stop };
 }

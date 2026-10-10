@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from "vite";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync, realpathSync, existsSync } from "node:fs";
+import { dirname, resolve, relative, isAbsolute } from "node:path";
 import { decode, decodeAs, walk } from "./tests/helpers/fs-scan";
 
 /**
@@ -7,7 +8,15 @@ import { decode, decodeAs, walk } from "./tests/helpers/fs-scan";
  * 扫描与解码规则走 tests/helpers/fs-scan.ts（逐条对齐 Rust 端，单一来源）。
  * 写出仅支持 utf8/utf8-bom（GBK/UTF-16 写回由 Rust 侧 cargo test 覆盖）。
  */
-function e2eFsPlugin(): Plugin {
+function e2eFsPlugin(rootPath: string): Plugin {
+  const root = realpathSync(rootPath);
+  function scopedPath(path: string): string {
+    if (!path || !isAbsolute(path)) throw new Error("e2e fs: absolute path required");
+    const candidate = existsSync(path) ? realpathSync(path) : resolve(realpathSync(dirname(path)), path.split(/[\\/]/).pop()!);
+    const rel = relative(root, candidate);
+    if (rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel)) throw new Error("e2e fs: path outside configured root");
+    return candidate;
+  }
   function json(res: import("node:http").ServerResponse, data: unknown, status = 200): void {
     res.statusCode = status;
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -18,10 +27,17 @@ function e2eFsPlugin(): Plugin {
     name: "e2e-fs",
     apply: "serve",
     configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url?.startsWith("/__e2e_") && req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) {
+          json(res, { error: "e2e fs: cross-origin request rejected" }, 403);
+          return;
+        }
+        next();
+      });
       server.middlewares.use("/__e2e_scan", (req, res) => {
         try {
           const url = new URL(req.url ?? "", "http://localhost");
-          const root = url.searchParams.get("path") ?? "";
+          const root = scopedPath(url.searchParams.get("path") ?? "");
           const out = { hdl: [] as string[], xci: [] as string[], con: [] as string[] };
           walk(root, out);
           out.hdl.sort();
@@ -34,7 +50,9 @@ function e2eFsPlugin(): Plugin {
       });
       server.middlewares.use("/__e2e_fs", (req, res) => {
         const url = new URL(req.url ?? "", "http://localhost");
-        const path = url.searchParams.get("path") ?? "";
+        let path: string;
+        try { path = scopedPath(url.searchParams.get("path") ?? ""); }
+        catch (e) { json(res, { error: String(e) }, 403); return; }
         if (req.method === "PUT") {
           const encoding = url.searchParams.get("encoding") ?? "utf8";
           if (encoding !== "utf8" && encoding !== "utf8-bom") {
@@ -44,13 +62,15 @@ function e2eFsPlugin(): Plugin {
           const chunks: Buffer[] = [];
           req.on("data", (c: Buffer) => chunks.push(c));
           req.on("end", () => {
-            const text = Buffer.concat(chunks).toString("utf8");
-            const bytes =
-              encoding === "utf8-bom"
-                ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text, "utf8")])
-                : Buffer.from(text, "utf8");
-            writeFileSync(path, bytes);
-            json(res, Math.round(statSync(path).mtimeMs));
+            try {
+              const text = Buffer.concat(chunks).toString("utf8");
+              const bytes =
+                encoding === "utf8-bom"
+                  ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text, "utf8")])
+                  : Buffer.from(text, "utf8");
+              writeFileSync(scopedPath(path), bytes);
+              json(res, Math.round(statSync(path).mtimeMs));
+            } catch (e) { json(res, { error: String(e) }, 500); }
           });
           return;
         }
@@ -73,10 +93,15 @@ function e2eFsPlugin(): Plugin {
         req.on("end", () => {
           try {
             const paths = JSON.parse(Buffer.concat(chunks).toString("utf8")) as string[];
+            if (!Array.isArray(paths) || paths.some(p => typeof p !== "string")) throw new Error("e2e fs: invalid paths");
             const states = paths.map((p) => {
+              const path = scopedPath(p);
               try {
-                return Math.round(statSync(p).mtimeMs);
-              } catch {
+                const meta = statSync(path);
+                if (!meta.isFile()) throw new Error("e2e fs: not a file");
+                return Math.round(meta.mtimeMs);
+              } catch (e) {
+                if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
                 return null;
               }
             });
@@ -88,12 +113,13 @@ function e2eFsPlugin(): Plugin {
       });
       server.middlewares.use("/__e2e_exists", (req, res) => {
         const url = new URL(req.url ?? "", "http://localhost");
-        const path = url.searchParams.get("path") ?? "";
         try {
+          const path = scopedPath(url.searchParams.get("path") ?? "");
           statSync(path);
           json(res, true);
-        } catch {
-          json(res, false);
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === "ENOENT") json(res, false);
+          else json(res, { error: String(e) }, 403);
         }
       });
     },
@@ -102,8 +128,9 @@ function e2eFsPlugin(): Plugin {
 
 export default defineConfig({
   clearScreen: false,
-  plugins: [e2eFsPlugin()],
+  plugins: process.env.RTL_VIEWER_E2E_ROOT ? [e2eFsPlugin(process.env.RTL_VIEWER_E2E_ROOT)] : [],
   server: {
+    watch: { ignored: ["**/.tmp/**", "**/src-tauri/target/**", "**/src-tauri/gen/**", "**/release/**"] },
     port: 1420,
     strictPort: true,
     headers: {

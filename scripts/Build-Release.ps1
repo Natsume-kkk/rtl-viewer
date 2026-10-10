@@ -6,6 +6,7 @@ $env:PATH = 'D:\workspace\toolchains\rust\cargo\bin;' + $env:PATH
 
 Set-Location (Join-Path $PSScriptRoot '..')
 npm run tauri build -- --no-bundle
+if ($LASTEXITCODE -ne 0) { throw "tauri build failed with exit code $LASTEXITCODE" }
 
 # 交付物归位：cargo 输出埋在 target 深处，统一复制到项目根 release/
 $built = 'src-tauri\target\release\rtl-viewer.exe'

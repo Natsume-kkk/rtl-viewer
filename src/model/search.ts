@@ -30,6 +30,24 @@ export interface MatchHit {
 
 const WORD_CHAR = /[A-Za-z0-9_$]/;
 
+function regexMatcher(query: string, options: SearchOptions): RegExp | null {
+  try { return new RegExp(query, options.caseSensitive ? "g" : "gi"); }
+  catch { return null; }
+}
+
+function nextRegexHit(re: RegExp, line: string, wholeWord?: boolean): MatchHit | null {
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line))) {
+    if (!m[0].length) { re.lastIndex = m.index + 1; continue; }
+    if (wholeWord && (WORD_CHAR.test(line[m.index - 1] ?? "") || WORD_CHAR.test(line[m.index + m[0].length] ?? ""))) {
+      re.lastIndex = m.index + 1;
+      continue;
+    }
+    return { index: m.index, length: m[0].length };
+  }
+  return null;
+}
+
 /**
  * 构建行内匹配器（返回首个命中）；查询为空或正则无效时返回 null。
  * 结果列表高亮与逐行扫描共用同一套语义。
@@ -40,16 +58,11 @@ export function buildMatcher(
 ): ((line: string) => MatchHit | null) | null {
   if (!query) return null;
   if (options.useRegex) {
-    let re: RegExp;
-    try {
-      const src = options.wholeWord ? `\\b(?:${query})\\b` : query;
-      re = new RegExp(src, options.caseSensitive ? "" : "i");
-    } catch {
-      return null;
-    }
+    const re = regexMatcher(query, options);
+    if (!re) return null;
     return (line) => {
-      const m = re.exec(line);
-      return m && m[0].length > 0 ? { index: m.index, length: m[0].length } : null;
+      re.lastIndex = 0;
+      return nextRegexHit(re, line, options.wholeWord);
     };
   }
   const needle = options.caseSensitive ? query : query.toLowerCase();
@@ -79,19 +92,13 @@ export function buildAllMatcher(
   const first = buildMatcher(query, options);
   if (!first) return () => [];
   if (options.useRegex) {
-    let re: RegExp;
-    try {
-      const src = options.wholeWord ? `\\b(?:${query})\\b` : query;
-      re = new RegExp(src, options.caseSensitive ? "g" : "gi");
-    } catch {
-      return () => [];
-    }
+    const re = regexMatcher(query, options);
+    if (!re) return () => [];
     return (line) => {
+      re.lastIndex = 0;
       const hits: MatchHit[] = [];
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(line)) !== null && m[0].length > 0) {
-        hits.push({ index: m.index, length: m[0].length });
-      }
+      let hit: MatchHit | null;
+      while ((hit = nextRegexHit(re, line, options.wholeWord))) hits.push(hit);
       return hits;
     };
   }

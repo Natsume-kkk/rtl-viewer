@@ -23,9 +23,9 @@ FPGA/ASIC 源码工程查看器：打开源码文件夹（或把文件夹直接�
 - **约束文件查看**：`.xdc`/`.sdc` 以「约束」分组展示在树中，使用 Tcl 语法高亮（IP 生成目录的约束不进索引）。
 - **外部变更监视**：文件在磁盘被外部修改时，干净标签自动重载、未保存标签标 ⚠；保存时若磁盘已变，弹出「覆盖 / 放弃重载 / 取消」三选，防误覆盖 Vivado 重新生成的内容。
 - **最近工程**：工具栏 ▾ 下拉或 Ctrl+Alt+R 列出最近打开的 8 个工程，一键切换。
-- **编码自适应**：自动识别 UTF-8/UTF-8 BOM/UTF-16/GBK，默认按原编码写回；状态栏可「以指定编码重新打开 / 以指定编码保存」（Notepad++ 语义），支持 UTF-8、UTF-8 BOM、UTF-16 LE/BE、GBK、GB18030、Big5、Shift-JIS、EUC-KR、Windows-1252，兼容 Vivado 默认 ANSI（GBK）工程。
+- **编码自适应**：自动识别 UTF-8/UTF-8 BOM/UTF-16/GBK，默认按原编码写回；状态栏可「以指定编码重新打开 / 以指定编码保存」（Notepad++ 语义），支持 UTF-8、UTF-8 BOM、UTF-16 LE/BE、GBK、GB18030、Big5、Shift-JIS、EUC-KR、Windows-1252，兼容 Vivado 默认 ANSI（GBK）工程。损坏编码与 UTF-32 拒绝读取，单文件读取上限为 64 MiB。
 - **快速轻量**：结构扫描只提取模块与例化边，端口按需解析；IP 生成目录不进索引；Windows 单 exe 便携运行，免安装。
-- **关闭与工程切换**：关闭脏文件、批量关闭、切换工程和退出提供「保存并关闭／不保存／取消」，默认取消；保存失败或另存为取消时停止操作，全部确认和保存成功后才关闭标签。两侧共享文件只确认一次，单独关闭一个视图而另一视图仍打开时保留缓冲区。
+- **关闭与工程切换**：关闭脏文件、批量关闭、切换工程和退出提供「保存并关闭／不保存／取消」，默认取消；保存失败或另存为取消时停止操作，全部确认和保存成功后才关闭标签。两侧共享文件只确认一次，单独关闭一个视图而另一视图仍打开时保留缓冲区。磁盘文件被删除时，保存前明确确认是否重建；无法确认磁盘状态时停止保存。保存期间新增编辑仍保留未保存标记。
 - **应用标题栏**：品牌栏承担窗口拖动与双击最大化，右上角提供最小化、最大化／还原和关闭。关闭按钮与系统关闭请求共用未保存检查；浏览器预览不显示桌面窗口按钮。
 
 ## 快捷键
@@ -93,6 +93,14 @@ Rust 端命令通过 `scripts/Invoke-Cargo.ps1` 执行（自动引入工具链�
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Invoke-Cargo.ps1 test --manifest-path src-tauri/Cargo.toml
 ```
 
+浏览器夹具验收需要显式开启开发文件服务；访问限于指定根目录，默认开发启动不开启。仅在隔离副本中测试编辑和保存：
+
+```powershell
+$env:RTL_VIEWER_E2E_ROOT = (Resolve-Path tests/fixtures/cp7).Path
+npm run dev
+# 在浏览器打开 http://localhost:1420/?e2e
+```
+
 打包便携 exe 必须走 tauri CLI（裸 `cargo build` 产出的是 dev 模式 exe，界面依赖 dev server，无法独立运行）：
 
 ```powershell
@@ -106,7 +114,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Release.ps1
 ## 目录
 
 ```text
-src/         前端：analysis/（按需运算语义与单模块逻辑）、parser/（HDL 解析）、model/（索引、层级树、搜索、导航历史、大纲、信号声明定位）、editor/（Monaco、标签页、代码补全）、ui/（树、搜索面板、大纲、状态栏、对话框、右键菜单、最近工程）
+src/         前端：analysis/（按需运算语义与单模块逻辑）、parser/（HDL 解析）、model/（索引、层级树、搜索、导航历史、大纲、信号声明定位）、app/（编辑工作区、工程扫描、外部变更监视、信号链与端口映射编排）、editor/（Monaco、标签页、代码补全）、ui/（树、搜索面板、大纲、状态栏、对话框、右键菜单、最近工程）
 src-tauri/   Rust 后端
 tests/       Vitest 测试（含真实工程验收：tests/acceptance-cp7.test.ts 夹具在 tests/fixtures/cp7/，真实工程副本不入 Git、缺失自动跳过；tests/acceptance-real-projects.test.ts 依赖本机绝对路径工程，路径缺失时自动跳过）
 scripts/     构建辅助（Build-Release.ps1、Invoke-Cargo.ps1、make-icon.mjs、Capture-Window.ps1 exe 窗口冒烟截图）

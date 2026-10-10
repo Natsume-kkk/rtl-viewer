@@ -6,6 +6,8 @@ import { processTargetSource } from "../analysis/process";
 import { sourceEntry } from "../analysis/source-cache";
 
 interface Assignment {
+  /** 连续赋值 RHS 在原文件中的精确偏移。 */
+  expressionStart?: number;
   statement?: string;
   target: string; expression: string; direct: boolean; line: number; file: string;
   /** 过程内赋值的条件标注（if/case 外层在前） */
@@ -20,7 +22,7 @@ interface Assignment {
   blockedReads?: string[];
   hasCall?: boolean;
 }
-interface Boundary { text: string; line: number; file: string; reason: string; proc?: number }
+interface Boundary { text: string; line: number; file: string; reason: string; proc?: number; start?: number; end?: number }
 interface SourcePosition { file: string; line: number; column?: number }
 export interface SignalModule extends ModuleInfo {
   regions: { file: string; start: number; end: number }[];
@@ -271,7 +273,7 @@ export class SignalProject {
           // Verilog 函数/任务与 VHDL 函数/过程保持边界，不做过程内解析
           const head = p.text.trimStart();
           if (vhdl && !/^process\b/i.test(head)) { result.boundaries.push({ text: p.text, file, line, reason: "函数/过程（不继续推导）" }); continue; }
-          if (!vhdl && !/^(always\w*|initial)\b/.test(head)) { result.boundaries.push({ text: p.text, file, line, reason: "函数/任务（不继续推导）" }); continue; }
+          if (!vhdl && !/^(always\w*|initial)\b/.test(head)) { result.boundaries.push({ text: p.text, file, line, start: start + p.index, end: start + p.index + p.text.length, reason: "函数/任务（不继续推导）" }); continue; }
           const parsed = vhdl ? parseVhdlProcess(p.text) : parseVerilogProcess(p.text);
           result.processes.push({ file, start: start + p.index, end: start + p.index + p.text.length, locals: new Set(parsed.locals) });
           for (const pa of parsed.assignments) {
@@ -303,7 +305,8 @@ export class SignalProject {
           const after = a.indices![1][1];
           const op = /^\s*(?:<=|=(?!=))\s*/.exec(body.slice(after, a.index! + a[0].length))!;
           const target = a[1].trim(), expression = body.slice(after + op[0].length, a.index! + a[0].length - 1).trim();
-          const entry: Assignment = { target, expression, statement: statement.trim(), direct: identifier.test(target) && identifier.test(expression), file, line: fileEntry.lineAt(start + a.index!), proc: -1 };
+          const expressionStart = start + after + op[0].length;
+          const entry: Assignment = { target, expression, expressionStart, statement: statement.trim(), direct: identifier.test(target) && identifier.test(expression), file, line: fileEntry.lineAt(start + a.index!), proc: -1 };
           // VHDL 并发条件赋值：when 段作条件标注，其余段作数据候选；选择赋值（逗号分隔 when 段）不硬拆
           const vhdlCond = vhdl ? splitVhdlWhen(masked.slice(after + op[0].length, a.index! + a[0].length - 1), body.slice(after + op[0].length, a.index! + a[0].length - 1)) : undefined;
           if (vhdlCond?.selected) {

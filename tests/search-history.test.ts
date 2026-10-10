@@ -1,8 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { searchContents, countMatches } from "../src/model/search";
+import { searchContents, countMatches, buildMatcher, buildAllMatcher } from "../src/model/search";
 import { NavHistory } from "../src/model/history";
 
 describe("全局搜索", () => {
+  it("正则与纯文本整词统一采用 HDL 标识符边界", () => {
+    const line = "$clk clk$ clk clk2";
+    for (const useRegex of [false, true]) {
+      expect(buildMatcher("clk", { wholeWord: true, useRegex })!(line)).toEqual({ index: 10, length: 3 });
+      expect(buildAllMatcher("clk", { wholeWord: true, useRegex })(line)).toEqual([{ index: 10, length: 3 }]);
+      expect(buildAllMatcher("\\$clk", { wholeWord: true, useRegex: true })("$clk")).toEqual([{ index: 0, length: 4 }]);
+    }
+  });
+
+  it("正则空匹配不阻止后续非空命中，重复扫描无状态残留", () => {
+    const first = buildMatcher("^|clk", { useRegex: true })!;
+    const all = buildAllMatcher("^|clk", { useRegex: true });
+    for (let i = 0; i < 2; i++) {
+      expect(first("  clk clk")).toEqual({ index: 2, length: 3 });
+      expect(all("  clk clk")).toEqual([{ index: 2, length: 3 }, { index: 6, length: 3 }]);
+      expect(all("none")).toEqual([]);
+    }
+  });
   const contents = new Map([
     ["a.v", { content: "module top;\n  wire clk;\n  // clk comment\nendmodule" }],
     ["b.v", { content: "module sub(input CLK);\nendmodule" }],

@@ -8,3 +8,4 @@ $env:PATH = 'D:\workspace\toolchains\rust\cargo\bin;' + $env:PATH
 
 Set-Location (Join-Path $PSScriptRoot '..')
 cargo @CargoArgs
+exit $LASTEXITCODE

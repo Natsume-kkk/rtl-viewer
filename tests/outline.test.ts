@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { extractOutline, itemAtLine, breadcrumbAt } from "../src/model/outline";
 
 describe("文件大纲提取", () => {
+  it("always @*、@(*) 及裸 always_comb/latch 的赋值目标都进大纲", () => {
+    const text = "module top;\nalways @* q = d;\nalways @(*) r = d;\nalways_comb s = d;\nalways_latch t = d;\nendmodule";
+    const names = extractOutline(text, "top.sv").filter(item => item.kind === "process").map(item => item.name);
+    expect(names).toEqual(["always @* → q", "always @(*) → r", "always_comb → s", "always_latch → t"]);
+  });
   it("Verilog：模块、信号、always、函数按行排序", () => {
     const items = extractOutline(
       `// 注释里的 wire fake; 不算

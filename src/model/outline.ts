@@ -31,6 +31,7 @@ function declNames(decl: string): string[] {
 
 /** 行首（允许 if/else 前缀）的赋值左值：`if (en) q <= d;` → q；`if (a <= b)` 不算。 */
 const ASSIGN_LHS_RE = /^\s*(?:(?:if|else\s+if)\s*\([^;]*?\)\s*|else\s+)?([A-Za-z_]\w*)\s*(?:<=|=(?![=<>]))/;
+const ALWAYS_HEAD_RE = /^\s*(always(?:_ff|_comb|_latch)?\b(?:\s*@\s*(?:\([^)]*\)|\*))?)/;
 
 /** always 块的赋值目标：跟踪 begin/end 深度，收集块内赋值左值，最多前 2 个。 */
 function verilogAlwaysTargets(lines: string[], startIdx: number): string[] {
@@ -41,7 +42,7 @@ function verilogAlwaysTargets(lines: string[], startIdx: number): string[] {
     const text = lines[i];
     // 单语句 always（无 begin）：只看紧跟的第一条赋值
     if (i === startIdx && !/\bbegin\b/.test(text)) {
-      const rest = text.replace(/^\s*always(?:_ff|_comb|_latch)?\s*@\s*\([^)]*\)/, "");
+      const rest = text.replace(ALWAYS_HEAD_RE, "");
       const single = rest.match(ASSIGN_LHS_RE);
       if (single) {
         targets.push(single[1]);
@@ -105,7 +106,7 @@ function verilogOutline(stripped: string): OutlineItem[] {
       }
       continue;
     }
-    m = text.match(/^\s*(always(?:_ff|_comb|_latch)?\s*@\s*\([^)]*\))/);
+    m = text.match(ALWAYS_HEAD_RE);
     if (m) {
       const label = m[1].replace(/\s+/g, " ");
       items.push({ name: withTargets(label, verilogAlwaysTargets(lines, i)), kind: "process", line });

@@ -318,7 +318,7 @@ function registerDefinitionProvider(resolve: ResolveFn): void {
       const def = resolve(word.word);
       if (!def) return null;
       return {
-        uri: monaco.Uri.parse(`file:///${def.file}`),
+        uri: monaco.Uri.file(def.file),
         range: new monaco.Range(def.line, 1, def.line, 1),
       };
     },

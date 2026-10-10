@@ -9,11 +9,12 @@ using System.Runtime.InteropServices;
 public class Win32 {
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT lpRect);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
-$proc = Start-Process -FilePath $ExePath -PassThru
+$proc = Start-Process -FilePath $ExePath -WindowStyle Hidden -PassThru
+$oldDpi = [Win32]::SetThreadDpiAwarenessContext([IntPtr](-4))
 try {
     $deadline = (Get-Date).AddSeconds(20)
     do {
@@ -23,8 +24,6 @@ try {
     Start-Sleep -Seconds 3
     $hwnd = $proc.MainWindowHandle
     if ($hwnd -eq [IntPtr]::Zero) { Write-Output "NO_WINDOW"; exit 1 }
-    [Win32]::SetForegroundWindow($hwnd) | Out-Null
-    Start-Sleep -Milliseconds 500
     $rect = New-Object Win32+RECT
     [Win32]::GetWindowRect($hwnd, [ref]$rect) | Out-Null
     $w = $rect.Right - $rect.Left
@@ -40,5 +39,9 @@ try {
     Write-Output "SAVED $OutPng"
 }
 finally {
-    if (-not $proc.HasExited) { $proc.Kill() }
+    if ($oldDpi -ne [IntPtr]::Zero) { [Win32]::SetThreadDpiAwarenessContext($oldDpi) | Out-Null }
+    if (-not $proc.HasExited) {
+        if ($proc.CloseMainWindow() -and $proc.WaitForExit(5000)) { Write-Output "NORMAL_EXIT" }
+        else { $proc.Kill(); Write-Output "FORCED_EXIT" }
+    }
 }

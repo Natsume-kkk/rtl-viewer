@@ -48,6 +48,7 @@ export function createPortMapLoader(ctx: PortMapContext): {
   const ipPortsCache = new Map<string, { ports: PortInfo[]; source: string }>();
   /** 工程内模块文件解析缓存（按 fileToken 失效），modulePorts 与 moduleParameters 共享。 */
   const moduleFileCache = new Map<string, { token: unknown; modules: ModuleInfo[] }>();
+  let generation = 0;
 
   function detailForModel(model: monaco.editor.ITextModel): ModuleInfo[] {
     const version = model.getVersionId();
@@ -60,6 +61,7 @@ export function createPortMapLoader(ctx: PortMapContext): {
 
   /** 从 IP stub（同名 .v / synth / sim 子目录）提取端口，.veo 兜底；结果缓存。 */
   async function loadIpPorts(name: string): Promise<{ ports: PortInfo[]; source: string }> {
+    const request = generation;
     const key = name.toLowerCase();
     const hit = ipPortsCache.get(key);
     if (hit) return hit;
@@ -75,8 +77,10 @@ export function createPortMapLoader(ctx: PortMapContext): {
       `${base}.veo`,
     ];
     for (const candidate of candidates) {
+      if (request !== generation) return empty;
       try {
         const { content } = await readFile(candidate);
+        if (request !== generation) return empty;
         const modules = parseFile(content, candidate);
         const mod = modules.find((m) => m.name.toLowerCase() === key) ?? modules[0];
         if (mod && mod.ports.length > 0) {
@@ -88,7 +92,7 @@ export function createPortMapLoader(ctx: PortMapContext): {
         // 候选文件不存在或解析失败，尝试下一个
       }
     }
-    ipPortsCache.set(key, empty);
+    if (request === generation) ipPortsCache.set(key, empty);
     return empty;
   }
 
@@ -158,6 +162,7 @@ export function createPortMapLoader(ctx: PortMapContext): {
 
   /** 端口与解析缓存按工程失效：换工程后同名 IP（clk_wiz_0 等）不得沿用旧定义。 */
   function reset(): void {
+    generation++;
     ipPortsCache.clear();
     moduleFileCache.clear();
     detailCache = new WeakMap();

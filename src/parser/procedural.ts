@@ -160,6 +160,7 @@ export function parseVerilogProcess(text: string): ProcInfo {
   }
 
   function parseSeq(start: number, end: number, conds: string[], depth: number): number {
+    if (depth >= 200) { boundaryAt(tokens[start]?.index ?? text.length, end - 1, "语句嵌套超过分析上限"); return end; }
     let i = start;
     while (i < end && depth < 200) {
       const t = tokens[i];
@@ -197,6 +198,7 @@ export function parseVerilogProcess(text: string): ProcInfo {
   }
 
   function parseIf(i: number, end: number, conds: string[], depth: number): number {
+    if (depth >= 200) { boundaryAt(tokens[i].index, end - 1, "语句嵌套超过分析上限"); return end; }
     const open = i + 1;
     if (tokens[open]?.text !== "(") return i + 1;
     const close = matchPair(open, "(", ")");
@@ -211,6 +213,7 @@ export function parseVerilogProcess(text: string): ProcInfo {
   }
 
   function parseCase(i: number, end: number, conds: string[], depth: number): number {
+    if (depth >= 200) { boundaryAt(tokens[i].index, end - 1, "语句嵌套超过分析上限"); return end; }
     const open = i + 1;
     if (tokens[open]?.text !== "(") return i + 1;
     const close = matchPair(open, "(", ")");

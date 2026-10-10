@@ -83,6 +83,41 @@ async function setup() {
 }
 
 describe("createExternalWatcher", () => {
+  it("换工程后旧文件读取失败也不能继续过滤新工程的 IP", async () => {
+    const { createExternalWatcher, mocks } = await setup();
+    let folder = "D:/old";
+    const ctx = makeCtx({ folder: () => folder });
+    const gate = deferred<{ content: string; encoding: string; mtime: number }>();
+    mocks.scanFolder.mockResolvedValueOnce({ hdl: ["D:/old/a.v"], xci: [], con: [] });
+    mocks.readFile.mockReturnValueOnce(gate.promise);
+    const watcher = createExternalWatcher(ctx); watcher.start();
+    await vi.advanceTimersByTimeAsync(4000);
+    watcher.stop(); folder = "D:/new";
+    ctx.ipsList = [{ file: "D:/new/ip.xci" } as IpInfo];
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      gate.reject(new Error("old read failed")); await vi.advanceTimersByTimeAsync(0);
+      expect(ctx.ipsList.map(ip => ip.file)).toEqual(["D:/new/ip.xci"]);
+      expect(ctx.renderTree).not.toHaveBeenCalled();
+    } finally { errorLog.mockRestore(); }
+  });
+  it("停止及换工程使在飞目录扫描失效，恢复后新轮次正常运行", async () => {
+    const { createExternalWatcher, mocks } = await setup();
+    let folder = "D:/old";
+    const ctx = makeCtx({ folder: () => folder });
+    const gate = deferred<{ hdl: string[]; xci: string[]; con: string[] }>();
+    mocks.scanFolder.mockReturnValueOnce(gate.promise);
+    const watcher = createExternalWatcher(ctx); watcher.start();
+    await vi.advanceTimersByTimeAsync(4000);
+    watcher.stop(); folder = "D:/new"; watcher.start();
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(mocks.scanFolder).toHaveBeenCalledTimes(2);
+    gate.resolve({ hdl: ["D:/old/old.v"], xci: [], con: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.readFile).not.toHaveBeenCalled(); expect(ctx.contents.size).toBe(0);
+    watcher.stop(); await vi.advanceTimersByTimeAsync(16000);
+    expect(mocks.scanFolder).toHaveBeenCalledTimes(2);
+  });
   beforeEach(() => {
     vi.useFakeTimers();
   });

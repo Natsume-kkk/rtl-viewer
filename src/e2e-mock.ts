@@ -14,7 +14,11 @@ const internals: TauriInternals = {
     const path = typeof args.path === "string" ? args.path : "";
     switch (cmd) {
       case "scan_folder":
-        return (await fetch(`/__e2e_scan?path=${encodeURIComponent(path)}`)).json();
+      {
+        const body = await (await fetch(`/__e2e_scan?path=${encodeURIComponent(path)}`)).json();
+        if (body?.error) throw new Error(body.error);
+        return body;
+      }
       case "read_file": {
         const enc = typeof args.encoding === "string" ? args.encoding : "";
         const res = await fetch(
@@ -39,10 +43,16 @@ const internals: TauriInternals = {
           method: "POST",
           body: JSON.stringify(args.paths ?? []),
         });
-        return res.json();
+        const body = await res.json();
+        if (body?.error) throw new Error(body.error);
+        return body;
       }
       case "path_exists":
-        return (await fetch(`/__e2e_exists?path=${encodeURIComponent(path)}`)).json();
+      {
+        const body = await (await fetch(`/__e2e_exists?path=${encodeURIComponent(path)}`)).json();
+        if (body?.error) throw new Error(body.error);
+        return body;
+      }
       case "is_directory":
         return true; // e2e 拖放测试固定用 fixture 目录
       case "show_in_folder":

@@ -48,7 +48,10 @@ vi.mock("../src/editor/monaco", () => {
           new FakeModel(content, lang, uri),
         setModelLanguage: () => {},
       },
-      Uri: { parse: (s: string) => ({ toString: () => s }) },
+      Uri: {
+        parse: (s: string) => ({ path: decodeURIComponent(s.replace(/^file:\/\//, "")).replace(/^\/([A-Z]):/, (_, drive: string) => `/${drive.toLowerCase()}:`), toString: () => s }),
+        file: (s: string) => ({ path: `/${s}`, toString: () => `file:///${s.replace(/%/g, "%25").replace(/#/g, "%23").replace(/\?/g, "%3F")}` }),
+      },
       KeyMod: { CtrlCmd: 1 },
       KeyCode: { KeyS: 2 },
     },
@@ -129,6 +132,84 @@ async function setup() {
 }
 
 describe("TabManager", () => {
+  it("旧读盘导航晚完成时不抢回后来打开的缓存文件", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    let resolve!: (file: { content: string; encoding: string; mtime: number }) => void;
+    mocks.readFile.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const pending = tm.openFile("D:/p/slow.v");
+    tm.openContent("D:/p/cached.v", "cached", "utf8", 10);
+    resolve({ content: "slow", encoding: "utf8", mtime: 10 }); await pending;
+    expect(tm.activeTab!.path).toBe("D:/p/cached.v");
+  });
+  it("切换工程关闭全部组后，在飞打开文件不会复活旧标签", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    const { TabManager } = await import("../src/editor/tabs");
+    let resolve!: (file: { content: string; encoding: string; mtime: number }) => void;
+    mocks.readFile.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const pending = tm.openFile("D:/old/a.v");
+    await TabManager.closeGroups([tm]);
+    resolve({ content: "old project", encoding: "utf8", mtime: 10 }); await pending;
+    expect(tm.count).toBe(0);
+  });
+
+  it("文件名含百分号、井号和问号时 URI 仍保存完整路径并共享缓冲区", async () => {
+    const { make } = await setup(); const a = make(), b = make();
+    const path = "D:/p/100%#name?.v";
+    a.openContent(path, "source", "utf8", 100); b.openContent(path, "source", "utf8", 100);
+    expect(a.activeTab!.model).toBe(b.activeTab!.model);
+    expect(a.activeTab!.uriKey).toContain("100%25%23name%3F.v");
+    expect((a.activeTab!.model.uri as any).path).toBe(`/${path}`);
+  });
+  it("并发读盘同一路径只创建一个标签，不覆盖期间打开的缓存缓冲区", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    let resolve!: (file: { content: string; encoding: string; mtime: number }) => void;
+    const disk = new Promise<{ content: string; encoding: string; mtime: number }>(done => { resolve = done; });
+    mocks.readFile.mockReturnValue(disk);
+    const a = tm.openFile("D:/p/a.v"), b = tm.openFile("D:/p/a.v");
+    tm.openContent("D:/p/a.v", "cached", "utf8", 100);
+    tm.activeTab!.model.setValue("mine");
+    resolve({ content: "disk", encoding: "utf8", mtime: 200 });
+    await Promise.all([a, b]);
+    expect(tm.count).toBe(1); expect(tm.activeTab!.model.getValue()).toBe("mine");
+    expect(tm.activeTab!.dirty).toBe(true);
+  });
+
+  it("关闭时选择放弃重载完成后继续关闭，读盘期间编辑则停止关闭", async () => {
+    for (const edited of [false, true]) {
+      const { make, mocks } = await setup(); const tm = make();
+      tm.openContent("D:/p/a.v", "old", "utf8", 100); const tab = tm.activeTab!;
+      tab.model.setValue("mine");
+      mocks.fileStates.mockResolvedValue([200]);
+      mocks.choiceDialog.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+      mocks.readFile.mockImplementation(async () => {
+        if (edited) tab.model.setValue("during read");
+        return { content: "disk", encoding: "utf8", mtime: 200 };
+      });
+      await expect(tm.close(tab)).resolves.toBe(!edited);
+      expect(tm.count).toBe(edited ? 1 : 0);
+      expect(mocks.writeFile).not.toHaveBeenCalled();
+      if (edited) { expect(tab.model.getValue()).toBe("during read"); expect(tab.dirty).toBe(true); }
+    }
+  });
+
+  it.each([null, undefined])("保存时磁盘状态 %s 必须显式同意重建，默认取消保留缓冲区", async state => {
+    const { make, mocks } = await setup(); const tm = make();
+    tm.openContent("D:/p/a.v", "old", "utf8", 100); tm.activeTab!.model.setValue("mine");
+    mocks.fileStates.mockResolvedValue([state] as (number | null)[]);
+    mocks.choiceDialog.mockResolvedValue(1);
+    await expect(tm.save()).resolves.toBe(false);
+    expect(mocks.writeFile).not.toHaveBeenCalled(); expect(tm.activeTab!.dirty).toBe(true);
+  });
+
+  it("保存写盘期间新增编辑保持脏状态，关闭不得丢失新内容", async () => {
+    const { make, mocks } = await setup(); const tm = make();
+    tm.openContent("D:/p/a.v", "old", "utf8", 100); const tab = tm.activeTab!; tab.model.setValue("mine");
+    mocks.fileStates.mockResolvedValue([100]);
+    mocks.writeFile.mockImplementation(async () => { tab.model.setValue("later"); return 200; });
+    await expect(tm.close(tab)).resolves.toBe(false);
+    expect(tm.count).toBe(1); expect(tab.model.getValue()).toBe("later"); expect(tab.dirty).toBe(true);
+    expect(mocks.writeFile).toHaveBeenCalledWith(tab.path, "mine", "utf8");
+  });
   it.each([
     [0, "v", "verilog"],
     [1, "vhd", "vhdl"],

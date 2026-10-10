@@ -34,10 +34,19 @@ export class HierarchyTree {
     this.rootEl = rootEl;
     this.callbacks = callbacks;
     rootEl.addEventListener("keydown", (e) => this.onKeyDown(e));
+    rootEl.addEventListener("focusin", (e) => {
+      const row = (e.target as HTMLElement).closest<HTMLElement>(".tree-row");
+      if (row) rootEl.querySelectorAll<HTMLElement>(".tree-row").forEach(r => { r.tabIndex = r === row ? 0 : -1; });
+    });
     this.renderPanelHead({ tops: [], topCandidates: [], unused: [] });
   }
 
   render(h: Hierarchy, constraints: string[] = []): void {
+    const scrollTop = this.rootEl.scrollTop, scrollLeft = this.rootEl.scrollLeft;
+    const focused = this.rootEl.contains(document.activeElement) ? document.activeElement as HTMLElement : undefined;
+    const focusedKey = focused?.closest<HTMLElement>(".tree-row")?.dataset.key;
+    const focusedJump = focused?.classList.contains("tree-inst");
+    const focusedTop = focused?.classList.contains("top-select");
     this.rootEl.textContent = "";
     this.renderPanelHead(h);
     if (h.tops.length === 0) {
@@ -61,8 +70,19 @@ export class HierarchyTree {
     }
     this.renderUnused(h.unused);
     this.renderConstraints(constraints);
-    const first = this.rootEl.querySelector<HTMLElement>(".tree-row");
-    if (first) first.tabIndex = 0;
+    const rows = [...this.rootEl.querySelectorAll<HTMLElement>(".tree-row")];
+    const restored = rows.find(r => r.dataset.key === focusedKey);
+    const active = restored ?? rows.find(r => r.dataset.key === this.selectedKey) ?? rows[0];
+    for (const row of rows) row.tabIndex = row === active ? 0 : -1;
+    if (focusedTop) this.rootEl.querySelector<HTMLElement>(".top-select")?.focus({ preventScroll: true });
+    else if (focused) (focusedJump ? restored?.querySelector<HTMLElement>(".tree-inst") ?? active : active)?.focus({ preventScroll: true });
+    this.rootEl.scrollTop = scrollTop;
+    this.rootEl.scrollLeft = scrollLeft;
+  }
+
+  reset(): void {
+    this.expanded.clear(); this.seenTops.clear(); this.selectedKey = "";
+    this.rootEl.scrollTop = 0; this.rootEl.scrollLeft = 0;
   }
 
   /** 约束文件分组（.xdc/.sdc），只读查看入口，不参与层级。 */
@@ -78,6 +98,7 @@ export class HierarchyTree {
     for (const file of files) {
       const li = document.createElement("li");
       li.className = "tree-row kind-constraint";
+      li.dataset.key = `constraint/${file}`;
       li.textContent = file.split(/[\\/]/).pop() ?? file;
       li.title = file;
       li.tabIndex = 0;
@@ -304,6 +325,7 @@ export class HierarchyTree {
     for (const u of unused) {
       const li = document.createElement("li");
       li.className = "tree-row kind-module";
+      li.dataset.key = `unused/${u.name}`;
       li.textContent = u.name;
       li.title = `${u.file}:${u.line}`;
       li.tabIndex = 0;

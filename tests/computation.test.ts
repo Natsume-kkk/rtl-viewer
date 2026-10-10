@@ -3,6 +3,30 @@ import { parseExpression, formatExpr } from "../src/analysis/expression";
 import { analyzeProcess } from "../src/analysis/process";
 import { ComputationProject } from "../src/analysis/project";
 
+it("Verilog function/task 的局部声明不混入模块信号", () => {
+  const text = `module top(input a, output b);
+    function automatic f; input x; reg [3:0] fn_local; begin f = x; end endfunction
+    task t; reg [7:0] task_local; begin end endtask
+    wire actual; assign b = a; endmodule`;
+  const p = new ComputationProject(new Map([["locals.v", text]]));
+  expect(p.signals("top")).toContain("actual");
+  expect(p.signals("top")).not.toContain("fn_local");
+  expect(p.signals("top")).not.toContain("task_local");
+});
+
+it("连续赋值 RHS 定位不被同名 LHS 与同一行前序文本污染", () => {
+  const file = "offset.v", source = "module top; wire a, b; assign a = a; assign b = a; endmodule";
+  const p = new ComputationProject(new Map([[file, source]])), ctx = p.context("top")!;
+  const a = p.moduleData(ctx)!;
+  for (const name of ["a", "b"]) {
+    const driver = a.drivers.get(name)![0];
+    const expected = source.indexOf(`assign ${name} = a`) + `assign ${name} = `.length;
+    expect(driver.source.start).toBe(expected);
+    expect(driver.expression.start).toBe(expected);
+    expect(source.slice(driver.source.start, driver.source.end)).toBe("a");
+  }
+});
+
 describe("运算图表达式", () => {
   it("按优先级生成运算树，并保留切片、拼接和条件的角色", () => {
     const e = parseExpression("a + b * c > 255 ? 8'd255 : result[7:0]", "verilog");

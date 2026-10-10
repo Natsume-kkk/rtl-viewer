@@ -1,5 +1,7 @@
 # rtl-viewer
 
+![rtl-viewer：看清结构，追到信号](docs/assets/banner@2x.png)
+
 FPGA/ASIC 源码工程查看器：打开源码文件夹（或把文件夹直接拖进窗口），自动识别 Verilog/SystemVerilog/VHDL 源码与 Vivado IP 核（`.xci`）。顶部提供工程与文件操作，左侧为工程层级与当前文件大纲，中间为 Monaco 编辑器，下方可打开信号链分析；支持原有深浅主题切换。
 
 ## 功能
@@ -22,14 +24,14 @@ FPGA/ASIC 源码工程查看器：打开源码文件夹（或把文件夹直接�
 - **约束文件查看**：`.xdc`/`.sdc` 以「约束」分组展示在树中，使用 Tcl 语法高亮（IP 生成目录的约束不进索引）。
 - **外部变更监视**：文件在磁盘被外部修改时，干净标签自动重载、未保存标签标 ⚠；保存时若磁盘已变，弹出「覆盖 / 放弃重载 / 取消」三选，防误覆盖 Vivado 重新生成的内容。
 - **最近工程**：工具栏 ▾ 下拉或 Ctrl+Alt+R 列出最近打开的 8 个工程，一键切换。
-- **编码自适应**：自动识别 UTF-8/UTF-8 BOM/UTF-16/GBK，默认按原编码写回；状态栏可「以指定编码重新打开 / 以指定编码保存」（Notepad++ 语义），支持 UTF-8、UTF-8 BOM、UTF-16 LE/BE、GBK、GB18030、Big5、Shift-JIS、EUC-KR、Windows-1252，兼容 Vivado 默认 ANSI（GBK）工程。损坏编码与 UTF-32 拒绝读取，单文件读取上限为 64 MiB。
+- **编码自适应**：自动识别 UTF-8/UTF-8 BOM/UTF-16/GBK，默认按原编码写回；状态栏可「以指定编码重新打开 / 以指定编码保存」，支持 UTF-8、UTF-8 BOM、UTF-16 LE/BE、GBK、GB18030、Big5、Shift-JIS、EUC-KR、Windows-1252，兼容 Vivado 默认 ANSI（GBK）工程。损坏编码与 UTF-32 拒绝读取，单文件读取上限为 64 MiB。
 - **快速轻量**：结构扫描只提取模块与例化边，端口按需解析；IP 生成目录不进索引；Windows 单 exe 便携运行，免安装。
 - **关闭与工程切换**：关闭脏文件、批量关闭、切换工程和退出提供「保存并关闭／不保存／取消」，默认取消；保存失败或另存为取消时停止操作，全部确认和保存成功后才关闭标签。两侧共享文件只确认一次，单独关闭一个视图而另一视图仍打开时保留缓冲区。磁盘文件被删除时，保存前明确确认是否重建；无法确认磁盘状态时停止保存。保存期间新增编辑仍保留未保存标记。
 - **应用标题栏**：品牌栏承担窗口拖动与双击最大化，右上角提供最小化、最大化／还原和关闭。关闭按钮与系统关闭请求共用未保存检查；浏览器预览不显示桌面窗口按钮。
 
 ## 快捷键
 
-日常操作沿用 Notepad++ 默认键位；编辑键只在源码区域生效，文件操作也可从外围控件执行。键位对照来源为 [Notepad++ 官方默认绑定](https://github.com/notepad-plus-plus/notepad-plus-plus/blob/master/PowerEditor/src/Parameters.cpp) 与 [列选择说明](https://npp-user-manual.org/docs/editing/#entering-column-mode)。
+编辑快捷键只在源码区域生效，文件操作也可从外围控件执行。
 
 | 操作 | 快捷键 |
 |---|---|
@@ -116,6 +118,12 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Release.ps1
 
 唯一交付入口为 `release/rtl-viewer.exe`，双击运行；脚本构建后读取 Cargo 输出目录并复制到此处。若目标被运行中的窗口占用，脚本会报告交付失败；保存工作并退出该窗口后重新运行。不要用裸 `cargo build` 生成分发文件，它不经过 Tauri 的前端打包流程。
 
+### 自动检查
+
+[GitHub Actions](.github/workflows/ci.yml) 在推送 `main`、提交拉取请求或手动触发时运行 Windows 检查：按锁文件安装依赖、执行前端和 Rust 测试，并通过正式打包入口完成 TypeScript 检查、前端构建和便携 exe 构建。成功后可在该次运行的 Artifacts 中下载 `rtl-viewer-windows-x64`，保留 7 天。
+
+自动检查使用仓库内独立样例；私有工程测试需要显式配置本地目录，桌面交互需在实际运行环境中验证。
+
 ### 验收数据与浏览器预览
 
 `npm test` 默认运行单元测试及 `tests/samples/basic/` 中随仓库提供的独立样例，覆盖 Verilog／VHDL 混合层级、IP 黑盒、约束文件和寄存器来源。样例用于查看器验收，不是可综合工程，其中 `.xci` 是手工编写的最小解析输入。
@@ -149,6 +157,7 @@ npm run dev
 ```text
 src/         前端：analysis/（按需运算语义与单模块逻辑）、parser/（HDL 解析）、model/（索引、层级树、搜索、导航历史、大纲、信号声明定位）、app/（编辑工作区、工程扫描、外部变更监视、信号链与模块元数据）、editor/（Monaco、标签页、代码补全）、ui/（树、搜索面板、大纲、状态栏、对话框、右键菜单、最近工程）
 src-tauri/   本机 Rust 桌面后端：源码在 src/，负责文件扫描、编码读写与系统调用；另含桌面配置和图标
+docs/assets/ README 品牌头图及 SVG 源文件
 tests/       Vitest 测试；samples/ 为可提交样例，fixtures/ 为不入 Git 的私有验收副本；私有套件通过环境变量显式启用
 scripts/     构建辅助（Build-Release.ps1、Invoke-Cargo.ps1、make-icon.mjs、Capture-Window.ps1 exe 窗口冒烟截图）
 release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）

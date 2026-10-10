@@ -152,7 +152,7 @@ function findEnd(stripped: string, from: number, name: string, extraTag?: string
   return stripped.length;
 }
 
-/** 完整解析：entity 定义、端口、例化（component / direct entity，按 architecture 归属）。withPorts=false 时跳过端口提取（第一级结构扫描用）；withConn=true 时额外提取 port map 连接（悬停端口映射用）。 */
+/** 完整解析：entity 定义、端口、例化（component / direct entity，按 architecture 归属）。withPorts=false 时跳过端口提取（第一级结构扫描用）；withConn=true 时额外提取 port map 连接（信号链分析用）。 */
 export function parseVhdl(src: string, file: string, withPorts = true, withConn = false): ModuleInfo[] {
   const stripped = stripVhdlComments(src);
   const expressions = withPorts || withConn ? stripVhdlComments(src, false) : "";

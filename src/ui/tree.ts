@@ -166,7 +166,9 @@ export class HierarchyTree {
     row.setAttribute("aria-level", String(depth + 1));
     row.setAttribute("aria-selected", String(this.selectedKey === node.key));
     const kindLabel = { module: "模块", ip: "IP 核", primitive: "厂商原语", unresolved: "未解析模块" }[node.kind];
-    row.setAttribute("aria-label", `${node.label}，${kindLabel} ${node.moduleName}${node.recursive ? "，循环例化" : ""}`);
+    const fileName = node.file?.split(/[\\/]/).pop();
+    const displayName = `${depth > 0 ? `${node.label} : ` : ""}${node.moduleName}${fileName ? ` (${fileName})` : ""}`;
+    row.setAttribute("aria-label", `${node.label}，${kindLabel} ${node.moduleName}${fileName ? `，文件 ${fileName}` : ""}${node.recursive ? "，循环例化" : ""}`);
     row.title = `${node.label}\n${kindLabel} · ${node.moduleName}${node.file ? `\n${node.file}:${node.line ?? 1}` : ""}`;
     row.style.paddingLeft = `${8 + depth * 14}px`;
     row.style.minWidth = `${160 + depth * 14}px`;
@@ -198,7 +200,7 @@ export class HierarchyTree {
     }
     const name = document.createElement("span");
     name.className = "tree-name";
-    name.textContent = node.label;
+    name.textContent = displayName;
     label.appendChild(name);
     if (node.recursive) {
       const mark = document.createElement("span");
@@ -326,8 +328,11 @@ export class HierarchyTree {
       const li = document.createElement("li");
       li.className = "tree-row kind-module";
       li.dataset.key = `unused/${u.name}`;
-      li.textContent = u.name;
-      li.title = `${u.file}:${u.line}`;
+      const name = document.createElement("span");
+      name.className = "tree-name";
+      name.textContent = `${u.name} (${u.file.split(/[\\/]/).pop()})`;
+      li.appendChild(name);
+      li.title = `${u.name}\n${u.file}:${u.line}`;
       li.tabIndex = 0;
       li.setAttribute("role", "button");
       li.addEventListener("click", () => {

@@ -18,7 +18,7 @@ export interface InstanceInfo {
   module: string;
   inst: string;
   line: number;
-  /** 端口连接表，仅 parseFileDetail（悬停端口映射）填充 */
+  /** 端口连接表，仅 parseFileDetail（信号链分析）填充 */
   connections?: PortConnection[];
   /** 例化语句收尾所在行，仅 parseFileDetail 填充 */
   endLine?: number;

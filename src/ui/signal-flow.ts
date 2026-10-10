@@ -33,7 +33,7 @@ export class SignalFlowPanel {
     this.following.setAttribute("role", "status");
     this.contexts = document.createElement("select"); this.contexts.setAttribute("aria-label", "信号所在实例路径"); this.contexts.hidden = true;
     this.contexts.onchange = () => actions.context(this.contexts.selectedIndex);
-    this.status = document.createElement("p"); this.status.className = "mapping-note";
+    this.status = document.createElement("p"); this.status.className = "flow-status";
     tools.append(this.following, this.contexts);
     this.body = document.createElement("div"); this.body.className = "flow-body";
     this.stale = document.createElement("button"); this.stale.className = "text-button result-stale";

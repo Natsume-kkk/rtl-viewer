@@ -1,13 +1,9 @@
-import { parseFile, parseFileDetail } from "../parser";
-import type { ModuleInfo, IpInfo, PortInfo, PortConnection, ParameterInfo } from "../parser";
+import { parseFile } from "../parser";
+import type { ModuleInfo, IpInfo, PortInfo, ParameterInfo } from "../parser";
 import { readFile } from "../ipc";
 import type { ModuleDef } from "../model";
-import type { monaco } from "../editor/monaco";
-import type { PortMapRow } from "../ui/portmap";
 
-type InstanceInfo = ModuleInfo["instances"][number];
-
-export interface PortMapContext {
+export interface ModuleMetadataContext {
   ips(): IpInfo[];
   resolveModule(name: string): ModuleDef | undefined;
   /** 打开中的标签页用当前缓冲区（含未保存修改），否则用扫描缓存。 */
@@ -16,48 +12,15 @@ export interface PortMapContext {
   fileToken(file: string): unknown;
 }
 
-/** 光标位于例化语句任意一行即可命中；instance 指定时收窄到该实例，唯一候选兜底。 */
-export function resolveInstanceAt(modules: ModuleInfo[], line: number, instance?: string): InstanceInfo | undefined {
-  const candidates = modules.flatMap(m => m.instances).filter(i => !instance || i.inst === instance);
-  return candidates.find(i => line >= i.line && line <= (i.endLine ?? i.line)) ?? (instance && candidates.length === 1 ? candidates[0] : undefined);
-}
-
-export function findInstanceAt(
-  modules: ModuleInfo[],
-  word: string,
-  line: number,
-): { owner: ModuleInfo; inst: InstanceInfo } | undefined {
-  for (const owner of modules) {
-    for (const inst of owner.instances) {
-      if (inst.inst !== word || !inst.connections) continue;
-      if (line >= inst.line && line <= (inst.endLine ?? inst.line)) return { owner, inst };
-    }
-  }
-  return undefined;
-}
-
-export function createPortMapLoader(ctx: PortMapContext): {
-  detailForModel(model: monaco.editor.ITextModel): ModuleInfo[];
+export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
   modulePorts(moduleName: string): Promise<PortInfo[]>;
   moduleParameters(moduleName: string): ParameterInfo[];
-  buildPortMapRows(moduleName: string, connections: PortConnection[]): Promise<PortMapRow[]>;
   reset(): void;
 } {
-  /** 当前编辑内容的第三级解析缓存（按 model 版本失效），悬停高频触发不能每次重解析。 */
-  let detailCache = new WeakMap<monaco.editor.ITextModel, { version: number; modules: ModuleInfo[] }>();
   const ipPortsCache = new Map<string, { ports: PortInfo[]; source: string }>();
   /** 工程内模块文件解析缓存（按 fileToken 失效），modulePorts 与 moduleParameters 共享。 */
   const moduleFileCache = new Map<string, { token: unknown; modules: ModuleInfo[] }>();
   let generation = 0;
-
-  function detailForModel(model: monaco.editor.ITextModel): ModuleInfo[] {
-    const version = model.getVersionId();
-    const hit = detailCache.get(model);
-    if (hit?.version === version) return hit.modules;
-    const modules = parseFileDetail(model.getValue(), model.uri.path);
-    detailCache.set(model, { version, modules });
-    return modules;
-  }
 
   /** 从 IP stub（同名 .v / synth / sim 子目录）提取端口，.veo 兜底；结果缓存。 */
   async function loadIpPorts(name: string): Promise<{ ports: PortInfo[]; source: string }> {
@@ -125,48 +88,12 @@ export function createPortMapLoader(ctx: PortMapContext): {
     return moduleFileModules(def)?.find((m) => m.name.toLowerCase() === key)?.parameters ?? [];
   }
 
-  /** 连接表对齐端口元数据：命名按名（大小写不敏感），位置按序；未连接的端口补空行。 */
-  async function buildPortMapRows(
-    moduleName: string,
-    connections: PortConnection[],
-  ): Promise<PortMapRow[]> {
-    const ports = await modulePorts(moduleName);
-    const byName = new Map(ports.map((p) => [p.name.toLowerCase(), p]));
-    const rows: PortMapRow[] = [];
-    const used = new Set<string>();
-    let posIdx = 0;
-    for (const conn of connections) {
-      let meta: PortInfo | undefined;
-      if (conn.port) {
-        meta = byName.get(conn.port.toLowerCase());
-      } else {
-        while (posIdx < ports.length && used.has(ports[posIdx].name.toLowerCase())) posIdx++;
-        meta = ports[posIdx];
-        posIdx++;
-      }
-      if (meta) used.add(meta.name.toLowerCase());
-      rows.push({
-        direction: meta?.direction ?? "",
-        width: meta?.width ?? "",
-        port: conn.port ?? meta?.name,
-        expr: conn.expr,
-      });
-    }
-    for (const p of ports) {
-      if (!used.has(p.name.toLowerCase())) {
-        rows.push({ direction: p.direction ?? "", width: p.width ?? "", port: p.name, expr: "" });
-      }
-    }
-    return rows;
-  }
-
   /** 端口与解析缓存按工程失效：换工程后同名 IP（clk_wiz_0 等）不得沿用旧定义。 */
   function reset(): void {
     generation++;
     ipPortsCache.clear();
     moduleFileCache.clear();
-    detailCache = new WeakMap();
   }
 
-  return { detailForModel, modulePorts, moduleParameters, buildPortMapRows, reset };
+  return { modulePorts, moduleParameters, reset };
 }

@@ -470,7 +470,7 @@ end entity;
   });
 });
 
-describe("例化端口连接提取（悬停端口映射用）", () => {
+describe("例化端口连接提取（信号链分析用）", () => {
   it("verilog 命名连接跨行提取端口、表达式与行号", () => {
     const src = `module top(input clk, input rst_n, output [7:0] q);
   wire [7:0] s_data;

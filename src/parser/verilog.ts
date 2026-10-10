@@ -253,7 +253,7 @@ function scanInstances(
   return out;
 }
 
-/** 完整解析：module/interface 定义、端口、例化。withPorts=false 时跳过端口提取（第一级结构扫描用）；withConn=true 时额外提取例化端口连接（悬停端口映射用）。 */
+/** 完整解析：module/interface 定义、端口、例化。withPorts=false 时跳过端口提取（第一级结构扫描用）；withConn=true 时额外提取例化端口连接（信号链分析用）。 */
 export function parseVerilog(src: string, file: string, withPorts = true, withConn = false): ModuleInfo[] {
   const stripped = stripComments(src);
   const expressions = withPorts || withConn ? stripComments(src, false) : "";

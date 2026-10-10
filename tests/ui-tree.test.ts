@@ -18,6 +18,43 @@ function makeTree(callbacks: ConstructorParameters<typeof HierarchyTree>[1]) {
 }
 
 describe("HierarchyTree", () => {
+  it("同时显示实例、模块与定义文件，复用实例及同名实例不丢失身份", () => {
+    const onOpen = vi.fn(), onOpenInst = vi.fn();
+    const { rootEl, tree } = makeTree({ onOpen, onOpenInst });
+    const child = node({ key: "top/u_rx", label: "u_rx", moduleName: "receiver", file: "D:\\rtl\\serial.vhd", line: 10, instFile: "D:/rtl/top.v", instLine: 25 });
+    const sibling = node({ ...child, key: "top/receiver", label: "receiver", instLine: 30 });
+    tree.render({ tops: [node({ key: "top", label: "top", moduleName: "top", file: "D:/rtl/board.sv", children: [child, sibling] })], topCandidates: ["top"], unused: [] });
+    expect([...rootEl.querySelectorAll(".tree-name")].map(n => n.textContent)).toEqual([
+      "top (board.sv)", "u_rx : receiver (serial.vhd)", "receiver : receiver (serial.vhd)",
+    ]);
+    const row = rootEl.querySelectorAll<HTMLElement>(".tree-row")[1];
+    expect(row.title).toContain("D:\\rtl\\serial.vhd:10");
+    expect(row.getAttribute("aria-label")).toContain("文件 serial.vhd");
+    row.click();
+    row.querySelector<HTMLButtonElement>(".tree-inst")!.click();
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith(child);
+    expect(onOpenInst).toHaveBeenCalledExactlyOnceWith(child);
+  });
+
+  it("IP 显示 xci，原语与未解析节点不借用例化文件冒充定义文件", () => {
+    const { rootEl, tree } = makeTree({ onOpen: vi.fn() });
+    tree.render({ tops: [node({ key: "top", label: "top", moduleName: "top", children: [
+      node({ key: "top/u_ip", label: "u_ip", moduleName: "clk_wiz", kind: "ip", file: "D:/ip/clk_wiz.xci" }),
+      node({ key: "top/u_buf", label: "u_buf", moduleName: "BUFG", kind: "primitive", instFile: "top.v", instLine: 5 }),
+      node({ key: "top/u_missing", label: "u_missing", moduleName: "missing", kind: "unresolved", instFile: "top.v", instLine: 8 }),
+    ] })], topCandidates: ["top"], unused: [] });
+    expect([...rootEl.querySelectorAll(".tree-name")].map(n => n.textContent)).toEqual([
+      "top", "u_ip : clk_wiz (clk_wiz.xci)", "u_buf : BUFG", "u_missing : missing",
+    ]);
+  });
+
+  it("未使用模块附带文件名，特殊名称仅以文本显示", () => {
+    const { rootEl, tree } = makeTree({ onOpen: vi.fn() });
+    tree.render({ tops: [], topCandidates: [], unused: [{ name: "<unused>", file: "D:/rtl/<source>.v", line: 2 }] });
+    expect(rootEl.querySelector(".tree-unused .tree-name")?.textContent).toBe("<unused> (<source>.v)");
+    expect(rootEl.querySelector("unused, source")).toBeNull();
+    expect(rootEl.querySelector<HTMLElement>(".tree-unused .tree-row")?.title).toContain("D:/rtl/<source>.v:2");
+  });
   it("重渲染保留跳转按钮焦点及滚动位置，只有一行参与 Tab 导航", () => {
     const { rootEl, tree } = makeTree({ onOpen: vi.fn() }); document.body.append(rootEl);
     const h = { tops: [node({ key: "top", label: "top", moduleName: "top", children: [node({ key: "top/u", label: "u", moduleName: "sub", instFile: "top.v", instLine: 2 })] })], topCandidates: ["top"], unused: [] };
@@ -46,7 +83,7 @@ describe("HierarchyTree", () => {
     key("ArrowRight");
     key("ArrowDown");
     expect(document.activeElement?.getAttribute("title")).toContain("actual_module_definition");
-    expect(rootEl.querySelectorAll(".tree-label")[1].textContent).toBe(child.label);
+    expect(rootEl.querySelectorAll(".tree-label")[1].textContent).toBe(`${child.label} : ${child.moduleName}`);
     key("Enter");
     expect(onOpen).toHaveBeenCalledWith(child);
     const jump = rootEl.querySelector<HTMLButtonElement>("button.tree-inst")!;
@@ -99,9 +136,9 @@ describe("HierarchyTree", () => {
     tree.render(h);
     const labels = [...rootEl.querySelectorAll(".tree-label")];
     expect(labels[0].textContent).toBe("top");
-    const ipLabel = labels.find((el) => el.textContent === "u_ip");
+    const ipLabel = labels.find((el) => el.textContent === "u_ip : clk_wiz_0");
     expect(ipLabel?.querySelector(".icon-ip-diamond svg")).toBeTruthy();
-    const unLabel = labels.find((el) => el.textContent === "u_m");
+    const unLabel = labels.find((el) => el.textContent === "u_m : missing");
     expect(unLabel?.querySelector(".icon-unresolved svg")).toBeTruthy();
     const primitiveRow = rootEl.querySelector(".kind-primitive")!;
     expect(primitiveRow.querySelector(".icon-primitive svg")).toBeTruthy();

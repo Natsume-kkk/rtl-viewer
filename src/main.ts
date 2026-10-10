@@ -10,9 +10,8 @@ import type { Hierarchy, TreeNode, InstanceSite } from "./model/hierarchy";
 import { extractOutline, breadcrumbAt, OUTLINE_KIND_LABELS } from "./model/outline";
 import type { OutlineItem } from "./model/outline";
 import { searchContents } from "./model/search";
-import { scanStructure, parseFileDetail } from "./parser";
+import { scanStructure } from "./parser";
 import type { ModuleInfo, IpInfo } from "./parser";
-import { findSignalDeclLine } from "./model/signals";
 import { openFolderDialog, openFileDialog, pathExists, showInFolder, isDirectory, normalizePath } from "./ipc";
 import { registerAppShortcuts } from "./ui/shortcuts";
 import { initMonaco, createEditor, monaco } from "./editor/monaco";
@@ -31,11 +30,9 @@ import { attachWindowControls } from "./ui/window-controls";
 import { initTheme } from "./ui/theme";
 import { setIcon } from "./ui/icons";
 import type { IconName } from "./ui/icons";
-import { renderPortMap, type PortMapData } from "./ui/portmap";
 import { pathFromUri } from "./editor/file-path";
 import { createSignalController } from "./app/signal-controller";
-import { portMapMarkdown } from "./app/port-markdown";
-import { createPortMapLoader, findInstanceAt, resolveInstanceAt } from "./app/portmap";
+import { createModuleMetadataLoader } from "./app/module-metadata";
 import { createProjectScanner } from "./app/project-scanner";
 import { createExternalWatcher, type CachedFile } from "./app/watcher";
 
@@ -105,16 +102,11 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   });
   splitBtn.id = "split-action";
   splitBtn.title = "分屏 (Ctrl+Alt+V)；F8 切换编辑视图";
-  const mapBtn = action("", "ports", togglePortMap);
-  mapBtn.id = "map-action";
-  mapBtn.title = "端口映射 (Ctrl+Alt+K)";
-  mapBtn.setAttribute("aria-label", "切换端口映射");
-  mapBtn.setAttribute("aria-expanded", "false");
   const flowBtn = action("信号链", "ports", toggleSignalFlow);
   flowBtn.id = "flow-action";
   flowBtn.title = "信号链分析";
   flowBtn.setAttribute("aria-expanded", "false");
-  end.append(searchBtn, splitBtn, mapBtn, flowBtn);
+  end.append(searchBtn, splitBtn, flowBtn);
   bar.append(openWrap, newBtn, saveBtn, columnBtn, end);
   const progress = document.createElement("div");
   progress.id = "progress";
@@ -244,15 +236,15 @@ function setSearchVisible(visible: boolean, focus = true): void {
   if (visible && focus) searchPanel.focus();
 }
 
-// ---------- 例化端口映射（悬停预览 + 明确选择后保留） ----------
+// ---------- 按需模块元数据（补全与 IP stub） ----------
 
-const portMapLoader = createPortMapLoader({
+const moduleMetadataLoader = createModuleMetadataLoader({
   ips: () => state.ips,
   resolveModule: (name) => state.index.resolve(name),
   fileContent,
   fileToken,
 });
-const { detailForModel, modulePorts, moduleParameters, buildPortMapRows } = portMapLoader;
+const { modulePorts, moduleParameters } = moduleMetadataLoader;
 
 /** 打开中的标签页用当前缓冲区（含未保存修改），否则用扫描缓存。两组标签都查。 */
 function fileContent(file: string): string | undefined {
@@ -272,52 +264,6 @@ function fileToken(file: string): unknown {
   return state.contents.get(file)?.content;
 }
 
-function gotoSignalDecl(file: string, name: string): void {
-  const content = fileContent(file);
-  const line = content ? findSignalDeclLine(content, file, name) : undefined;
-  if (line) void navigateTo(file, line);
-  else statusbar.hint(`未找到 ${name} 的声明`);
-}
-
-function gotoPortDecl(moduleName: string, port: string): void {
-  const def = state.index.resolve(moduleName);
-  if (!def || def.isIp) return;
-  const content = fileContent(def.file);
-  const line = (content && findSignalDeclLine(content, def.file, port)) || def.line;
-  void navigateTo(def.file, line);
-}
-
-
-const IDENT_RE = /^[A-Za-z_]\w*$/;
-
-monaco.editor.registerCommand("rtl.gotoSignal", (_accessor, file: string, name: string) =>
-  gotoSignalDecl(file, name),
-);
-monaco.editor.registerCommand("rtl.gotoPort", (_accessor, mod: string, port: string) =>
-  gotoPortDecl(mod, port),
-);
-
-const hoverProvider: monaco.languages.HoverProvider = {
-  async provideHover(model, position) {
-    const word = model.getWordAtPosition(position);
-    if (!word) return null;
-    const hit = findInstanceAt(detailForModel(model), word.word, position.lineNumber);
-    if (!hit) return null;
-    const rows = await buildPortMapRows(hit.inst.module, hit.inst.connections ?? []);
-    return {
-      contents: [portMapMarkdown(hit.inst.inst, hit.inst.module, rows, pathFromUri(model.uri))],
-      range: new monaco.Range(
-        position.lineNumber,
-        word.startColumn,
-        position.lineNumber,
-        word.endColumn,
-      ),
-    };
-  },
-};
-monaco.languages.registerHoverProvider("verilog", hoverProvider);
-monaco.languages.registerHoverProvider("vhdl", hoverProvider);
-
 // 补全：当前文件信号、语法关键字、模块名（选中时懒解析端口出例化骨架）
 registerCompletionProviders({
   allDefs: () => state.index.allDefs(),
@@ -326,6 +272,8 @@ registerCompletionProviders({
 });
 
 // ---------- Ctrl+Shift+O 文件符号（与侧栏大纲共用 extractOutline） ----------
+
+const IDENT_RE = /^[A-Za-z_]\w*$/;
 
 const SYMBOL_KINDS: Record<string, monaco.languages.SymbolKind> = {
   module: monaco.languages.SymbolKind.Module,
@@ -358,88 +306,13 @@ const symbolProvider: monaco.languages.DocumentSymbolProvider = {
 monaco.languages.registerDocumentSymbolProvider("verilog", symbolProvider);
 monaco.languages.registerDocumentSymbolProvider("vhdl", symbolProvider);
 
-let mappingRequest = 0;
-let mappingStale = false;
-let mappingData: PortMapData | undefined;
-let mappingTarget: { file: string; line?: number; instance: string } | undefined;
-
-function renderMapping(): void {
-  if (!mappingData) return;
-  const { module: moduleName, file, line } = mappingData;
-  const panel = document.getElementById("mapping")!;
-  const def = state.index.resolve(moduleName);
-  renderPortMap(panel, mappingData, {
-    close: () => { setMappingVisible(false); document.getElementById("map-action")!.focus(); },
-    definition: () => { if (def) void navigateTo(def.file, def.line); },
-    origin: () => void navigateTo(file, line),
-    port: (name) => gotoPortDecl(moduleName, name),
-    signal: (name) => gotoSignalDecl(file, name),
-  });
-  if (mappingStale) {
-    const refresh = document.createElement("button"); refresh.className = "text-button result-stale";
-    refresh.textContent = "源码已变化，刷新端口连接";
-    refresh.onclick = () => void loadPortMap(file, line, mappingData?.instance);
-    panel.insertBefore(refresh, panel.children[1]);
-  }
-}
-
-/** 光标位于例化语句任意一行即可；树选择可显式指定父文件中的实例。 */
-async function loadPortMap(file?: string, line?: number, instance?: string): Promise<void> {
-  if (document.getElementById("mapping")!.hidden) return;
-  const request = ++mappingRequest;
-  const ed = activeGroup().editor;
-  const model = ed.getModel();
-  const modules = file ? parseFileDetail(fileContent(file) ?? "", file) : model ? detailForModel(model) : [];
-  const at = line ?? ed.getPosition()?.lineNumber ?? 1;
-  const hit = resolveInstanceAt(modules, at, instance);
-  if (!hit) {
-    if (mappingData) { statusbar.hint("当前位置没有可识别的例化，保留原端口连接。"); return; }
-    const panel = document.getElementById("mapping")!;
-    panel.replaceChildren();
-    const head = document.createElement("div"); head.className = "panel-head"; head.textContent = "端口映射";
-    const close = document.createElement("button"); close.className = "icon-button"; close.setAttribute("aria-label", "收起端口映射");
-    setIcon(close, "close"); close.onclick = () => setMappingVisible(false); head.append(close);
-    const note = document.createElement("p"); note.className = "mapping-note"; note.textContent = "点击层级树中的例化，或将光标放到例化语句内，查看端口连接。";
-    panel.append(head, note);
-    return;
-  }
-  const rows = await buildPortMapRows(hit.module, hit.connections ?? []);
-  if (request !== mappingRequest || document.getElementById("mapping")!.hidden) return;
-  const def = state.index.resolve(hit.module);
-  mappingData = { instance: hit.inst, module: hit.module, rows, file: file ?? pathFromUri(model!.uri), line: hit.line, hasDefinition: !!def && !def.isIp };
-  mappingStale = false;
-  renderMapping();
-}
-
-function setMappingVisible(visible: boolean): void {
-  if (!visible) mappingRequest++;
-  document.getElementById("mapping")!.hidden = !visible;
-  document.getElementById("map-action")!.setAttribute("aria-expanded", String(visible));
-}
-
-function togglePortMap(): void {
-  const panel = document.getElementById("mapping")!;
-  if (!panel.hidden) setMappingVisible(false);
-  else { setMappingVisible(true); if (!mappingData) void loadPortMap(mappingTarget?.file, mappingTarget?.line, mappingTarget?.instance); }
-}
-
 function selectTreeInstance(node: TreeNode): void {
   treeContextPath = node.key;
-  if (!node.instFile || node.instLine === undefined) return;
-  mappingTarget = { file: node.instFile, line: node.instLine, instance: node.label };
-  mappingData = undefined;
-  mappingStale = false;
-  void loadPortMap(node.instFile, node.instLine, node.label);
 }
 
 function markResultsStale(): void {
   signalController.invalidate();
   searchPanel.markStale();
-  if (mappingData && !mappingStale) {
-    mappingStale = true;
-    const panel = document.getElementById("mapping")!, scroll = panel.scrollTop;
-    renderMapping(); panel.scrollTop = scroll;
-  }
 }
 
 // ---------- 按需信号链：显式追踪，浏览源码不改变目标 ----------
@@ -512,18 +385,6 @@ function showInstancePanel(name: string, sites: InstanceSite[]): void {
 function registerEditorActions(): void {
   registerColumnActions();
   monaco.editor.addEditorAction({ id: "rtl.signal-flow", label: "追踪此信号", contextMenuGroupId: "navigation", run: ed => { focusGroup(groups.findIndex(g => g.editor === ed)); setSignalFlowVisible(true); return signalController.analyze(); } });
-  monaco.editor.addEditorAction({
-    id: "rtl.view-portmap",
-    label: "查看端口连接",
-    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyK],
-    precondition: "editorTextFocus",
-    contextMenuGroupId: "navigation",
-    run: () => {
-      setMappingVisible(true);
-      void loadPortMap();
-    },
-  });
-
   // 自动换行切换：Monaco standalone 自带 editor.action.toggleWordWrap（含 Alt+Z），
   // 存在时只补右键菜单入口，不再绑快捷键避免双触发。
   {
@@ -607,7 +468,7 @@ const workspace = createEditorWorkspace([editor, editor2], {
     statusbar.setBreadcrumb(breadcrumbAt(currentOutline, line));
     outline.highlightLine(line);
   },
-  onSplit: () => { setMappingVisible(false); setSignalFlowVisible(false); },
+  onSplit: () => setSignalFlowVisible(false),
   hint: message => statusbar.hint(message),
 });
 const { groups, activeGroup, focusGroup, navigateTo, navBack, navForward,
@@ -742,11 +603,6 @@ async function openFolder(folder: string): Promise<void> {
   watcher.stop();
   state.folder = folder;
   updateProjectChrome();
-  setMappingVisible(false);
-  document.getElementById("mapping")!.replaceChildren();
-  mappingData = undefined;
-  mappingStale = false;
-  mappingTarget = undefined;
   setSignalFlowVisible(false);
   signalController.reset();
   treeContextPath = undefined;
@@ -757,7 +613,7 @@ async function openFolder(folder: string): Promise<void> {
   state.contents.clear();
   state.ips = [];
   state.constraints = [];
-  portMapLoader.reset();
+  moduleMetadataLoader.reset();
   workspace.resetHistory();
   searchPanel.clear();
 

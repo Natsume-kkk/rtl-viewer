@@ -159,13 +159,13 @@ body.resizing {
 
 #app {
   display: grid;
-  grid-template-columns: auto 4px minmax(0, 1fr) auto;
+  grid-template-columns: auto 4px minmax(0, 1fr);
   grid-template-rows: 43px var(--toolbar-h) minmax(0, 1fr) var(--statusbar-h);
   grid-template-areas:
-    "title title title title"
-    "toolbar toolbar toolbar toolbar"
-    "sidebar splitter main mapping"
-    "status status status status";
+    "title title title"
+    "toolbar toolbar toolbar"
+    "sidebar splitter main"
+    "status status status";
   height: 100vh;
 }
 
@@ -628,19 +628,6 @@ body.resizing {
   min-height: 0;
 }
 
-/* ---------- 端口映射面板 ---------- */
-
-#mapping {
-  grid-area: mapping;
-  width: 272px;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: auto;
-  background: var(--surface-app);
-  border-left: 1px solid var(--border-strong);
-}
-
 #ref-panel {
   position: absolute;
   top: 40px;
@@ -676,20 +663,6 @@ body.resizing {
 
 .ref-loc {
   color: var(--fg-faint);
-}
-
-.pm-link {
-  color: var(--sem-module);
-  cursor: pointer;
-}
-
-.pm-link:hover {
-  text-decoration: underline;
-}
-
-.pm-unconnected {
-  color: var(--fg-faint);
-  font-style: italic;
 }
 
 .status-hint {
@@ -1331,7 +1304,6 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .status-left { min-width: 0; }
 .status-breadcrumb { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-right { flex: none; }
-#mapping .panel-head { border-bottom: 1px solid var(--border-subtle); padding: 0 13px 0 17px; }
 .result-stale { flex: none; margin: 4px 16px; color: var(--sem-hint); text-align: left; }
 #signal-flow { height: 350px; max-height: 60%; min-height: 150px; flex: 0 1 auto; display: flex; flex-direction: column; background: var(--surface-app); border-top: 1px solid var(--border-strong); }
 #signal-flow[hidden] { display: none; }
@@ -1346,46 +1318,16 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .flow-reason { font-size: 10px; color: var(--fg-secondary); margin: 0 0 6px; line-height: 1.6; }
 .flow-selected { display: block; color: var(--fg); font: 15px var(--font-mono); margin-bottom: 6px; overflow-wrap: anywhere; }
 .flow-note { color: var(--fg-secondary); font-size: 10px; margin-left: 6px; overflow-wrap: anywhere; }
-.mapping-identity { padding: 21px 20px 20px; position: relative; flex: none; }
-.eyebrow { font-size: 10px; color: var(--fg-secondary); }
-.module-badge { float: right; padding: 9px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-raised); color: var(--sem-module); margin-left: 8px; }
-.mapping-identity h2 { font: 17px var(--font-mono); margin: 10px 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mapping-identity p { font: 11px var(--font-mono); color: var(--fg-secondary); overflow-wrap: anywhere; }
 .text-button { background: transparent; border: 0; padding: 0; color: var(--accent); cursor: pointer; font-size: 11px; margin-top: 16px; }
 .text-button:hover { text-decoration: underline; }
-.mapping-summary { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-subtle); margin: 0 18px; height: 37px; font-size: 11px; flex: none; }
-.mapping-summary .micro { font-size: 9px; }
-.port-row { display: flex; margin: 0 12px; padding: 10px 6px; border-bottom: 1px solid var(--border-subtle); gap: 9px; align-items: flex-start; font-family: var(--font-mono); }
-.port-direction { font-size: 9px; color: var(--sem-port-dir); border: 1px solid var(--border-strong); border-radius: 3px; width: 28px; flex: none; text-align: center; line-height: 17px; }
-.port-direction[data-direction="OUT"] { color: var(--sem-module); }
-.port-content { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
-.port-name, .pm-link { display: block; max-width: 100%; font: inherit; color: var(--fg-secondary); background: transparent; border: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-button.port-name { cursor: pointer; }
-button.port-name:hover { color: var(--accent); }
-.pm-link { color: var(--fg); }
-.port-connection { display: flex; gap: 5px; min-width: 0; align-items: center; }
-.port-connection > .icon { color: var(--fg-secondary); flex: none; }
-.port-connection svg { width: 11px; height: 11px; }
-.port-expression { overflow-wrap: anywhere; min-width: 0; }
-.port-width { font-size: 9px; color: var(--sem-port-width); max-width: 60px; overflow-wrap: anywhere; align-self: center; }
-.mapping-note { margin: 14px 19px; color: var(--fg-secondary); font-size: 10px; line-height: 1.7; }
-.mapping-origin { margin: auto 18px 18px; padding-top: 15px; border-top: 1px solid var(--border-strong); display: flex; flex-direction: column; flex: none; }
-.mapping-origin .text-button { text-align: left; font: 10px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 8px; }
 @media (max-width: 1320px) {
   #sidebar { width: 252px; }
-  #mapping { width: 246px; }
-  .brand > span, .shortcut, .module-badge { display: none; }
+  .brand > span, .shortcut { display: none; }
   #toolbar { padding: 0 12px; gap: 5px; }
   #project-switch { padding-right: 12px; }
   .tree-row { font-size: 11px; }
   .tab { padding: 0 10px; font-size: 10px; }
-  .mapping-identity { padding-left: 17px; }
 }
-@media (max-height: 820px) {
-  .mapping-identity { padding-top: 15px; padding-bottom: 15px; }
-  .port-row { padding-top: 7px; padding-bottom: 7px; }
-}
-
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -1420,7 +1362,7 @@ button.port-name:hover { color: var(--accent); }
 #signal-flow .flow-tools { display: contents; }
 #signal-flow .flow-following { padding: 4px 16px; font-size: 11px; }
 #signal-flow .flow-tools select { flex: none; width: auto; margin: 4px 16px; padding: 3px 6px; font: 11px var(--font-mono); }
-#signal-flow .mapping-note { padding: 4px 16px; margin: 0; flex: none; font-size: 11px; }
+#signal-flow .flow-status { padding: 4px 16px; margin: 0; flex: none; color: var(--fg-secondary); font-size: 11px; line-height: 1.7; }
 #signal-flow .flow-body { flex: 1; background: var(--surface-editor); }
 #signal-flow .flow-body.logic-body { display: block; padding: 0; position: relative; }
 .logic-canvas { position: relative; min-width: 100%; min-height: 100%; }

@@ -17,7 +17,7 @@
   <rect width="1280" height="384" fill="url(#dots)"/>
   <rect width="1280" height="384" fill="url(#glow)"/>
 
-  <!-- 品牌标志（例化树，源自 outputs/rtl-viewer-meridian/assets/brand/brand.svg） -->
+  <!-- 品牌标志 -->
   <g transform="translate(72 68) scale(0.375)">
     <rect width="256" height="256" rx="56" fill="#1f6fc4"/>
     <rect x="88" y="36" width="80" height="66" rx="14" fill="#ffffff"/>
@@ -28,63 +28,63 @@
 
   <!-- 名称与标语 -->
   <text x="192" y="138" font-family="Cascadia Code, JetBrains Mono, Consolas, monospace" font-size="54" font-weight="600" letter-spacing="-1.5" fill="#eceef1">rtl-viewer</text>
-  <text x="193" y="192" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" fill="#a9b0b9">See the structure. Trace the signal.</text>
-  <text x="193" y="230" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15.5" fill="#788089">FPGA / ASIC 源码工程查看器 · 例化层级 × 信号链分析 · 便携秒开</text>
-  <text x="193" y="290" font-family="Consolas, monospace" font-size="14">
+  <text x="193" y="192" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="26" fill="#a9b0b9">See the structure. Trace the signal.</text>
+  <text x="193" y="240" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" fill="#788089">FPGA / ASIC 源码工程查看器 · 例化层级 × 信号链分析</text>
+  <text x="193" y="290" font-family="Consolas, monospace" font-size="16">
     <tspan fill="#569cd6">Verilog</tspan><tspan fill="#4a5158"> · </tspan><tspan fill="#4ec9b0">SystemVerilog</tspan><tspan fill="#4a5158"> · </tspan><tspan fill="#c586c0">VHDL</tspan><tspan fill="#4a5158"> · </tspan><tspan fill="#d7ba7d">Vivado IP</tspan>
   </text>
 
   <!-- 右侧：例化层级图 + 信号链（产品两大核心的图形化） -->
   <!-- 层级连线 -->
-  <path d="M930 100 V136 M755 136 H1125 M755 136 V170 M930 136 V170 M1125 136 V170" stroke="#3d454e" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M930 100 V136 M745 136 H1145 M745 136 V170 M945 136 V170 M1145 136 V170" stroke="#3d454e" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
   <!-- 信号追踪路径（当前信号来自 cpu_core） -->
-  <path d="M755 218 V252 H943 V272" stroke="#4e9de6" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="943" cy="270" r="3.5" fill="#4e9de6"/>
+  <path d="M745 218 V252 H934 V272" stroke="#4e9de6" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="934" cy="270" r="3.5" fill="#4e9de6"/>
 
   <!-- 顶层模块 -->
   <rect x="855" y="52" width="150" height="48" rx="5" fill="#252a30" stroke="#3d454e"/>
-  <text x="930" y="76" text-anchor="middle" font-family="Consolas, monospace" font-size="13" font-weight="600" fill="#e8eaed">top</text>
-  <text x="930" y="92" text-anchor="middle" font-family="Consolas, monospace" font-size="9.5" fill="#788089">(top.v)</text>
+  <text x="930" y="76" text-anchor="middle" font-family="Consolas, monospace" font-size="14" font-weight="600" fill="#e8eaed">top</text>
+  <text x="930" y="92" text-anchor="middle" font-family="Consolas, monospace" font-size="14" fill="#788089">(top.v)</text>
 
   <!-- 子模块：普通模块 -->
-  <rect x="670" y="170" width="170" height="48" rx="5" fill="#252a30" stroke="#3d454e"/>
-  <rect x="684" y="188" width="12" height="12" rx="3" fill="#4ec9b0"/>
-  <text x="704" y="198.5" font-family="Consolas, monospace" font-size="11.5" fill="#c9ced4">u_core : cpu_core</text>
+  <rect x="650" y="170" width="190" height="48" rx="5" fill="#252a30" stroke="#3d454e"/>
+  <rect x="664" y="188" width="12" height="12" rx="3" fill="#4ec9b0"/>
+  <text x="684" y="198.5" font-family="Consolas, monospace" font-size="14" fill="#c9ced4">u_core : cpu_core</text>
 
   <!-- 子模块：IP 核 -->
-  <rect x="855" y="170" width="150" height="48" rx="5" fill="#252a30" stroke="#3d454e"/>
-  <path d="M871 187 L878 194 L871 201 L864 194 Z" fill="#c586c0"/>
-  <text x="888" y="198.5" font-family="Consolas, monospace" font-size="11.5" fill="#c9ced4">u_clk : clk_gen</text>
+  <rect x="860" y="170" width="170" height="48" rx="5" fill="#252a30" stroke="#3d454e"/>
+  <path d="M876 187 L883 194 L876 201 L869 194 Z" fill="#c586c0"/>
+  <text x="893" y="198.5" font-family="Consolas, monospace" font-size="14" fill="#c9ced4">u_clk : clk_gen</text>
 
   <!-- 子模块：未解析 -->
-  <rect x="1050" y="170" width="150" height="48" rx="5" fill="none" stroke="#7c838b" stroke-dasharray="4 3"/>
-  <text x="1064" y="199" font-family="Consolas, monospace" font-size="12" font-style="italic" fill="#7c838b">?</text>
-  <text x="1082" y="198.5" font-family="Consolas, monospace" font-size="11.5" font-style="italic" fill="#8b929b">u_dbg_bridge</text>
+  <rect x="1070" y="170" width="150" height="48" rx="5" fill="none" stroke="#7c838b" stroke-dasharray="4 3"/>
+  <text x="1084" y="199" font-family="Consolas, monospace" font-size="14" font-style="italic" fill="#7c838b">?</text>
+  <text x="1102" y="198.5" font-family="Consolas, monospace" font-size="14" font-style="italic" fill="#8b929b">u_dbg_bridge</text>
 
   <!-- 信号链卡片：来源 -->
-  <rect x="648" y="272" width="160" height="68" rx="5" fill="#1d2126" stroke="#2d333a"/>
-  <text x="660" y="294" font-family="Consolas, monospace" font-size="11.5" fill="#969da5">uart_rx · dout</text>
-  <text x="660" y="310" font-family="Consolas, monospace" font-size="8.5" fill="#646b73">uart_rx (uart_rx.v)</text>
-  <text x="660" y="330" font-family="Consolas, monospace" font-size="10.5"><tspan fill="#569cd6">assign </tspan><tspan fill="#c9ced4">dout = sr[</tspan><tspan fill="#b5cea8">0</tspan><tspan fill="#c9ced4">];</tspan></text>
+  <rect x="618" y="272" width="180" height="68" rx="5" fill="#1d2126" stroke="#2d333a"/>
+  <text x="630" y="294" font-family="Consolas, monospace" font-size="14" fill="#969da5">uart_rx · dout</text>
+  <text x="630" y="310" font-family="Consolas, monospace" font-size="14" fill="#646b73">uart_rx (uart_rx.v)</text>
+  <text x="630" y="330" font-family="Consolas, monospace" font-size="14"><tspan fill="#569cd6">assign </tspan><tspan fill="#c9ced4">dout = sr[</tspan><tspan fill="#b5cea8">0</tspan><tspan fill="#c9ced4">];</tspan></text>
 
   <!-- 信号链箭头 1 -->
-  <path d="M810 306 H832" stroke="#4e9de6" stroke-width="2.5" fill="none" stroke-linecap="round"/>
-  <path d="M826 300.5 L836 306 L826 311.5 Z" fill="#4e9de6"/>
+  <path d="M800 306 H818" stroke="#4e9de6" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M812 300.5 L822 306 L812 311.5 Z" fill="#4e9de6"/>
 
   <!-- 信号链卡片：当前信号（强调） -->
-  <rect x="838" y="272" width="210" height="68" rx="5" fill="#232930" stroke="#4e9de6" stroke-width="1.5"/>
-  <circle cx="853" cy="290" r="3" fill="#4e9de6"/>
-  <text x="864" y="294" font-family="Consolas, monospace" font-size="12.5" font-weight="600" fill="#ffffff">rx_data</text>
-  <text x="864" y="310" font-family="Consolas, monospace" font-size="8.5" fill="#646b73">cpu_core (cpu_core.v)</text>
-  <text x="864" y="330" font-family="Consolas, monospace" font-size="10.5" fill="#c9ced4">rx_data &lt;= dout &amp; mask;</text>
+  <rect x="824" y="272" width="220" height="68" rx="5" fill="#232930" stroke="#4e9de6" stroke-width="1.5"/>
+  <circle cx="839" cy="290" r="3" fill="#4e9de6"/>
+  <text x="850" y="294" font-family="Consolas, monospace" font-size="14" font-weight="600" fill="#ffffff">rx_data</text>
+  <text x="850" y="310" font-family="Consolas, monospace" font-size="14" fill="#646b73">cpu_core (cpu_core.v)</text>
+  <text x="850" y="330" font-family="Consolas, monospace" font-size="14" fill="#c9ced4">rx_data &lt;= dout &amp; mask;</text>
 
   <!-- 信号链箭头 2 -->
-  <path d="M1050 306 H1072" stroke="#4e9de6" stroke-width="2.5" fill="none" stroke-linecap="round"/>
-  <path d="M1066 300.5 L1076 306 L1066 311.5 Z" fill="#4e9de6"/>
+  <path d="M1046 306 H1064" stroke="#4e9de6" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  <path d="M1058 300.5 L1068 306 L1058 311.5 Z" fill="#4e9de6"/>
 
   <!-- 信号链卡片：去向 -->
-  <rect x="1078" y="272" width="134" height="68" rx="5" fill="#1d2126" stroke="#2d333a"/>
-  <text x="1090" y="294" font-family="Consolas, monospace" font-size="11.5" fill="#969da5">u_tx · din</text>
-  <text x="1090" y="310" font-family="Consolas, monospace" font-size="8.5" fill="#646b73">uart_tx (uart_tx.v)</text>
-  <text x="1090" y="330" font-family="Consolas, monospace" font-size="10.5" fill="#c9ced4">txd &lt;= din;</text>
+  <rect x="1070" y="272" width="170" height="68" rx="5" fill="#1d2126" stroke="#2d333a"/>
+  <text x="1082" y="294" font-family="Consolas, monospace" font-size="14" fill="#969da5">u_tx · din</text>
+  <text x="1082" y="310" font-family="Consolas, monospace" font-size="14" fill="#646b73">uart_tx (uart_tx.v)</text>
+  <text x="1082" y="330" font-family="Consolas, monospace" font-size="14" fill="#c9ced4">txd &lt;= din;</text>
 </svg>

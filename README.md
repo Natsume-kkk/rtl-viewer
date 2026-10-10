@@ -17,9 +17,9 @@
 
 ## 界面预览
 
-![RTL Viewer 中的混合 HDL 工程层级、VHDL 源码与输出信号链](docs/assets/workspace.jpg)
+![RTL Viewer 中的混合 HDL 工程层级、VHDL 源码与输出信号链](docs/assets/workspace.png)
 
-截图使用仓库内的 [独立样例](tests/samples/basic)：Verilog 顶层例化 VHDL 寄存器与 IP 黑盒，信号链展示输出端口的驱动赋值和顶层连接。
+截图使用仓库内的 [独立样例](tests/samples/basic)：Verilog 顶层例化 VHDL 寄存器与 IP 黑盒，信号链展示输出端口的驱动赋值和顶层连接。为便于阅读，截图单独放大了界面与代码字号。
 
 ## 下载与快速开始
 

@@ -132,6 +132,56 @@ async function setup() {
 }
 
 describe("TabManager", () => {
+  it("跨组同名文件显示最短区分目录，同一路径的两个视图不制造重名", async () => {
+    const { make } = await setup(); const a = make(), b = make();
+    a.openContent("D:/project/rx/rtl/top.v", "rx", "utf8", 1);
+    const rx = a.activeTab!;
+    b.openContent(rx.path, "rx", "utf8", 1);
+    expect(rx.element.querySelector(".tab-name")?.textContent).toBe("top.v");
+    b.openContent("D:/project/tx/rtl/top.v", "tx", "utf8", 1);
+    expect(rx.element.querySelector(".tab-name")?.textContent).toBe("top.v (rx/rtl)");
+    expect(b.activeTab!.element.querySelector(".tab-name")?.textContent).toBe("top.v (tx/rtl)");
+    expect(rx.title).toBe("top.v");
+    expect(rx.model.getValue()).toBe("rx");
+  });
+
+  it("关闭冲突标签恢复简短名称，同时保留脏标记及关闭按钮焦点", async () => {
+    const { make } = await setup(); const tm = make();
+    tm.openContent("D:/p/rx/top.v", "rx", "utf8", 1);
+    const rx = tm.activeTab!; rx.model.setValue("unsaved");
+    tm.openContent("D:/p/tx/top.v", "tx", "utf8", 1);
+    const tx = tm.activeTab!;
+    document.body.append(rx.element);
+    const close = rx.element.querySelector<HTMLButtonElement>(".tab-close")!; close.focus();
+    await tm.close(tx);
+    expect(rx.element.querySelector(".tab-name")?.textContent).toBe("top.v");
+    expect(rx.element.querySelector(".dirty")?.textContent).toBe("*");
+    expect(document.activeElement).toBe(close);
+    expect(rx.dirty).toBe(true); rx.element.remove();
+  });
+
+  it("同名目录跨盘符区分，路径按 Windows 大小写规则去重", async () => {
+    const { make } = await setup(); const a = make(), b = make();
+    a.openContent("D:/rtl/top.v", "d", "utf8", 1); const first = a.activeTab!;
+    b.openContent("d:/RTL/top.v", "d", "utf8", 1);
+    expect(first.element.querySelector(".tab-name")?.textContent).toBe("top.v");
+    b.openContent("E:/rtl/top.v", "e", "utf8", 1);
+    expect(first.element.querySelector(".tab-name")?.textContent).toBe("top.v (D:/rtl)");
+    expect(b.activeTab!.element.querySelector(".tab-name")?.textContent).toBe("top.v (E:/rtl)");
+  });
+
+  it("另存为改名后更新两侧名称，外部修改提示仍包含完整路径", async () => {
+    const { make, mocks } = await setup(); const a = make(), b = make();
+    a.openContent("D:/p/rx/top.v", "rx", "utf8", 1); const first = a.activeTab!;
+    b.openContent("D:/p/tx/top.v", "tx", "utf8", 1);
+    a.markExternalChanged(first.path, true);
+    expect(first.element.querySelector<HTMLElement>(".tab-label")?.title).toBe(`${first.path}\n磁盘文件已被外部修改`);
+    mocks.saveFileDialog.mockResolvedValue("D:/p/tx/other.v"); mocks.writeFile.mockResolvedValue(2);
+    expect(await b.saveAs()).toBe(true);
+    expect(first.element.querySelector(".tab-name")?.textContent).toBe("top.v");
+    expect(b.activeTab!.element.querySelector(".tab-name")?.textContent).toBe("other.v");
+  });
+
   it("旧读盘导航晚完成时不抢回后来打开的缓存文件", async () => {
     const { make, mocks } = await setup(); const tm = make();
     let resolve!: (file: { content: string; encoding: string; mtime: number }) => void;

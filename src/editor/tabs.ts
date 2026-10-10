@@ -319,6 +319,7 @@ export class TabManager {
       // 放在 editor 切走之后：refs 归零会 dispose 旧 model（撤销栈随之丢弃，可接受）
       releaseModel(oldKey);
       this.renderTab(tab);
+      TabManager.refreshNames();
       this.events.onActiveChange();
     }
     return ok;
@@ -379,6 +380,7 @@ export class TabManager {
         this.events.onActiveChange();
       }
     }
+    TabManager.refreshNames();
   }
 
   async closeAll(): Promise<boolean> {
@@ -534,6 +536,7 @@ export class TabManager {
       this.showTabMenu(tab, e.clientX, e.clientY);
     });
     this.barEl.appendChild(tab.element);
+    TabManager.refreshNames();
     this.activate(tab);
     if (line !== undefined) this.reveal(line);
   }
@@ -558,19 +561,52 @@ export class TabManager {
       setIcon(ext, "warning");
       label.append(ext, document.createTextNode(" "));
     }
-    label.appendChild(document.createTextNode(tab.title));
-    label.title = tab.externalChanged ? "磁盘文件已被外部修改" : tab.path || "未保存";
+    const name = document.createElement("span");
+    name.className = "tab-name";
+    name.textContent = TabManager.displayTitle(tab);
+    label.appendChild(name);
+    label.title = `${tab.path || "未保存"}${tab.externalChanged ? "\n磁盘文件已被外部修改" : ""}`;
     const close = document.createElement("button");
     close.className = "tab-close";
     setIcon(close, "close");
     close.title = "关闭";
-    close.setAttribute("aria-label", `关闭 ${tab.title}`);
+    close.setAttribute("aria-label", `关闭 ${name.textContent}`);
     close.addEventListener("click", (e) => {
       e.stopPropagation();
       void this.close(tab);
     });
     tab.element.append(fileIcon, label, close);
     if (this.active === tab) tab.element.classList.add("active");
+  }
+
+  /** 两侧同一路径只计一次；仅重名文件补上能区分彼此的最短目录后缀。 */
+  private static displayTitle(tab: Tab): string {
+    if (!tab.path) return tab.title;
+    const path = tab.path.replace(/\\/g, "/");
+    const others = [...TabManager.managers].flatMap(manager => manager.tabs)
+      .filter(other => other.path && other.title.toLowerCase() === tab.title.toLowerCase())
+      .map(other => other.path.replace(/\\/g, "/"))
+      .filter(other => other.toLowerCase() !== path.toLowerCase());
+    if (!others.length) return tab.title;
+    const directory = path.split("/").slice(0, -1);
+    const otherDirectories = others.map(other => other.split("/").slice(0, -1));
+    for (let count = 1; count <= directory.length; count++) {
+      const suffix = directory.slice(-count).join("/");
+      if (otherDirectories.every(other => other.slice(-count).join("/").toLowerCase() !== suffix.toLowerCase())) {
+        return `${tab.title} (${suffix})`;
+      }
+    }
+    return `${tab.title} (${directory.join("/")})`;
+  }
+
+  /** 标签成员或路径改变时只更新文字，保留按钮、焦点和脏标记。 */
+  private static refreshNames(): void {
+    for (const manager of TabManager.managers) for (const tab of manager.tabs) {
+      const title = TabManager.displayTitle(tab);
+      const name = tab.element.querySelector(".tab-name");
+      if (name) name.textContent = title;
+      tab.element.querySelector(".tab-close")?.setAttribute("aria-label", `关闭 ${title}`);
+    }
   }
 
   private activate(tab: Tab): void {

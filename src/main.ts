@@ -35,6 +35,7 @@ import { createSignalController } from "./app/signal-controller";
 import { createModuleMetadataLoader } from "./app/module-metadata";
 import { createProjectScanner } from "./app/project-scanner";
 import { createExternalWatcher, type CachedFile } from "./app/watcher";
+import { attachSidebarWidth } from "./ui/sidebar-width";
 
 /** 全局工程状态 */
 const state = {
@@ -51,6 +52,7 @@ const state = {
 const sidebarEl = document.getElementById("sidebar")!;
 const editorContainer = document.getElementById("editor-container")!;
 const statusbarEl = document.getElementById("statusbar")!;
+attachSidebarWidth(sidebarEl, document.getElementById("splitter")!);
 
 // 全局工具栏与侧栏容器只建一次，各组件渲染进对应容器。
 function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlineRoot: HTMLElement } {
@@ -694,31 +696,6 @@ async function openTreeNode(node: TreeNode): Promise<void> {
     await navigateTo(node.instFile, node.instLine);
   }
 }
-
-// ---------- 分栏拖拽 ----------
-
-function initSplitter(): void {
-  const splitter = document.getElementById("splitter")!;
-  splitter.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = sidebarEl.getBoundingClientRect().width;
-    document.body.classList.add("resizing");
-    const onMove = (ev: MouseEvent) => {
-      const width = Math.min(Math.max(startWidth + ev.clientX - startX, 160), 600);
-      sidebarEl.style.width = `${width}px`;
-    };
-    const onUp = () => {
-      document.body.classList.remove("resizing");
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  });
-}
-
-initSplitter();
 
 // ---------- 全局快捷键与编辑联动 ----------
 

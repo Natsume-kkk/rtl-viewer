@@ -103,3 +103,69 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 ## 独立分析样例
 
 [信号运算过程样例](../examples/computation/README.md) 复用源码分析层，生成可离线打开的交互页面；这是独立阅读实验，使用方法与分析范围见样例说明。
+
+## 维护要点
+
+### 解析与层级
+
+解析入口在 [src/parser/](../src/parser/)，采用文本级扫描。`scanStructure` 提取定义名与例化边，`parseFile` 按需补端口，`parseFileDetail` 按需补端口连接；扩展语法前先补失败测试，不在打开工程时全量解析。
+
+以下限制属于现有解析范围，扩展前需评估索引、定位与信号分析的共同影响：
+
+| 写法或场景 | 现有边界 |
+|---|---|
+| Verilog 转义标识符（如 `\foo`） | 不支持 |
+| 宏调用形式的例化 | 不支持 |
+| 非 ANSI 端口的体内声明 | 不提取方向和宽度 |
+| SystemVerilog 嵌套 module | 不支持 |
+| Verilog 命名 begin 块中的局部变量 | 不区分局部作用域，可能与同名模块信号混同 |
+| Verilog 无端口例化 `foo u;` | 不支持 |
+| VHDL 端口省略 mode | 不按语言默认的 `in` 补全，该端口被丢弃 |
+| VHDL 裸名无 map 例化 `u1: foo;` | 为避免误匹配 signal／constant 声明，不支持；与 entity／component 形式区分 |
+| VHDL configuration 指定例化 | 不支持 |
+| VHDL `clk'event and clk='1'` | 不识别为时钟，按组合逻辑降级处理 |
+| 模块索引和端口匹配 | 按小写归并；Verilog 中仅大小写不同的同名定义会被合并 |
+| 声明定位与大纲 | 要求声明单行闭合，跨行续写的名称可能无法定位 |
+
+[层级模型](../src/model/hierarchy.ts) 对无定义的例化先匹配已识别的 UNISIM 家族原语，否则保留 unresolved。IP 只提供黑盒和端口信息，不展开生成目录；IP 生成目录内的约束同样排除。ISE 的 `ipcore_dir` 按用户源码扫描，以保留 CoreGen 包装的例化目标。
+
+自动顶层选择的处理顺序：
+
+1. 唯一候选直接采用；多候选时按 `tb_`／`_tb` 等命名和 `sim`／`tb`／`test` 等目录段识别仿真候选。
+2. 目录判断先剥离扫描文件的公共路径前缀，避免工程根位于 tests 等父目录下时被误判。
+3. 向仿真候选内部解包，取可达子图最大的 DUT，再比较各有效顶层的可达规模；实际顶层不一定在原始候选列表中。用户仍可手动切换。
+
+层级节点的 children getter 首次访问才物化直接子节点。修改消费方遍历时要保留这一边界，避免菱形复用结构沿实例路径组合爆炸。
+
+### 编码边界
+
+编码实现与回归位于 [Rust 后端](../src-tauri/src/main.rs)。BOM 检测、严格 UTF-8 与 GBK 兜底发生在解析前，写入默认保留原编码；UTF-8 BOM 加 GBK 正文的异常文件按 GBK 写回时不保留 BOM。UTF-16 和传统编码也严格校验，损坏编码或 UTF-32 拒绝读取，单文件读取上限为 64 MiB。解析层不负责重新解释字节或改变编码。
+
+### Monaco 与主题
+
+[Monaco 入口](../src/editor/monaco.ts) 使用按需导入，保留编辑器贡献，排除无关语言服务与 LSP。升级版本时核对以下内容：
+
+- 导入清单与目标版本 `editor.main.js` 的编辑器贡献部分对应，不改为 `import "monaco-editor"` 整包入口。
+- 列编辑依赖的内部 `CursorColumns` 算法与 [局部类型声明](../src/editor/monaco-internals.d.ts) 一致。
+- worker、codicon CSS 的实际路径和导出映射仍有效；新增语言高亮只添加对应 `languages/definitions/<lang>/register`。
+- 运行编辑器与列编辑相关回归，并检查构建产物没有新增无关语言包和 worker。
+
+[src/style.css](../src/style.css) 是界面深浅主题令牌的唯一来源，通过 `<html data-theme>` 切换；`public/theme-init.js` 在首帧前初始化主题。[src/ui/theme.ts](../src/ui/theme.ts) 管理偏好，Monaco 经 `setEditorTheme` 联动 `meridian-dark`／`meridian-light`，编辑器语法配色与界面令牌分别维护。
+
+### 品牌图标与桌面截图
+
+界面图标使用 [src/ui/icons.ts](../src/ui/icons.ts) 的 `setIcon`，以 `currentColor` 跟随主题；搜索开关 Aa、词、.* 保留文字。
+
+品牌图标的仓库源文件是 [brand.svg](../src-tauri/icons/brand.svg)。修改后的处理顺序：
+
+1. 将 SVG 以透明背景重新渲染为 16、24、32、48、64、128、256 px 七档 PNG，更新 `src-tauri/icons/png/<size>.png`。
+2. 执行 `node scripts/make-icon.mjs`，由这些 PNG 重新封装 `src-tauri/icons/icon.ico`。
+3. 更新 `src-tauri/build.rs` 的修改时间，强制构建脚本重新执行，避免 exe 沿用旧图标；然后通过正式入口重建。
+
+```powershell
+node scripts/make-icon.mjs
+(Get-Item src-tauri/build.rs).LastWriteTime = Get-Date
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Release.ps1
+```
+
+桌面冒烟可使用 [Capture-Window.ps1](../scripts/Capture-Window.ps1)，传入 `-ExePath` 和 `.tmp/<task-slug>/` 下的 `-OutPng` 路径；脚本截取窗口后会结束自己启动的进程。截图用于检查窗口渲染，页面是否来自内嵌协议 `http://tauri.localhost` 和具体交互仍需分别验证。

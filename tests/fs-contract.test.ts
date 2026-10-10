@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { decode, decodeAs, walk, SKIP_DIRS, GENERATED_DIR_SUFFIXES } from "./helpers/fs-scan";
 
@@ -9,12 +9,18 @@ describe("开发夹具与 Rust 文件契约", () => {
     const names = (key: string) => [...new RegExp(`const ${key}:.*?= &\\[([^\\]]+)\\]`).exec(rust)![1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
     expect([...SKIP_DIRS]).toEqual(names("SKIP_DIRS"));
     expect(GENERATED_DIR_SUFFIXES).toEqual(names("GENERATED_DIR_SUFFIXES"));
-    const root = join(process.cwd(), ".tmp/resume-cleanup/fs-contract");
-    for (const folder of ["rtl", "sim", "ipcore_dir", ...SKIP_DIRS, ...GENERATED_DIR_SUFFIXES.map(s => `p${s}`), ".hidden"]) {
-      mkdirSync(join(root, folder), { recursive: true }); writeFileSync(join(root, folder, "top.v"), "");
+    const tempDir = join(process.cwd(), ".tmp");
+    mkdirSync(tempDir, { recursive: true });
+    const root = mkdtempSync(join(tempDir, "fs-contract-"));
+    try {
+      for (const folder of ["rtl", "sim", "ipcore_dir", ...SKIP_DIRS, ...GENERATED_DIR_SUFFIXES.map(s => `p${s}`), ".hidden"]) {
+        mkdirSync(join(root, folder), { recursive: true }); writeFileSync(join(root, folder, "top.v"), "");
+      }
+      const out = { hdl: [] as string[], xci: [] as string[], con: [] as string[] }; walk(root, out);
+      expect(out.hdl.map(p => p.slice(p.lastIndexOf("/", p.length - 7) + 1)).sort()).toEqual(["ipcore_dir/top.v", "rtl/top.v", "sim/top.v"].sort());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
-    const out = { hdl: [] as string[], xci: [] as string[], con: [] as string[] }; walk(root, out);
-    expect(out.hdl.map(p => p.slice(p.lastIndexOf("/", p.length - 7) + 1)).sort()).toEqual(["ipcore_dir/top.v", "rtl/top.v", "sim/top.v"].sort());
   });
   it("有效 UTF-16 保持内容，损坏 UTF-16/GBK 与 UTF-32 明确拒绝", () => {
     expect(decode(Buffer.from([0xff, 0xfe, 0x61, 0]))).toEqual({ content: "a", encoding: "utf16le" });

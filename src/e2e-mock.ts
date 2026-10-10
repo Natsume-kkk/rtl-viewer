@@ -1,9 +1,19 @@
 /**
  * E2E 模式（URL 带 ?e2e）：在纯浏览器里 mock Tauri IPC，文件操作走 vite dev
  * 中间件 /__e2e_scan 与 /__e2e_fs，对话框固定返回 fixture 工程路径。
- * 仅用于自动化验收，生产构建不受影响（tauri 应用内不存在 ?e2e）。
+ * 仅在 DEV 条件下加载，生产构建不包含此 mock。
  */
-const FIXTURE = "D:/workspace/projects/rtl-viewer/tests/fixtures/cp7/project";
+const FIXTURE: string = await (async () => {
+  try {
+    const response = await fetch("/__e2e_config");
+    if (!response.ok) throw new Error("开发文件服务不可用");
+    const config = await response.json();
+    if (typeof config?.root !== "string" || !config.root) throw new Error("夹具根目录无效");
+    return config.root;
+  } catch {
+    throw new Error("浏览器验收需要设置 RTL_VIEWER_E2E_ROOT 并重新启动开发服务。");
+  }
+})();
 
 interface TauriInternals {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;

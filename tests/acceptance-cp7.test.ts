@@ -5,13 +5,14 @@ import { parseFile, parseXci, scanStructure } from "../src/parser";
 import { ModuleIndex } from "../src/model";
 import { buildHierarchy, type TreeNode } from "../src/model/hierarchy";
 import { decode, walk } from "./helpers/fs-scan";
+import { acceptanceRoot } from "./helpers/acceptance-root";
 
 /**
- * CP7 真实工程验收：对 tests/fixtures/cp7/project（cameralink 工程副本，
+ * CP7 真实工程验收：对 RTL_VIEWER_ACCEPTANCE_CP7 指定的 cameralink 工程副本（
  * 含 58 个 GBK 文件、2 个 .xci IP、IP 生成的 VHDL）跑完整解析管线。
- * 夹具缺失时跳过（真实工程副本不入 Git，由 CP7 验收流程生成）。
+ * 未配置时跳过，配置无效时失败；真实工程副本不入 Git。
  */
-const PROJECT = join(__dirname, "fixtures", "cp7", "project");
+const PROJECT = acceptanceRoot("RTL_VIEWER_ACCEPTANCE_CP7") ?? "";
 
 function findNode(node: TreeNode, pred: (n: TreeNode) => boolean): TreeNode | undefined {
   if (pred(node)) return node;
@@ -22,7 +23,7 @@ function findNode(node: TreeNode, pred: (n: TreeNode) => boolean): TreeNode | un
   return undefined;
 }
 
-describe.skipIf(!existsSync(PROJECT))("CP7 真实工程验收（cameralink 副本）", () => {
+describe.skipIf(!PROJECT)("CP7 真实工程验收（cameralink 副本）", () => {
   function build() {
     const files = { hdl: [] as string[], xci: [] as string[], con: [] as string[] };
     walk(PROJECT, files);

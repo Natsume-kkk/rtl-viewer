@@ -79,45 +79,93 @@ VHDL 过程内的局部变量按过程作用域区分，同名局部变量不会
 
 ## 构建与运行
 
-```bash
-npm install
-npm run build         # 前端构建（tsc 类型检查 + vite）
-npm test              # 前端单元与集成测试
-npm run tauri dev     # 开发运行（另需 Rust 环境，见下）
-```
+当前交付目标为 Windows x64。需要 Node 24、PowerShell 7、Rust MSVC 工具链（版本由 `rust-toolchain.toml` 固定）、Visual Studio／Build Tools 的“使用 C++ 的桌面开发”组件及 Windows SDK，以及 WebView2 Runtime。安装说明见 [Tauri 官方 Windows 前置条件](https://v2.tauri.app/start/prerequisites/#windows)。
 
-Rust 端命令通过 `scripts/Invoke-Cargo.ps1` 执行（自动引入工具链与 MSVC 环境）：
+### 安装与开发
+
+在项目根目录执行：
 
 ```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Invoke-Cargo.ps1 test --manifest-path src-tauri/Cargo.toml
+npm ci
+npm run build
+npm test
+. ./scripts/Initialize-BuildEnvironment.ps1
+npm run tauri dev
 ```
 
-浏览器夹具验收需要显式开启开发文件服务；访问限于指定根目录，默认开发启动不开启。仅在隔离副本中测试编辑和保存：
+`npm ci` 按锁文件安装；`npm run build` 执行 TypeScript 检查和前端构建。环境脚本只初始化当前 PowerShell 进程，开发与打包均使用项目内 npm 版 Tauri CLI。
+
+脚本优先复用 PATH 中的 Cargo，未找到时从 `CARGO_HOME/bin` 或用户默认 `.cargo/bin` 查找；保留已有 `CARGO_HOME`、`RUSTUP_HOME`。MSVC 使用当前开发终端环境，或通过 vswhere 自动发现。自定义安装位置可在当前终端指定：
 
 ```powershell
-$env:RTL_VIEWER_E2E_ROOT = (Resolve-Path tests/fixtures/cp7).Path
-npm run dev
-# 在浏览器打开 http://localhost:1420/?e2e
+$env:CARGO_HOME = '<cargo-directory>'
+$env:RUSTUP_HOME = '<rustup-directory>'
+$env:RTL_VIEWER_VSDEVSHELL = '<visual-studio-directory>/Common7/Tools/Launch-VsDevShell.ps1'
 ```
 
-打包便携 exe 必须走 tauri CLI（裸 `cargo build` 产出的是 dev 模式 exe，界面依赖 dev server，无法独立运行）：
+只设置实际需要覆盖的变量，不修改系统配置。已有 Developer PowerShell 可不设置 `RTL_VIEWER_VSDEVSHELL`。
+
+### 打包与后端测试
+
+打包入口使用项目内 Tauri CLI，无需全局安装 CLI：
 
 ```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Invoke-Cargo.ps1 test --locked --manifest-path src-tauri/Cargo.toml
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Release.ps1
 ```
 
-交付物为 `release/rtl-viewer.exe`（脚本构建后自动从 cargo 输出复制至此），双击运行。
+唯一交付入口为 `release/rtl-viewer.exe`，双击运行；脚本构建后读取 Cargo 输出目录并复制到此处。若目标被运行中的窗口占用，脚本会报告交付失败；保存工作并退出该窗口后重新运行。不要用裸 `cargo build` 生成分发文件，它不经过 Tauri 的前端打包流程。
 
-前置：Rust stable（本机经 `D:\workspace\toolchains\rust\`，项目 `rust-toolchain.toml` 固定 1.98.1）、Node 24、WebView2 Runtime（Win10/11 自带）。
+### 验收数据与浏览器预览
+
+`npm test` 默认运行单元测试及 `tests/samples/basic/` 中随仓库提供的独立样例，覆盖 Verilog／VHDL 混合层级、IP 黑盒、约束文件和寄存器来源。样例用于查看器验收，不是可综合工程，其中 `.xci` 是手工编写的最小解析输入。
+
+三个私有工程套件默认跳过，显式配置目录后才运行；配置不存在或不是目录时直接报错，不作为跳过处理：
+
+| 环境变量 | 对应测试输入 |
+|---|---|
+| `RTL_VIEWER_ACCEPTANCE_CP7` | 原 CP7 Camera Link 验收副本根目录，通常位于 `tests/fixtures/cp7/project` |
+| `RTL_VIEWER_ACCEPTANCE_P1` | 既有 P1 Vivado 验收工程根目录 |
+| `RTL_VIEWER_ACCEPTANCE_P2` | 既有 P2 ISE 验收工程根目录 |
+
+这些套件包含特定工程的结构断言，不适用于任意 HDL 文件夹。未运行私有套件不等于真实工程验收通过。
+
+浏览器预览的文件服务默认关闭。下面将仓库样例复制到独立临时目录，允许在副本中编辑与保存；对话框会使用服务实际配置的目录，无需修改源码路径：
+
+```powershell
+$previewRoot = Join-Path '.tmp' ('browser-preview-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $previewRoot -Force | Out-Null
+Copy-Item -Path 'tests/samples/basic/*' -Destination $previewRoot -Recurse
+$env:RTL_VIEWER_E2E_ROOT = (Resolve-Path $previewRoot).Path
+npm run dev
+# 打开 http://localhost:1420/?e2e ，点击“打开文件夹”。
+# 停止服务后，可移除当前终端变量：Remove-Item Env:RTL_VIEWER_E2E_ROOT
+```
+
+文件访问限制在指定目录内；E2E mock 和文件服务不进入生产构建。真实工程编辑验收同样只使用隔离副本。
 
 ## 目录
 
 ```text
 src/         前端：analysis/（按需运算语义与单模块逻辑）、parser/（HDL 解析）、model/（索引、层级树、搜索、导航历史、大纲、信号声明定位）、app/（编辑工作区、工程扫描、外部变更监视、信号链与模块元数据）、editor/（Monaco、标签页、代码补全）、ui/（树、搜索面板、大纲、状态栏、对话框、右键菜单、最近工程）
-src-tauri/   Rust 后端
-tests/       Vitest 测试（含真实工程验收：tests/acceptance-cp7.test.ts 夹具在 tests/fixtures/cp7/，真实工程副本不入 Git、缺失自动跳过；tests/acceptance-real-projects.test.ts 依赖本机绝对路径工程，路径缺失时自动跳过）
+src-tauri/   本机 Rust 桌面后端：源码在 src/，负责文件扫描、编码读写与系统调用；另含桌面配置和图标
+tests/       Vitest 测试；samples/ 为可提交样例，fixtures/ 为不入 Git 的私有验收副本；私有套件通过环境变量显式启用
 scripts/     构建辅助（Build-Release.ps1、Invoke-Cargo.ps1、make-icon.mjs、Capture-Window.ps1 exe 窗口冒烟截图）
 release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 ```
 
-中间产物位置：`dist/` 为 vite 前端构建输出，`src-tauri/target/` 为 cargo 输出，两者均为中间产物，日常使用只看 `release/`。
+`src/` 与 `src-tauri/` 属于同一个桌面应用，通过 `src/ipc.ts` 通信；HDL 解析和信号分析在前端执行，磁盘访问与编码读写在本机 Rust 后端执行。
+
+| 生成目录 | 用途 |
+|---|---|
+| `dist/` | Vite 前端构建资源，打包时嵌入 exe |
+| `src-tauri/target/` | Cargo 编译输出与增量缓存，清理后下次编译需重建 |
+| `src-tauri/gen/` | Tauri 生成的配置 schema |
+| `release/` | 正式便携交付物，只使用 `rtl-viewer.exe` |
+| `.tmp/<task-slug>/` | 临时夹具、截图、日志与页面快照 |
+
+上述生成目录不入 Git。`tests/fixtures/` 是真实工程验收副本，属于测试输入，不能作为普通构建缓存清理。
+
+## 仓库授权
+
+当前按私有仓库维护，未添加开源许可证。

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 手工编写的最小解析样例，不是可生成的 Vivado IP 配置。 -->
+<spirit:component xmlns:spirit="http://www.spiritconsortium.org/XMLSchema/SPIRIT/1685-2009">
+  <spirit:vendor>example.org</spirit:vendor>
+  <spirit:library>sample</spirit:library>
+  <spirit:name>sample_clock</spirit:name>
+  <spirit:version>1.0</spirit:version>
+</spirit:component>

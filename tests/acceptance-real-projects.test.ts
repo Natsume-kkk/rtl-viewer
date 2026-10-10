@@ -1,20 +1,20 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseXci, scanStructure } from "../src/parser";
 import { ModuleIndex } from "../src/model";
 import { buildHierarchy, type Hierarchy, type TreeNode } from "../src/model/hierarchy";
 import { SignalProject, traceSignal, type TraceNode } from "../src/model/signal-flow";
 import { decode, walk } from "./helpers/fs-scan";
+import { acceptanceRoot } from "./helpers/acceptance-root";
 
 /**
  * 主人真实工程验收（只读，不修改工程内任何内容）：
  * - P1 Vivado 工程（z7_test，Verilog 为主 + 27 个 xci IP）
  * - P2 ISE 工程（GDCX_ZHGL，VHDL + ipcore_dir coregen IP）
- * 路径不存在时跳过。
+ * 环境变量指定对应私有工程；未配置时跳过，配置无效时失败。
  */
-const P1 = "D:/work/fpga/12xsensor/CMV50000_100/z7_test/project_5_det_rst";
-const P2 =
-  "D:/work/fpga/611/GDCX_ZHGL_S_2.03_time_check_download/GDCX_ZHGL_S_2.03_time_check_download";
+const P1 = acceptanceRoot("RTL_VIEWER_ACCEPTANCE_P1") ?? "";
+const P2 = acceptanceRoot("RTL_VIEWER_ACCEPTANCE_P2") ?? "";
 
 function build(root: string): { h: Hierarchy; hdlCount: number; xciCount: number } {
   const files = { hdl: [] as string[], xci: [] as string[], con: [] as string[] };
@@ -74,7 +74,7 @@ const allNodes = (n: TraceNode, out: TraceNode[] = []): TraceNode[] => {
   return out;
 };
 
-describe.skipIf(!existsSync(P1))("P1 Vivado 工程（z7_test）", () => {
+describe.skipIf(!P1)("P1 Vivado 工程（z7_test）", () => {
   // 这 5 个 IP 在全工程无 xci、无定义文件（合成产物在已跳过的 .runs 中），
   // 属于预期黑盒，与 Vivado 缺 IP 时的表现一致。
   const P1_EXPECTED_BLACKBOX = new Set([
@@ -132,7 +132,7 @@ describe.skipIf(!existsSync(P1))("P1 Vivado 工程（z7_test）", () => {
   });
 });
 
-describe.skipIf(!existsSync(P2))("P2 ISE 工程（GDCX_ZHGL）", () => {
+describe.skipIf(!P2)("P2 ISE 工程（GDCX_ZHGL）", () => {
   // wrapped_* 是 coregen 内部行为模型，定义在 ISE 安装库中、工程内无定义，
   // 属于预期黑盒。
   const P2_EXPECTED_BLACKBOX = new Set([

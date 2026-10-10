@@ -8,8 +8,9 @@ import { decode, decodeAs, walk } from "./tests/helpers/fs-scan";
  * 扫描与解码规则走 tests/helpers/fs-scan.ts（逐条对齐 Rust 端，单一来源）。
  * 写出仅支持 utf8/utf8-bom（GBK/UTF-16 写回由 Rust 侧 cargo test 覆盖）。
  */
-function e2eFsPlugin(rootPath: string): Plugin {
+export function e2eFsPlugin(rootPath: string): Plugin {
   const root = realpathSync(rootPath);
+  if (!statSync(root).isDirectory()) throw new Error("RTL_VIEWER_E2E_ROOT must be a directory");
   function scopedPath(path: string): string {
     if (!path || !isAbsolute(path)) throw new Error("e2e fs: absolute path required");
     const candidate = existsSync(path) ? realpathSync(path) : resolve(realpathSync(dirname(path)), path.split(/[\\/]/).pop()!);
@@ -33,6 +34,9 @@ function e2eFsPlugin(rootPath: string): Plugin {
           return;
         }
         next();
+      });
+      server.middlewares.use("/__e2e_config", (_req, res) => {
+        json(res, { root: root.replace(/\\/g, "/") });
       });
       server.middlewares.use("/__e2e_scan", (req, res) => {
         try {
@@ -126,9 +130,9 @@ function e2eFsPlugin(rootPath: string): Plugin {
   };
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   clearScreen: false,
-  plugins: process.env.RTL_VIEWER_E2E_ROOT ? [e2eFsPlugin(process.env.RTL_VIEWER_E2E_ROOT)] : [],
+  plugins: command === "serve" && process.env.RTL_VIEWER_E2E_ROOT ? [e2eFsPlugin(process.env.RTL_VIEWER_E2E_ROOT)] : [],
   server: {
     watch: { ignored: ["**/.tmp/**", "**/src-tauri/target/**", "**/src-tauri/gen/**", "**/release/**"] },
     port: 1420,
@@ -146,4 +150,4 @@ export default defineConfig({
     outDir: "dist",
     target: "es2022",
   },
-});
+}));

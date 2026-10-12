@@ -2,7 +2,7 @@ import type { Expr } from "../analysis/expression";
 import type { LogicGraph } from "../analysis/local";
 import type { Driver } from "../analysis/project";
 import type { TraceNode } from "../model/signal-flow";
-import { CARD_STEP, CANVAS_PAD, cardHeader, appendSource, makeWires, drawWires, type CardPosition, type CardEdge } from "./signal-canvas";
+import { CardWidths, columnPositions, cardHeader, appendSource, makeWires, drawWires, type CardWidthState, type CardPosition, type CardEdge } from "./signal-canvas";
 import { setIcon } from "./icons";
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag:K,cls="",text=""):HTMLElementTagNameMap[K]=>{const n=document.createElement(tag);n.className=cls;n.textContent=text;return n;};
@@ -31,7 +31,7 @@ const choice=(e:Expr,depth=0):Expr|undefined=>{
 };
 interface Arm { guard:string; value:Expr; start:number }
 interface Branch { id:string; element:HTMLDetailsElement; value:Expr; driver:Driver; target:string; depth:number; nested:boolean; child?:string }
-export interface LogicViewState { open:string[]; routes:string[]; sources?:boolean[] }
+export interface LogicViewState { open:string[]; routes:string[]; sources?:boolean[]; widths?:CardWidthState }
 
 export class SignalLogicView {
   private cards=new Map<string,HTMLElement>();
@@ -42,6 +42,7 @@ export class SignalLogicView {
   private canvas=el("div","logic-canvas");
   private svg=makeWires();
   private active=true;
+  private widths=new CardWidths(()=>this.reveal());
   constructor(private graph:LogicGraph, body:HTMLElement, private files:ReadonlyMap<string,string>){
     body.classList.add("logic-body");body.append(this.canvas);this.canvas.append(this.svg);
     const base=graph.nodes.find(n=>n.id===graph.root)?.path??"";
@@ -60,7 +61,7 @@ export class SignalLogicView {
       if(node.kind==="boundary"){
         if(!node.portContext){card.append(el("span","logic-tag","分析边界"));if(node.reason||node.detail)card.append(el("p","flow-reason",node.reason??node.detail));}
       }
-      this.cards.set(node.id,card);this.canvas.append(card);
+      this.cards.set(node.id,card);this.canvas.append(card);this.widths.add(node.id,card);
       for(const [i,driver]of node.drivers.entries()){
         const section=el("div","logic-driver");if(node.drivers.length>1)section.append(el("span","logic-tag",`驱动 ${i+1}`));
         card.append(section);this.expression(node.id,section,driver.expression,node.label,driver,`${node.id}/d${i}`,0);
@@ -93,9 +94,9 @@ export class SignalLogicView {
     this.reveal();
     const focus=this.cards.get(graph.root);if(focus&&body.clientWidth>0&&focus.offsetLeft>body.clientWidth-236)body.scrollLeft=Math.max(0,focus.offsetLeft-body.clientWidth/2+118);
   }
-  dispose():void{this.active=false;}
-  capture():LogicViewState{return {open:[...this.open],routes:[...this.routes],sources:[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].map(d=>d.open)};}
-  restore(s:LogicViewState):void{this.open=new Set(s.open);this.routes=new Set(s.routes);if(s.sources)[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].forEach((d,i)=>d.open=s.sources![i]??true);this.reveal();}
+  dispose():void{this.active=false;this.widths.dispose();}
+  capture():LogicViewState{return {open:[...this.open],routes:[...this.routes],sources:[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].map(d=>d.open),widths:this.widths.capture()};}
+  restore(s:LogicViewState):void{this.open=new Set(s.open);this.routes=new Set(s.routes);this.widths.restore(s.widths);if(s.sources)[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].forEach((d,i)=>d.open=s.sources![i]??true);this.reveal();}
   expandAll():void{this.routes=new Set(this.cards.keys());for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=true;this.reveal(true);}
   collapseAll():void{this.open.clear();this.routes.clear();for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=false;this.reveal();}
   private location(file:string,start:number){return {file,line:(this.files.get(file)??"").slice(0,start).split("\n").length};}
@@ -160,7 +161,7 @@ export class SignalLogicView {
             const header=this.group(b.value,b.target,/\.vhdl?$/i.test(b.driver.source.file))?.header;
             cardHeader(card,header??b.target,this.location(b.driver.source.file,b.value.eventStart??b.value.start));
             if(header)card.querySelector('.operation-name')!.classList.add('branch-heading');
-            this.cards.set(b.child,card);this.canvas.append(card);this.expression(b.child,card,b.value,b.target,b.driver,b.id,b.depth+1);
+            this.cards.set(b.child,card);this.canvas.append(card);this.widths.add(b.child,card);this.expression(b.child,card,b.value,b.target,b.driver,b.id,b.depth+1);
           }
           addEdge({from:id,to:b.child});branchEnds(b.child).forEach(end=>ends.add(end));
         }
@@ -182,8 +183,10 @@ export class SignalLogicView {
     for(const[id,button]of this.continuations){const open=this.routes.has(id);button.hidden=!choices.has(id);button.textContent=open?"收起此路":"继续追踪";button.setAttribute("aria-expanded",String(open));button.setAttribute("aria-label",`${open?"收起":"继续追踪"} ${this.cards.get(id)!.dataset.signal}`);this.cards.get(id)!.classList.toggle("route-pending",choices.has(id)&&!open);}
     for(const[id,card]of this.cards)card.hidden=!visible.has(id);
     const ranks=new Map<string,number>(),rank=(id:string,seen=new Set<string>()):number=>{if(ranks.has(id))return ranks.get(id)!;if(seen.has(id))return 0;const incoming=edges.filter(e=>e.to===id&&!e.control);const n=incoming.length?1+Math.max(...incoming.map(e=>rank(e.from,new Set(seen).add(id)))):0;ranks.set(id,n);return n;};
-    const columns=new Map<number,number>(),positions=new Map<string,CardPosition>();
-    for(const[id,card]of this.cards){if(card.hidden)continue;const column=rank(id),x=CANVAS_PAD+column*CARD_STEP,y=columns.get(column)??28,h=card.offsetHeight||96;card.style.left=`${x}px`;card.style.top=`${y}px`;positions.set(id,{x,y,h});columns.set(column,y+h+24);}
+    const widths=new Map<number,number>();
+    for(const[id,card]of this.cards)if(!card.hidden){const column=rank(id);widths.set(column,Math.max(widths.get(column)??0,this.widths.get(id)));}
+    const offsets=columnPositions(widths),columns=new Map<number,number>(),positions=new Map<string,CardPosition>();
+    for(const[id,card]of this.cards){if(card.hidden)continue;const column=rank(id),x=offsets.get(column)!,y=columns.get(column)??28,h=card.offsetHeight||96,w=this.widths.get(id);card.style.left=`${x}px`;card.style.top=`${y}px`;positions.set(id,{x,y,h,w,column});columns.set(column,y+h+24);}
     drawWires(this.canvas,this.svg,positions,edges);
   }
 }

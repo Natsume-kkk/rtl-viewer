@@ -1428,6 +1428,10 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .logic-wires marker path { fill: var(--fg-secondary); }
 .logic-card { position: absolute; width: 236px; min-height: 88px; padding: 10px 12px; background: var(--surface-editor); border: 1px solid var(--border-strong); border-top: 2px solid var(--accent); border-radius: var(--radius-control); }
 .logic-card[hidden] { display: none; }
+.card-resize { position: absolute; top: 0; right: -4px; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; user-select: none; z-index: 1; }
+.card-resize::after { content: ""; position: absolute; inset: 0 3px; border-radius: var(--radius-control); }
+.card-resize:hover::after,.card-resize:focus-visible::after,.card-resizing .card-resize::after { background: var(--accent); }
+.card-resizing { user-select: none; }
 .logic-card.boundary,.logic-card.resolved { border-top-color: var(--sem-warning); }
 .logic-card.selected { border-color: var(--accent); background: var(--surface-active); box-shadow: 0 0 0 1px var(--accent); }
 .signal-current { display: block; margin-bottom: 7px; color: var(--accent); font: 600 var(--fs-caption) var(--font-ui); }

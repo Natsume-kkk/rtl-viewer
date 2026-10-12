@@ -1,6 +1,72 @@
 import { setIcon } from "./icons";
 
 export const CARD_WIDTH = 236, CARD_STEP = 276, CANVAS_PAD = 24;
+const MAX_CARD_WIDTH = 1200;
+export type CardWidthState = Record<string, number>;
+/** Widths belong to a single trace; hidden and lazily created cards retain their entries. */
+export class CardWidths {
+  private widths = new Map<string, number>();
+  private cards = new Map<string, HTMLElement>();
+  private cleanups: (() => void)[] = [];
+  constructor(private redraw: () => void) {}
+  get(id: string): number { return this.widths.get(id) ?? CARD_WIDTH; }
+  capture(): CardWidthState { return Object.fromEntries(this.widths); }
+  restore(state: CardWidthState = {}): void {
+    this.widths.clear();
+    for (const [id, width] of Object.entries(state)) if (Number.isFinite(width)) this.widths.set(id, Math.max(CARD_WIDTH, Math.min(MAX_CARD_WIDTH, Math.round(width))));
+    for (const [id, card] of this.cards) this.apply(id, card);
+  }
+  private apply(id: string, card: HTMLElement): void {
+    const width = this.get(id); card.style.width = `${width}px`;
+    const handle = card.querySelector<HTMLElement>(":scope > .card-resize");
+    handle?.setAttribute("aria-valuenow", String(width)); handle?.setAttribute("aria-valuetext", `${width} 像素`);
+  }
+  private set(id: string, width: number): void {
+    width = Math.max(CARD_WIDTH, Math.min(MAX_CARD_WIDTH, Math.round(width)));
+    if (width === this.get(id)) return;
+    if (width === CARD_WIDTH) this.widths.delete(id); else this.widths.set(id, width);
+    this.apply(id, this.cards.get(id)!); this.redraw();
+  }
+  add(id: string, card: HTMLElement): void {
+    this.cards.set(id, card);
+    const handle = element("div", "card-resize"); handle.tabIndex = 0;
+    handle.setAttribute("role", "separator"); handle.setAttribute("aria-orientation", "vertical");
+    handle.setAttribute("aria-label", `调整 ${card.dataset.signal ?? id} 卡片宽度`);
+    handle.setAttribute("aria-valuemin", String(CARD_WIDTH)); handle.setAttribute("aria-valuemax", String(MAX_CARD_WIDTH));
+    handle.title = "拖动调整宽度，双击恢复默认；方向键调整，Home 复位";
+    let drag: {pointer: number; x: number; width: number} | undefined;
+    const end = () => {
+      const pointer = drag?.pointer; drag = undefined; card.classList.remove("card-resizing");
+      if (pointer !== undefined && handle.hasPointerCapture(pointer)) handle.releasePointerCapture(pointer);
+    };
+    handle.onpointerdown = event => {
+      if (event.button !== 0 || drag) return;
+      event.preventDefault(); event.stopPropagation(); handle.focus({preventScroll: true});
+      drag = {pointer: event.pointerId, x: event.clientX, width: this.get(id)};
+      handle.setPointerCapture(event.pointerId); card.classList.add("card-resizing");
+    };
+    handle.onpointermove = event => { if (drag?.pointer === event.pointerId) this.set(id, drag.width + event.clientX - drag.x); };
+    const finish = (event: PointerEvent) => { if (drag?.pointer === event.pointerId) end(); };
+    handle.onpointerup = finish; handle.onpointercancel = finish; handle.onlostpointercapture = finish;
+    handle.onclick = event => event.stopPropagation();
+    handle.ondblclick = event => { event.preventDefault(); event.stopPropagation(); end(); this.set(id, CARD_WIDTH); };
+    handle.onkeydown = event => {
+      if (!["ArrowLeft", "ArrowRight", "Home"].includes(event.key)) return;
+      event.preventDefault(); event.stopPropagation(); end();
+      this.set(id, event.key === "Home" ? CARD_WIDTH : this.get(id) + (event.key === "ArrowRight" ? 24 : -24));
+    };
+    card.append(handle); this.apply(id, card);
+    this.cleanups.push(() => { end(); handle.onpointerdown = handle.onpointermove = handle.onpointerup = handle.onpointercancel = handle.onlostpointercapture = null; handle.onclick = handle.ondblclick = handle.onkeydown = null; });
+  }
+  dispose(): void { for (const cleanup of this.cleanups) cleanup(); this.cleanups = []; }
+}
+export function columnPositions(widths: Map<number, number>): Map<number, number> {
+  const positions = new Map<number, number>();
+  const min = Math.min(0, ...widths.keys()), max = Math.max(0, ...widths.keys());
+  let x = CANVAS_PAD;
+  for (let column = min; column <= max; column++) { positions.set(column, x); x += (widths.get(column) ?? CARD_WIDTH) + CARD_STEP - CARD_WIDTH; }
+  return positions;
+}
 export const element = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] => {
   const node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
 };
@@ -45,7 +111,7 @@ export function appendSource(parent: HTMLElement, source: {file?: string; statem
   }
   block.addEventListener("toggle", redraw); parent.append(block);
 }
-export interface CardPosition { x: number; y: number; h: number }
+export interface CardPosition { x: number; y: number; h: number; w?: number; column?: number }
 export interface CardEdge { from: string; to: string; control?: boolean; current?: boolean; vertical?: boolean; both?: boolean; unknown?: boolean }
 let canvasSerial = 0;
 export function makeWires(): SVGSVGElement {
@@ -53,7 +119,7 @@ export function makeWires(): SVGSVGElement {
   svg.classList.add("logic-wires"); svg.setAttribute("aria-hidden", "true"); svg.dataset.marker = `signal-arrow-${++canvasSerial}`; return svg;
 }
 export function drawWires(canvas: HTMLElement, svg: SVGSVGElement, positions: Map<string, CardPosition>, edges: CardEdge[]): void {
-  const width = Math.max(100, ...[...positions.values()].map(p => p.x + CARD_WIDTH + CANVAS_PAD));
+  const width = Math.max(100, ...[...positions.values()].map(p => p.x + (p.w ?? CARD_WIDTH) + CANVAS_PAD));
   const height = Math.max(180, ...[...positions.values()].map(p => p.y + p.h + 28));
   canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
   svg.setAttribute("width", String(width)); svg.setAttribute("height", String(height)); svg.replaceChildren();
@@ -83,11 +149,12 @@ export function drawWires(canvas: HTMLElement, svg: SVGSVGElement, positions: Ma
     path.dataset.from = edge.from; path.dataset.to = edge.to;
     path.setAttribute("class", edge.control || edge.current || edge.unknown ? "logic-wire control" : "logic-wire");
     if (edge.vertical) {
-      const down = b.y > a.y, x = a.x + CARD_WIDTH / 2;
-      path.setAttribute("d", `M${x},${down ? a.y + a.h : a.y} L${b.x + CARD_WIDTH / 2},${down ? b.y : b.y + b.h}`);
+      const down = b.y > a.y, x = a.x + (a.w ?? CARD_WIDTH) / 2;
+      path.setAttribute("d", `M${x},${down ? a.y + a.h : a.y} L${b.x + (b.w ?? CARD_WIDTH) / 2},${down ? b.y : b.y + b.h}`);
     } else {
-      const sx = a.x + CARD_WIDTH, sy = sourceY.get(edge)!, ex = b.x, ey = targetY.get(edge)!;
-      if (b.x - a.x > CARD_STEP + 1 || b.x <= a.x) {
+      const sx = a.x + (a.w ?? CARD_WIDTH), sy = sourceY.get(edge)!, ex = b.x, ey = targetY.get(edge)!;
+      const skips = a.column !== undefined && b.column !== undefined ? b.column > a.column + 1 : b.x - a.x > (a.w ?? CARD_WIDTH) + CARD_STEP - CARD_WIDTH + 1;
+      if (skips || b.x <= a.x) {
         // Skip-column and return paths use separate lanes below all visible cards.
         const lane = height - 14 + bypassCount++ * 12;
         path.setAttribute("d", `M${sx},${sy} L${sx + 14},${sy} L${sx + 14},${lane} L${ex - 14},${lane} L${ex - 14},${ey} L${ex},${ey}`);

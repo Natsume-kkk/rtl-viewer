@@ -139,10 +139,13 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
       if(request!==flowRequest)return;
       const down=graph?undefined:await traceSignal(selection.project,context,selection.signal,"downstream",{...options,stopAtAssignments:mode==="port",localOnly:mode==="logic"});
       if(request===flowRequest){
+        const previousContext=flowSelection?.contexts.find(c=>c.path===flowContextPath);
+        const sameName=/\.vhdl?$/i.test(selection.file)?flowSelection?.signal.toLowerCase()===selection.signal.toLowerCase():flowSelection?.signal===selection.signal;
+        const preserveWidths=!!flowSelection&&sameName&&flowSelection.file===selection.file&&flowSelection.scope===selection.scope&&previousContext?.module===context.module&&previousContext.path===context.path;
         flowSelection=selection;flowContextPath=context.path;flowPanel.setContexts(selection.contexts,index);
         if(selection.project===flowProject?.project)flowPanel.clearStale();else flowPanel.markStale();
-        if(graph)flowPanel.logicResult(selection.signal,context,graph,selection.sources,selection.note);
-        else flowPanel.result(selection.signal,up!,down!,selection.note,mode==="port"?"端口连接":"模块内逻辑 · 过程作用域");
+        if(graph)flowPanel.logicResult(selection.signal,context,graph,selection.sources,selection.note,preserveWidths);
+        else flowPanel.result(selection.signal,up!,down!,selection.note,mode==="port"?"端口连接":"模块内逻辑 · 过程作用域",preserveWidths);
         flowPanel.hint("");flowReady=true;
       }
     } catch (error) {

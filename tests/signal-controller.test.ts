@@ -32,13 +32,25 @@ function setup(scanned = true) {
 
 it("修改源码只标旧结果，刷新仍分析原目标，切换工程清理分析状态", async () => {
   const { controller, panel, setWord, edit } = setup();
-  await controller.analyze(); expect(panel.logicResult).toHaveBeenCalledWith("mid", expect.anything(), expect.anything(), expect.anything(), "");
+  await controller.analyze(); expect(panel.logicResult).toHaveBeenCalledWith("mid", expect.anything(), expect.anything(), expect.anything(), "", false);
   setWord("a"); edit(); controller.invalidate();
   expect(panel.markStale).toHaveBeenCalledTimes(1); expect(panel.logicResult).toHaveBeenCalledTimes(1);
   panel.actions.refresh(); await vi.waitFor(() => expect(panel.logicResult).toHaveBeenCalledTimes(2));
   expect(panel.logicResult.mock.lastCall[0]).toBe("mid");
+  expect(panel.logicResult.mock.lastCall[5]).toBe(true);
   controller.reset(); panel.actions.refresh();
   expect(panel.logicResult).toHaveBeenCalledTimes(2); expect(panel.setContexts).toHaveBeenLastCalledWith([], 0);
+});
+
+it("同目标刷新保留卡片宽度，换信号或工程恢复默认", async () => {
+  const {controller,panel,setWord}=setup();await controller.analyze();
+  expect(panel.logicResult.mock.lastCall[5]).toBe(false);
+  panel.actions.refresh();await vi.waitFor(()=>expect(panel.logicResult).toHaveBeenCalledTimes(2));
+  expect(panel.logicResult.mock.lastCall[5]).toBe(true);
+  setWord("q");await controller.analyze();expect(panel.result.mock.lastCall[5]).toBe(false);
+  panel.actions.refresh();await vi.waitFor(()=>expect(panel.result).toHaveBeenCalledTimes(2));
+  expect(panel.result.mock.lastCall[5]).toBe(true);
+  controller.reset();await controller.analyze();expect(panel.result.mock.lastCall[5]).toBe(false);
 });
 
 it("异步端口追踪在换工程后不提交旧结果，控制器仍能再次使用", async () => {
@@ -94,4 +106,27 @@ it("重复追踪同一端口保持端口模式，不切换到完整模块内分�
   await controller.analyze();
   expect(panel.result).toHaveBeenCalledTimes(1);
   expect(panel.logicResult).not.toHaveBeenCalled();
+});
+
+it("同名信号换实例路径时清空宽度，当前实例刷新保留",async()=>{
+  const source="module top(input a); leaf u1(.i(a)); leaf u2(.i(a)); endmodule\nmodule leaf(input i); wire inner=~i; endmodule";
+  const file="D:/test/instances.v",contents=new Map([[file,source]]),structures=new Map([[file,scanStructure(source,file)]]),index=new ModuleIndex();index.addStructure([...structures.values()].flat());
+  const model={uri:{path:`/${file}`,authority:""},getWordAtPosition:()=>({word:"inner"}),getLanguageId:()=>"verilog",getVersionId:()=>1,getValue:()=>source};
+  const editor={getModel:()=>model,getPosition:()=>({lineNumber:2,column:source.split("\n")[1].indexOf("inner")+1})};
+  const controller=createSignalController(document.createElement("div"),{editor:()=>editor as any,files:()=>contents.keys(),structures:()=>structures,index:()=>index,topName:()=>"top",instancePath:()=>"top/u1",fileContent:()=>source,isOpen:()=>true,close:vi.fn(),navigate:vi.fn(),hint:vi.fn()});
+  const panel=fake.panels[0];await controller.analyze();expect(panel.logicResult.mock.lastCall[1].path).toBe("top/u1");
+  panel.actions.context(1);await vi.waitFor(()=>expect(panel.logicResult).toHaveBeenCalledTimes(2));expect(panel.logicResult.mock.lastCall[1].path).toBe("top/u2");expect(panel.logicResult.mock.lastCall[5]).toBe(false);
+  panel.actions.refresh();await vi.waitFor(()=>expect(panel.logicResult).toHaveBeenCalledTimes(3));expect(panel.logicResult.mock.lastCall[5]).toBe(true);
+});
+
+it("同名 VHDL 局部对象换过程重置宽度，同一作用域刷新保留",async()=>{
+  const source="entity top is port(a,b: in bit; y,z: out bit); end top;\narchitecture rtl of top is begin\np1: process(a) variable tmp: bit; begin tmp := a; y <= tmp; end process;\np2: process(b) variable tmp: bit; begin tmp := b; z <= tmp; end process;\nend rtl;";
+  const file="D:/test/scoped.vhd",contents=new Map([[file,source]]),structures=new Map([[file,scanStructure(source,file)]]),index=new ModuleIndex();index.addStructure([...structures.values()].flat());
+  let line=3;
+  const model={uri:{path:`/${file}`,authority:""},getWordAtPosition:()=>({word:"TMP"}),getLanguageId:()=>"vhdl",getVersionId:()=>1,getValue:()=>source};
+  const editor={getModel:()=>model,getPosition:()=>({lineNumber:line,column:source.split("\n")[line-1].indexOf("tmp :=")+1})};
+  const controller=createSignalController(document.createElement("div"),{editor:()=>editor as any,files:()=>contents.keys(),structures:()=>structures,index:()=>index,topName:()=>"top",instancePath:()=>undefined,fileContent:()=>source,isOpen:()=>true,close:vi.fn(),navigate:vi.fn(),hint:vi.fn()});
+  const panel=fake.panels[0];await controller.analyze();expect(panel.result).toHaveBeenCalledTimes(1);expect(panel.result.mock.lastCall[5]).toBe(false);
+  panel.actions.refresh();await vi.waitFor(()=>expect(panel.result).toHaveBeenCalledTimes(2));expect(panel.result.mock.lastCall[5]).toBe(true);
+  line=4;await controller.analyze();expect(panel.result).toHaveBeenCalledTimes(3);expect(panel.result.mock.lastCall[5]).toBe(false);
 });

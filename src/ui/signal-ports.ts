@@ -1,9 +1,9 @@
 import type { TraceNode } from "../model/signal-flow";
-import { CARD_STEP, CANVAS_PAD, element as el, cardHeader, appendSource, signalCode, makeWires, drawWires, type CardEdge, type CardPosition } from "./signal-canvas";
+import { CardWidths, columnPositions, element as el, cardHeader, appendSource, signalCode, makeWires, drawWires, type CardWidthState, type CardEdge, type CardPosition } from "./signal-canvas";
 
 type Side = "up" | "down";
 interface PortCard { id: string; trace: TraceNode; column: number; children: string[]; card: HTMLElement; external?: boolean }
-export interface PortViewState { expanded: string[]; assignments?: string[] }
+export interface PortViewState { expanded: string[]; assignments?: string[]; widths?:CardWidthState }
 
 /** Display the existing bounded trace as cards; this view never infers RTL connectivity. */
 export class SignalPortsView {
@@ -15,6 +15,8 @@ export class SignalPortsView {
   private branches = new Map<string, HTMLButtonElement>();
   private roots: Record<Side, string[]> = {up: [], down: []};
   private externalDirections = new Map<string, Set<Side>>();
+  private active = true;
+  private widths = new CardWidths(() => this.render());
   constructor(signal: string, upstream: TraceNode, downstream: TraceNode, body: HTMLElement) {
     body.classList.add("logic-body"); body.append(this.canvas); this.canvas.append(this.svg);
     const add = (id: string, trace: TraceNode, column: number, label: string, external = false): PortCard => {
@@ -32,7 +34,7 @@ export class SignalPortsView {
       if (trace.mapping) { const code = signalCode(trace.mapping, signal, /\.vhdl?$/i.test(trace.file ?? "")); code.classList.add("port-mapping"); card.append(code); }
       if (trace.note) card.append(el("code", "flow-note", trace.note));
       if (trace.reason && trace.reason !== "赋值位置") card.append(el("p", "flow-reason", trace.reason));
-      const node = {id, trace, column, children: [], card, external}; this.nodes.set(id, node); this.canvas.append(card); return node;
+      const node = {id, trace, column, children: [], card, external}; this.nodes.set(id, node); this.canvas.append(card); this.widths.add(id, card); return node;
     };
     const base = upstream.label.slice(0, upstream.label.lastIndexOf("."));
     const focus = add("focus", {...upstream,reason:undefined,note:undefined}, 0, signal);
@@ -83,12 +85,13 @@ export class SignalPortsView {
     const current = focus.card.offsetLeft;
     if (current > body.clientWidth - 260 && body.clientWidth > 0) body.scrollLeft = Math.max(0, current - body.clientWidth / 2 + 118);
   }
-  dispose(): void { /* All listeners belong to detached card elements. */ }
-  capture(): PortViewState { return {expanded: [...this.expanded], assignments: [...this.nodes.values()].filter(n=>n.card.querySelector<HTMLDetailsElement>(".assignment-block")?.open).map(n=>n.id)}; }
-  restore(state: PortViewState): void { this.expanded = new Set(state.expanded); if(state.assignments)for(const node of this.nodes.values()){const block=node.card.querySelector<HTMLDetailsElement>(".assignment-block");if(block)block.open=state.assignments.includes(node.id);} this.render(); }
+  dispose(): void { this.active = false; this.widths.dispose(); }
+  capture(): PortViewState { return {expanded: [...this.expanded], assignments: [...this.nodes.values()].filter(n=>n.card.querySelector<HTMLDetailsElement>(".assignment-block")?.open).map(n=>n.id), widths:this.widths.capture()}; }
+  restore(state: PortViewState): void { this.expanded = new Set(state.expanded); this.widths.restore(state.widths); if(state.assignments)for(const node of this.nodes.values()){const block=node.card.querySelector<HTMLDetailsElement>(".assignment-block");if(block)block.open=state.assignments.includes(node.id);} this.render(); }
   expandAll(): void { this.expanded = new Set(this.branches.keys()); for(const block of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))block.open=true; this.render(); }
   collapseAll(): void { this.expanded.clear(); for(const block of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))block.open=false; this.render(); }
   private render(): void {
+    if (!this.active) return;
     const visible = new Set(["focus"]), traversed = new Set<string>(), choices = new Set<string>(), active = new Set<CardEdge>();
     const assignmentEnd = (id: string) => {
       const node = this.nodes.get(id)!;
@@ -115,16 +118,18 @@ export class SignalPortsView {
       button.setAttribute("aria-expanded",String(open));button.setAttribute("aria-label",`${open?"收起":"继续追踪"} ${this.nodes.get(id)!.trace.label}`);
       this.nodes.get(id)!.card.classList.toggle("route-pending", choices.has(id)&&!open);
     }
-    const min = Math.min(0, ...[...this.nodes.values()].map(n => n.column));
+    const widths = new Map<number, number>();
+    for (const node of this.nodes.values()) widths.set(node.column, Math.max(widths.get(node.column) ?? 0, this.widths.get(node.id)));
+    const offsets = columnPositions(widths);
     const rows = new Map<number, number>(), positions = new Map<string, CardPosition>();
     // Reserve slots so choosing another route retains the preceding layout.
     for (const node of [...this.nodes.values()].sort((a, b) => Number(!!a.external) - Number(!!b.external))) {
       node.card.hidden = !visible.has(node.id);
-      const x = CANVAS_PAD + (node.column - min) * CARD_STEP, y = rows.get(node.column) ?? 38;
+      const x = offsets.get(node.column)!, y = rows.get(node.column) ?? 38;
       const h = node.card.offsetHeight || Number(node.card.dataset.height) || 96;
       if (!node.card.hidden) node.card.dataset.height = String(h);
       node.card.style.left = `${x}px`; node.card.style.top = `${y}px`; rows.set(node.column, y + h + 40);
-      if (!node.card.hidden) positions.set(node.id, {x, y, h});
+      if (!node.card.hidden) positions.set(node.id, {x, y, h, w:this.widths.get(node.id), column:node.column});
     }
     drawWires(this.canvas, this.svg, positions, [...active]);
   }

@@ -59,10 +59,12 @@ export class SignalFlowPanel {
     const context=document.createElement("span");context.className="flow-path";context.textContent=path;
     this.identity.replaceChildren(context,selected);this.identity.title=`${path}.${signal}`;
   }
-  logicResult(signal:string,ctx:SignalContext,graph:LogicGraph,files:ReadonlyMap<string,string>,note:string):void {
+  logicResult(signal:string,ctx:SignalContext,graph:LogicGraph,files:ReadonlyMap<string,string>,note:string,preserveWidths=false):void {
+    const widths=preserveWidths?this.logic?.capture().widths:undefined;
     this.message(note);this.mode.textContent="模块内逻辑";this.identify(signal,ctx.path);
     if(graph.truncated){this.status.append("达到分析预算，部分路径未展开");this.status.hidden=false;}
     this.logic=new SignalLogicView(graph,this.body,files);
+    if(widths)this.logic.restore({...this.logic.capture(),widths});
   }
   markStale(): void { this.stale.hidden = false; }
   clearStale(): void { this.stale.hidden = true; }
@@ -71,9 +73,11 @@ export class SignalFlowPanel {
     this.contexts.selectedIndex = selected;
     this.contexts.hidden = items.length < 2;
   }
-  result(signal: string, upstream: TraceNode, downstream: TraceNode, note: string, mode = "端口连接"): void {
+  result(signal: string, upstream: TraceNode, downstream: TraceNode, note: string, mode = "端口连接", preserveWidths=false): void {
+    const widths=preserveWidths&&this.mode.textContent===mode?this.ports?.capture().widths:undefined;
     this.message(note);this.mode.textContent=mode;
     this.identify(signal,upstream.label.slice(0,upstream.label.lastIndexOf(".")));
     this.ports=new SignalPortsView(signal,upstream,downstream,this.body);
+    if(widths)this.ports.restore({...this.ports.capture(),widths});
   }
 }

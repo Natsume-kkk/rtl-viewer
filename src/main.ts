@@ -26,6 +26,7 @@ import { appAlert } from "./ui/dialog";
 import { createNewFileControl, preferredNewFileType } from "./ui/new-file";
 import { createEditorWorkspace } from "./app/editor-workspace";
 import { openColumnEditor, registerColumnActions } from "./editor/column-editor";
+import { registerEditorAction } from "./editor/actions";
 import { attachWindowControls } from "./ui/window-controls";
 import { initTheme } from "./ui/theme";
 import { setIcon } from "./ui/icons";
@@ -129,7 +130,7 @@ const { treeRoot: treeRootEl, searchRoot: searchRootEl, outlineRoot: outlineRoot
 
 // Monaco 初始化（definition provider 通过函数引用最新索引）；editor2 为分屏第二组
 initTheme();
-const editor = initMonaco(editorContainer, (name) => state.index.resolve(name));
+const editor = initMonaco(editorContainer, (name) => state.index.resolve(name), fileContent);
 const editor2 = createEditor(document.getElementById("editor-container-2")!);
 
 // E2E 钩子：仅 ?e2e 模式暴露编辑器实例与拖放入口，供自动化验收驱动
@@ -380,20 +381,18 @@ function showInstancePanel(name: string, sites: InstanceSite[]): void {
 }
 
 /**
- * 编辑器动作全局注册（monaco.editor.addEditorAction，只注册一次）：
- * run 收到的 ed 是当前聚焦的编辑器实例，天然适配分屏；
- * 不能用 ed.addAction 在两组各注册同 id 动作，会让按键分发失效。
+ * 全局命令处理菜单与键位；每组另注册命令面板入口，沿用所属编辑器分发。
  */
 function registerEditorActions(): void {
   registerColumnActions();
-  monaco.editor.addEditorAction({ id: "rtl.signal-flow", label: "追踪此信号", contextMenuGroupId: "navigation", run: ed => { focusGroup(groups.findIndex(g => g.editor === ed)); setSignalFlowVisible(true); return signalController.analyze(); } });
+  registerEditorAction({ id: "rtl.signal-flow", label: "追踪此信号", contextMenuGroupId: "navigation", run: ed => { focusGroup(groups.findIndex(g => g.editor === ed)); setSignalFlowVisible(true); return signalController.analyze(); } });
   // 自动换行切换：Monaco standalone 自带 editor.action.toggleWordWrap（含 Alt+Z），
   // 存在时只补右键菜单入口，不再绑快捷键避免双触发。
   {
     const builtin = editor.getAction("editor.action.toggleWordWrap");
-    monaco.editor.addEditorAction({
+    registerEditorAction({
       id: "rtl.toggle-word-wrap",
-      label: "切换自动换行 (Alt+Z)",
+      label: "切换自动换行",
       contextMenuGroupId: "view",
       contextMenuOrder: 1,
       ...(builtin ? {} : { keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyZ] }),
@@ -410,9 +409,9 @@ function registerEditorActions(): void {
   }
 
   // 查找引用：选中或光标下的标识符 → 全局搜索（整词），Shift+F12 / 右键菜单。
-  monaco.editor.addEditorAction({
+  registerEditorAction({
     id: "rtl.find-references",
-    label: "查找引用 (Shift+F12)",
+    label: "查找引用",
     keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F12],
     contextMenuGroupId: "navigation",
     contextMenuOrder: 1,
@@ -436,11 +435,11 @@ function registerEditorActions(): void {
   });
 
   // 分屏：当前文件在另一侧视图打开（共享 model，编辑互通）。
-  monaco.editor.addEditorAction({
+  registerEditorAction({
     id: "rtl.split-other",
-    label: "在另一侧视图打开 (Ctrl+Alt+V)",
+    label: "在另一侧视图打开",
     keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyV],
-    precondition: "editorTextFocus",
+    keybindingContext: "editorTextFocus",
     contextMenuGroupId: "view",
     contextMenuOrder: 0,
     run: () => void openInOtherGroup(),
@@ -462,7 +461,7 @@ const workspace = createEditorWorkspace([editor, editor2], {
     const tab = group.tabs.activeTab;
     statusbar.update(tab?.model.getLanguageId() ?? null, tab?.encoding ?? null);
     const pos = tab && group.editor.getPosition();
-    if (pos) statusbar.setPosition(`行 ${pos.lineNumber}, 列 ${pos.column}`);
+    if (pos) statusbar.setPosition(`行 ${pos.lineNumber}，列 ${pos.column}`);
     refreshOutline();
   },
   onContentChange: active => { markResultsStale(); if (active) refreshOutline(); },

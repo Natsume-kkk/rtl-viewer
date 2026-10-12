@@ -3,7 +3,7 @@ import { it, expect, vi } from "vitest";
 import { SignalFlowPanel } from "../src/ui/signal-flow";
 import { SignalProject, traceSignal, type TraceNode } from "../src/model/signal-flow";
 const leaf=(label:string,line:number,reason?:string):TraceNode=>({label,file:"t.v",line,reason,children:[]});
-const setup=()=>{const root=document.createElement("aside");document.body.append(root);const navigate=vi.fn(),enter=vi.fn();const panel=new SignalFlowPanel(root,{close:vi.fn(),context:vi.fn(),navigate,enter});return{root,panel,navigate,enter};};
+const setup=()=>{const root=document.createElement("aside");document.body.append(root);const navigate=vi.fn();const panel=new SignalFlowPanel(root,{close:vi.fn(),context:vi.fn(),navigate});return{root,panel,navigate};};
 const card=(root:HTMLElement,name:string)=>[...root.querySelectorAll<HTMLElement>(".port-card")].find(c=>c.dataset.signal===name)!;
 it("空面板提示右键追踪，不要求移动光标",()=>{
  const{root}=setup();const hint=root.querySelector<HTMLElement>(".flow-following")!;expect(hint.hidden).toBe(false);expect(hint.textContent).toContain("追踪此信号");expect(root.querySelector(".flow-selected")).toBeNull();root.remove();
@@ -52,8 +52,8 @@ it("单路直接延伸，到下一个扇出列候选，再按路继续",()=>{
 it("未知方向只显示一次，用无方向虚线连接，不冒充双向",()=>{
  const{root,panel}=setup();const trace={label:"top.a",children:[leaf("top/ip.clk",3,"黑盒或缺失定义")]};panel.result("a",trace,trace,"");expect(root.querySelectorAll('[data-line="3"]')).toHaveLength(1);expect(root.textContent).toContain("方向待确认");const path=root.querySelector(".logic-wire")!;expect(path.hasAttribute("marker-end")).toBe(false);expect(path.hasAttribute("marker-start")).toBe(false);root.remove();
 });
-it("赋值卡片保留代码与进入模块入口，停止原因不隐藏",()=>{
- const{root,panel,enter}=setup();const target={context:{module:"top",path:"top"},signal:"q"};panel.result("a",{label:"top.a",children:[]},{label:"top.a",children:[{...leaf("q ← a + b",3,"赋值位置"),statement:"q = a + b;",target},leaf("unsupported",7,"未知语法边界")]},"");expect(root.querySelector(".logic-expression")?.textContent).toBe("q = a + b;");root.querySelector<HTMLButtonElement>(".flow-enter")!.click();expect(enter).toHaveBeenCalledWith(target.context,"q",{file:"t.v",line:3});expect(root.textContent).toContain("未知语法边界");root.remove();
+it("赋值卡片直接保留代码，不再切换到完整依赖图，停止原因不隐藏",()=>{
+ const{root,panel}=setup();const target={context:{module:"top",path:"top"},signal:"q"};panel.result("a",{label:"top.a",children:[]},{label:"top.a",children:[{...leaf("q ← a + b",3,"赋值位置"),statement:"q = a + b;",target},leaf("unsupported",7,"未知语法边界")]},"");expect(root.querySelector(".logic-expression")?.textContent).toBe("q = a + b;");expect(root.querySelector(".flow-enter")).toBeNull();expect(root.textContent).toContain("未知语法边界");root.remove();
 });
 it("时钟使用终点保留用途及源码位置",()=>{
  const{root,panel,navigate}=setup();panel.result("clk",{label:"top.clk",children:[]},{label:"top.clk",children:[{...leaf("top/u.clk",2),children:[leaf("clk · t.v",4,"控制/时钟信号，不作为数据链展开")]}]},"");root.querySelector<HTMLButtonElement>('[data-line="4"]')!.click();expect(navigate).toHaveBeenCalledWith("t.v",4);expect(root.textContent).toContain("控制/时钟信号");root.remove();
@@ -63,4 +63,53 @@ it("赋值卡片保留实际阻塞与非阻塞运算符，不能从时钟猜测"
  const p=new SignalProject(new Map([["t.v","module t(input a,output reg q,r); always @* begin q<=a; r=a; end endmodule"]])),ctx=p.root("t")!;
  const up=await traceSignal(p,ctx,"q","upstream",{stopAtAssignments:true});const down=await traceSignal(p,ctx,"a","downstream",{stopAtAssignments:true});
  const{root,panel}=setup();panel.result("a",up,down,"");const text=[...root.querySelectorAll(".logic-expression")].map(n=>n.textContent).join("\n");expect(text).toMatch(/q\s*<=\s*a;/);expect(text).toMatch(/r\s*=\s*a;/);root.remove();
+});
+
+it("端口多路终点直接显示第一层赋值，定位不切换分析范围",async()=>{
+ const files=new Map([["t.v",`module top(input a,output y,z);
+ leaf u1(.i(a),.o(y)); leaf u2(.i(a),.o(z)); endmodule
+ module leaf(input i,output o); wire inner;
+ assign inner=~i; assign o=inner; endmodule`]]);
+ const p=new SignalProject(files),ctx=p.root("top")!;
+ const{root,panel,navigate}=setup();
+ panel.result("a",await traceSignal(p,ctx,"a","upstream",{stopAtAssignments:true}),await traceSignal(p,ctx,"a","downstream",{stopAtAssignments:true}),"");
+ const assignments=[...root.querySelectorAll<HTMLElement>(".port-card")].filter(c=>c.querySelector(".assignment-context"));
+ expect(assignments).toHaveLength(2);
+ expect(assignments.every(c=>!c.hidden)).toBe(true);
+ expect(assignments.every(c=>c.textContent?.includes("assign inner=~i;"))).toBe(true);
+ expect(root.textContent).not.toContain("assign o=inner;");
+ expect(root.querySelectorAll(".logic-wire")).toHaveLength(4);
+ expect(card(root,"u1.i").querySelector<HTMLButtonElement>(".path-continue")!.hidden).toBe(true);
+ assignments[0].querySelector<HTMLButtonElement>(".source-jump")!.click();
+ expect(navigate).toHaveBeenCalledWith("t.v",4);
+ expect(root.querySelector(".flow-enter")).toBeNull();
+ expect(root.querySelector(".flow-selected")?.textContent).toBe("a");
+ root.remove();
+});
+
+it("端口扇出中的直接赋值保持可见，更深子模块仍按路展开",async()=>{
+ const p=new SignalProject(new Map([["t.v",`module top(input a); branch u(.i(a)); leaf v(.i(a)); endmodule
+ module branch(input i); wire q; assign q=~i; leaf child(.i(i)); endmodule
+ module leaf(input i); wire z; assign z=i; endmodule`]])),ctx=p.root("top")!;
+ const{root,panel}=setup();
+ panel.result("a",await traceSignal(p,ctx,"a","upstream",{stopAtAssignments:true}),await traceSignal(p,ctx,"a","downstream",{stopAtAssignments:true}),"");
+ const assignment=[...root.querySelectorAll<HTMLElement>(".port-card")].find(c=>c.textContent?.includes("assign q=~i;"))!;
+ expect(assignment.hidden).toBe(false);expect(card(root,"u/child.i").hidden).toBe(true);
+ const next=card(root,"u.i").querySelector<HTMLButtonElement>(".path-continue")!;
+ expect(next.hidden).toBe(false);next.click();expect(card(root,"u/child.i").hidden).toBe(false);
+ const saved=panel.capture();next.click();expect(assignment.hidden).toBe(false);expect(card(root,"u/child.i").hidden).toBe(true);
+ panel.restore(saved);expect(card(root,"u/child.i").hidden).toBe(false);
+ [...root.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="全部收起")!.click();
+ expect(assignment.hidden).toBe(false);expect(card(root,"u/child.i").hidden).toBe(true);
+ root.remove();
+});
+
+it("多个来源端口的驱动赋值直接可见",async()=>{
+ const p=new SignalProject(new Map([["t.v",`module top(output y); driver u1(.o(y)); driver u2(.o(y)); endmodule
+ module driver(output o); assign o=1'b0; endmodule`]])),ctx=p.root("top")!;
+ const{root,panel}=setup();panel.result("y",await traceSignal(p,ctx,"y","upstream",{stopAtAssignments:true}),await traceSignal(p,ctx,"y","downstream",{stopAtAssignments:true}),"");
+ const assignments=[...root.querySelectorAll<HTMLElement>(".port-card")].filter(c=>c.querySelector(".assignment-context"));
+ expect(assignments).toHaveLength(2);expect(assignments.every(c=>!c.hidden)).toBe(true);
+ expect(assignments.every(c=>c.querySelector(".operation-name")?.textContent==="驱动赋值")).toBe(true);
+ root.remove();
 });

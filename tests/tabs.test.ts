@@ -44,6 +44,7 @@ vi.mock("../src/editor/monaco", () => {
   return {
     monaco: {
       editor: {
+        getModel: () => null,
         createModel: (content: string, lang: string, uri: { toString(): string }) =>
           new FakeModel(content, lang, uri),
         setModelLanguage: () => {},
@@ -132,6 +133,33 @@ async function setup() {
 }
 
 describe("TabManager", () => {
+  it("不保存关闭后预览仍引用模型，再打开采用本次读盘内容并保持正确脏状态", async () => {
+    const { make, mocks } = await setup();
+    const { monaco } = await import("../src/editor/monaco");
+    const { sharedModelStore } = await import("../src/editor/model-store");
+    const tm = make();
+    const path = "D:/rtl/child.sv";
+    tm.openContent(path, "saved", "utf8", 1);
+    const oldTab = tm.activeTab!;
+    oldTab.model.setValue("discarded unsaved");
+    const store = sharedModelStore(monaco.editor);
+    const uri = monaco.Uri.file(path);
+    const preview = store.acquire(uri, "ignored", "verilog", "preview");
+    mocks.choiceDialog.mockResolvedValue(1);
+    expect(await tm.close(oldTab)).toBe(true);
+    expect(preview.isDisposed()).toBe(false);
+    mocks.readFile.mockResolvedValue({ content: "fresh disk", encoding: "utf8", mtime: 2 });
+    await tm.openFile(path);
+    expect(tm.activeTab!.model.getValue()).toBe("fresh disk");
+    expect(tm.activeTab!.dirty).toBe(false);
+    expect(tm.activeTab!.mtime).toBe(2);
+    store.release(uri.toString(), "preview");
+    tm.activeTab!.model.setValue("next unsaved");
+    expect(tm.activeTab!.dirty).toBe(true);
+    expect(await tm.closeAll()).toBe(true);
+    expect(preview.isDisposed()).toBe(true);
+  });
+
   it("跨组同名文件显示最短区分目录，同一路径的两个视图不制造重名", async () => {
     const { make } = await setup(); const a = make(), b = make();
     a.openContent("D:/project/rx/rtl/top.v", "rx", "utf8", 1);

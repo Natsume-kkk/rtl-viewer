@@ -9,9 +9,11 @@ export interface MenuItem {
 
 let ctxMenu: HTMLDivElement | null = null;
 let releaseKeyboard: (() => void) | undefined;
+let releaseLayout: (() => void) | undefined;
 
 export function closeCtxMenu(): void {
   releaseKeyboard?.(); releaseKeyboard = undefined;
+  releaseLayout?.(); releaseLayout = undefined;
   ctxMenu?.remove();
   ctxMenu = null;
 }
@@ -34,10 +36,15 @@ export function showCtxMenu(x: number, y: number, items: MenuItem[], anchor?: HT
     menu.appendChild(row);
   }
   document.body.appendChild(menu);
-  // 防出屏：先渲染再按实际尺寸收回视口内
-  const rect = menu.getBoundingClientRect();
-  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - rect.width - 4))}px`;
-  menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - rect.height - 4))}px`;
+  // CSS 先约束尺寸，再按实际尺寸收回视口内；窗口缩小时重新定位。
+  const positionMenu = () => {
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - rect.width - 4))}px`;
+    menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - rect.height - 4))}px`;
+  };
+  positionMenu();
+  window.addEventListener("resize", positionMenu);
+  releaseLayout = () => window.removeEventListener("resize", positionMenu);
   ctxMenu = menu;
   releaseKeyboard = activateMenu(menu, closeCtxMenu, anchor);
 }

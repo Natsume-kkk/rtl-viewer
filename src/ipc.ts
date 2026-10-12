@@ -69,8 +69,8 @@ export async function openFileDialog(defaultPath?: string): Promise<string | nul
     title: "打开源码文件",
     defaultPath,
     filters: [
-      { name: "HDL / Constraints", extensions: ["v", "sv", "vh", "svh", "vhd", "vhdl", "xdc", "sdc"] },
-      { name: "All", extensions: ["*"] },
+      { name: "HDL 源码与约束文件", extensions: ["v", "sv", "vh", "svh", "vhd", "vhdl", "xdc", "sdc"] },
+      { name: "所有文件", extensions: ["*"] },
     ],
   });
   return typeof selected === "string" ? normalizePath(selected) : null;
@@ -81,8 +81,8 @@ export async function saveFileDialog(defaultPath?: string): Promise<string | nul
     title: "另存为",
     defaultPath,
     filters: [
-      { name: "HDL", extensions: ["v", "sv", "vh", "svh", "vhd", "vhdl"] },
-      { name: "All", extensions: ["*"] },
+      { name: "HDL 源码文件", extensions: ["v", "sv", "vh", "svh", "vhd", "vhdl"] },
+      { name: "所有文件", extensions: ["*"] },
     ],
   });
   return selected ? normalizePath(selected) : null;

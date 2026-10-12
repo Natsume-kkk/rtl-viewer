@@ -90,6 +90,8 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 
 `src/` 与 `src-tauri/` 属于同一个桌面应用，通过 `src/ipc.ts` 通信；HDL 解析和信号分析在前端执行，磁盘访问与编码读写在本机 Rust 后端执行。
 
+信号链保持两类边界：端口由 `src/model/signal-flow.ts` 跨层追到赋值位置，`src/ui/signal-ports.ts` 直接显示已可见端口的赋值终点；内部信号由 `src/analysis/local.ts` 在当前模块内分析，子模块端口通过 `loadPortSites` 附带有界的第一层源码预览（`stopAtAssignments` + `descendOnly`），沿纯端口转接向下查找到第一处实际赋值／使用，保留预算和递归例化截止，不向父模块回溯，不合并子模块依赖图。入口分类、快照与取消由 `src/app/signal-controller.ts` 管理，两个视图均在原链路显示终点源码，不强制切换到模块内模式；对应回归见 `tests/signal-analysis.test.ts`、`tests/signal-endpoints.test.ts`、`tests/signal-flow-ui.test.ts` 和 `tests/signal-controller.test.ts`。
+
 | 生成目录 | 用途 |
 |---|---|
 | `dist/` | Vite 前端构建资源，打包时嵌入 exe |
@@ -146,11 +148,21 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 [Monaco 入口](../src/editor/monaco.ts) 使用按需导入，保留编辑器贡献，排除无关语言服务与 LSP。升级版本时核对以下内容：
 
 - 导入清单与目标版本 `editor.main.js` 的编辑器贡献部分对应，不改为 `import "monaco-editor"` 整包入口。
+- `monaco-editor/nls/lang/zh-cn` 必须先于编辑器及贡献模块加载，菜单和命令标签在模块初始化时生成；沿用同版本自带语言包，不另装中文化插件。升级后检查右键菜单、查找替换、命令面板及双视图的中文显示。
 - 列编辑依赖的内部 `CursorColumns` 算法与 [局部类型声明](../src/editor/monaco-internals.d.ts) 一致。
+- 定义预览复用 `InMemoryTextModelService`，通过 `StandaloneServices.initialize` 接入按需模型租用，必须早于主题等首次服务初始化。升级时核对服务标识、引用释放及合成文档接口；相关回归见 `tests/definition-models.test.ts`。模型由 `src/editor/model-store.ts` 统一管理标签与预览引用，不全量预建工程模型，也不覆盖已有标签的未保存内容。
 - worker、codicon CSS 的实际路径和导出映射仍有效；新增语言高亮只添加对应 `languages/definitions/<lang>/register`。
 - 运行编辑器与列编辑相关回归，并检查构建产物没有新增无关语言包和 worker。
 
 [src/style.css](../src/style.css) 是界面深浅主题令牌的唯一来源，通过 `<html data-theme>` 切换；`public/theme-init.js` 在首帧前初始化主题。[src/ui/theme.ts](../src/ui/theme.ts) 管理偏好，Monaco 经 `setEditorTheme` 联动 `meridian-dark`／`meridian-light`，编辑器语法配色与界面令牌分别维护。
+
+应用动作统一通过 `src/editor/actions.ts` 注册：全局注册保留菜单和键位，每个编辑器通过 `addAction` 补命令面板入口，不重复绑定快捷键。`editorTextFocus` 放在键位条件中，不能用作面板动作的前置条件；只读保护仍保留。安装必须在 standalone 编辑器构造完成后进行；升级时核对中文搜索、左右视图执行目标及菜单数量。约束文件按普通可编辑文本处理，使用 Tcl 高亮，不施加只读限制。
+
+字体同样由 `src/style.css` 统一定义：`--font-ui` 用于菜单、按钮和说明，`--font-mono` 用于源码、模块名、路径和信号卡片，均提供微软雅黑中文回退。常规界面为 12 px，辅助文字为 11 px，源码初始字号为 14 px；窄窗口调整空间与省略方式，不缩小字体。`createEditor` 从 CSS 读取等宽字体与源码字号，保留编辑器手动缩放；`useShadowDOM: false` 使右键菜单采用应用字体规则。
+
+右键菜单在 `src/style.css` 中限定为视口固定定位，覆盖 Monaco 的行内绝对定位，避免被编辑区／分屏的 `overflow: hidden` 裁剪；不放开编辑区自身的溢出约束。Monaco 0.57 定位前实测零坐标原点，继续由其处理边缘翻转、子菜单及超高菜单滚动。菜单颜色变量局部映射到应用主题令牌，不影响源码配色。升级 Monaco 后检查定位算法是否仍支持该覆盖，并实际验证上下左右边缘、菜单高于窗口、深浅主题和双视图；除检查边界矩形，还需用命中测试确认首尾项可点击。字体检查覆盖菜单、查找替换和命令输入框，不能只核对 CSS 定义。
+
+补全与悬浮提示通过 `createEditor` 的 `fixedOverflowWidgets: true` 使用 Monaco 自带的视口定位，两个分屏共用此配置。路径菜单限制宽高到视口内，长路径换行、过长列表滚动，窗口缩小时重新定位；键盘首尾与方向键沿用 `activateMenu` 的焦点导航。应用提示框保留默认按钮、Tab 按钮循环与关闭后焦点恢复，长消息保留换行并独立滚动，按钮组不随消息滚出。修改这些浮层后，在窄窗口检查左右分屏补全及底部候选、菜单首尾项命中与滚动、长文件名／多行错误消息及确认按钮可达；DOM 测试不替代实际窗口布局验收。
 
 ### 品牌图标与桌面截图
 

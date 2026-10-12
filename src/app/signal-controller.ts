@@ -5,9 +5,9 @@ import { findSignalDeclLine } from "../model/signals";
 import { monaco } from "../editor/monaco";
 import { pathFromUri } from "../editor/file-path";
 import { SignalProject, traceSignal, type SignalContext } from "../model/signal-flow";
-import { SignalFlowPanel, type FlowViewState } from "../ui/signal-flow";
+import { SignalFlowPanel } from "../ui/signal-flow";
 import { ComputationProject } from "../analysis/project";
-import { localLogic, signalMode } from "../analysis/local";
+import { localLogic, loadPortSites, signalMode } from "../analysis/local";
 import { sourceEntry } from "../analysis/source-cache";
 
 const IDENT_RE = /^[A-Za-z_]\w*$/;
@@ -26,22 +26,19 @@ export interface SignalControllerContext {
   hint(message: string): void;
 }
 
-/** 按需快照、异步追踪与阅读历史；主入口只负责界面装配。 */
+/** 按需快照、异步追踪与阅读状态；主入口只负责界面装配。 */
 export function createSignalController(root: HTMLElement, ctx: SignalControllerContext) {
   let flowRequest = 0;
   let flowReady = false;
   let flowProject: { project: SignalProject; computation: ComputationProject; sources: Map<string,string>; top: string | undefined; files: Set<string> } | undefined;
   const flowTokens = new WeakMap<monaco.editor.ITextModel, { version: number; lines: monaco.Token[][] }>();
-  interface FlowSelection { project: SignalProject; computation: ComputationProject; sources: Map<string,string>; signal: string; contexts: SignalContext[]; note: string; file: string; line: number; column: number; scope: number; forceLogic?: boolean }
+  interface FlowSelection { project: SignalProject; computation: ComputationProject; sources: Map<string,string>; signal: string; contexts: SignalContext[]; note: string; file: string; line: number; column: number; scope: number }
   let flowSelection: FlowSelection | undefined;
-  let flowHistory: {selection:FlowSelection;index:number;view:FlowViewState}[] = [];
   let flowContextPath: string | undefined;
   const flowPanel = new SignalFlowPanel(root, {
     close: () => ctx.close(),
     refresh: () => { if (flowSelection) void analyzeCurrentSignal(flowSelection); },
-    context: index => { flowHistory=[]; flowPanel.setBack(false); void runSignalTrace(index); },
-    enter: (context, signal, source) => void enterSignalLogic(context,signal,source),
-    back: () => { const old=flowHistory.pop();if(old){const expected=flowRequest+1;void runSignalTrace(old.index,old.selection).then(()=>{if(flowRequest===expected&&flowSelection===old.selection)flowPanel.restore(old.view);});} },
+    context: index => { void runSignalTrace(index); },
     navigate: (file, line) => {
       void ctx.navigate(file, line).catch(error => ctx.hint(`定位失败：${String(error)}`));
     },
@@ -51,7 +48,7 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
     ++flowRequest;
   }
 
-  async function analyzeCurrentSignal(previous?: { file: string; line: number; column: number; signal: string; scope: number; forceLogic?: boolean }): Promise<void> {
+  async function analyzeCurrentSignal(previous?: { file: string; line: number; column: number; signal: string; scope: number }): Promise<void> {
     cancelSignalAnalysis();
     const ed = ctx.editor(), model = ed.getModel(), position = ed.getPosition();
     let word = previous?.signal ?? (model && position ? model.getWordAtPosition(position)?.word : undefined);
@@ -119,9 +116,8 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
     const contexts = found.items.length ? found.items : [project.root(owner)!].filter(Boolean);
     if (!contexts.length) { flowPanel.hint("未找到当前模块定义，保留原链路。"); return; }
     const note = found.truncated ? "实例路径列表已截断。" : found.items.length ? "" : "未定位到当前顶层内的实例，仅分析本模块范围。";
-    const selection:FlowSelection = { project, computation:flowProject.computation, sources:flowProject.sources, signal: word, contexts, note, file, line, column, scope, forceLogic:previous?.forceLogic };
+    const selection:FlowSelection = { project, computation:flowProject.computation, sources:flowProject.sources, signal: word, contexts, note, file, line, column, scope };
     const selected = Math.max(0, contexts.findIndex(c => c.path === preferredPath));
-    if(!previous)flowHistory=[];
     await runSignalTrace(selected, selection);
   }
 
@@ -133,10 +129,11 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
     const options = { cancelled: () => request !== flowRequest, source: selection };
     try {
       const context=selection.contexts[index];
-      const mode=selection.forceLogic?"logic":signalMode(selection.project,context,selection.signal,selection.scope);
+      const mode=signalMode(selection.project,context,selection.signal,selection.scope);
       const localProject=mode==="logic"?selection.project.forSource(context.module,selection):selection.project;
       const localComputation=localProject===selection.project?selection.computation:new ComputationProject(selection.sources,localProject);
       const graph=mode==="logic" && selection.scope<0 ? localLogic(localComputation,localProject,context,selection.signal) : undefined;
+      if(graph)await loadPortSites(graph,localProject,options.cancelled);
       if(graph){const root=graph.nodes.find(n=>n.id===graph.root);if(root){const start=sourceEntry(selection.file,selection.sources.get(selection.file)??"").lineOffset(selection.line);root.source={file:selection.file,start,end:start+1};}}
       const up=graph?undefined:await traceSignal(selection.project,context,selection.signal,"upstream",{...options,stopAtAssignments:mode==="port",localOnly:mode==="logic"});
       if(request!==flowRequest)return;
@@ -146,7 +143,6 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
         if(selection.project===flowProject?.project)flowPanel.clearStale();else flowPanel.markStale();
         if(graph)flowPanel.logicResult(selection.signal,context,graph,selection.sources,selection.note);
         else flowPanel.result(selection.signal,up!,down!,selection.note,mode==="port"?"端口连接":"模块内逻辑 · 过程作用域");
-        flowPanel.setBack(flowHistory.length>0);
         flowPanel.hint("");flowReady=true;
       }
     } catch (error) {
@@ -154,21 +150,7 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
     }
   }
 
-  async function enterSignalLogic(context:SignalContext,signal:string,source?:{file:string;line:number}):Promise<void>{
-    if(!flowSelection||!flowReady){flowPanel.hint("源码已变化，请先刷新当前信号链。");return;}
-    const mod=flowSelection.project.module(context.module);if(!mod)return;
-    flowHistory.push({selection:flowSelection,index:Math.max(0,flowSelection.contexts.findIndex(c=>c.path===flowContextPath)),view:flowPanel.capture()});
-    if(flowHistory.length>30)flowHistory.shift();
-    const file=source?.file??mod.file,line=source?.line??findSignalDeclLine(flowSelection.sources.get(file)??"",file,signal)??mod.line;
-    const scope=flowSelection.project.signalScope(context.module,signal,{file,line});
-    const selection:FlowSelection={...flowSelection,signal,contexts:[context],file,line,column:1,scope,forceLogic:true,note:""};
-    await runSignalTrace(0,selection);
-  }
-
-
   function invalidate(): void {
-    flowHistory = [];
-    flowPanel.setBack(false);
     flowProject = undefined;
     cancelSignalAnalysis();
     flowReady = false;

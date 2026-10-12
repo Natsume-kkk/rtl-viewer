@@ -44,6 +44,7 @@ vi.mock("../src/editor/monaco", () => {
   return {
     monaco: {
       editor: {
+        getModel: () => null,
         createModel: (content: string, lang: string, uri: { toString(): string }) =>
           new FakeModel(content, lang, uri),
         setModelLanguage: () => {},

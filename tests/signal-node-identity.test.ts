@@ -9,21 +9,22 @@ import { localLogic } from "../src/analysis/local";
 async function ports(source:string, signal="a", path="top") {
   const files=new Map([["t.v",source]]), p=new SignalProject(files), comp=new ComputationProject(files,p), ctx=comp.context(path)!;
   const up=await traceSignal(p,ctx,signal,"upstream",{stopAtAssignments:true}),down=await traceSignal(p,ctx,signal,"downstream",{stopAtAssignments:true});
-  const body=document.createElement("div"),entered:string[]=[];
-  const view=new SignalPortsView(signal,up,down,body,c=>entered.push(c.path));view.expandAll();
-  return {body,entered};
+  const body=document.createElement("div");
+  const view=new SignalPortsView(signal,up,down,body);view.expandAll();
+  return {body};
 }
 function logic(source:string,signal="q") {
   const files=new Map([["t.v",source]]),p=new SignalProject(files),ctx=p.root("top")!,comp=new ComputationProject(files,p),body=document.createElement("div");
-  new SignalLogicView(localLogic(comp,p,ctx,signal),body,{navigate(){}},files);
+  new SignalLogicView(localLogic(comp,p,ctx,signal),body,files);
   return body;
 }
-it("复用模块赋值按实例隔离，分别进入正确实例",async()=>{
-  const {body,entered}=await ports("module top(input a); child u1(.i(a)); child u2(.i(a)); endmodule module child(input i); wire q=~i; endmodule");
+it("复用模块赋值按实例隔离，分别显示正确实例",async()=>{
+  const {body}=await ports("module top(input a); child u1(.i(a)); child u2(.i(a)); endmodule module child(input i); wire q=~i; endmodule");
   const cards=[...body.querySelectorAll<HTMLElement>(".port-card")].filter(c=>c.querySelector(".logic-expression"));
   expect(cards).toHaveLength(2);
   expect(cards.map(c=>c.querySelector(".assignment-context")?.textContent)).toEqual(["top/u1","top/u2"]);
-  cards.forEach(c=>c.querySelector<HTMLButtonElement>(".flow-enter")!.click());expect(entered).toEqual(["top/u1","top/u2"]);
+  expect(body.querySelector(".flow-enter")).toBeNull();
+  expect(cards.every(c=>c.textContent?.includes("q=~i"))).toBe(true);
 });
 it("真实汇合的同一实例赋值仍只显示一次",async()=>{
   const {body}=await ports("module top(input a); child u(.i(a),.j(a)); endmodule module child(input i,j); wire q=i|j; endmodule");
@@ -84,7 +85,7 @@ u: entity work.child port map(i => q(3 downto 0)); end rtl;
 entity child is port(i: in bit_vector(3 downto 0)); end child;
 architecture rtl of child is begin end rtl;`]]);
   const p=new SignalProject(files),ctx=p.root("top")!,comp=new ComputationProject(files,p),body=document.createElement("div");
-  new SignalLogicView(localLogic(comp,p,ctx,"q"),body,{navigate(){}},files);
+  new SignalLogicView(localLogic(comp,p,ctx,"q"),body,files);
   expect(body.querySelector('[data-node="q"] .logic-expression')?.textContent).toBe("q <= a;");
   expect(body.querySelector(".port-mapping")?.textContent).toBe("i => q(3 downto 0)");
 });

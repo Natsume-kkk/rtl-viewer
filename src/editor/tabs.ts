@@ -1,4 +1,5 @@
 import { monaco, langForFile } from "./monaco";
+import { sharedModelStore } from "./model-store";
 import { readFile, writeFile, saveFileDialog, fileStates, showInFolder, normalizePath } from "../ipc";
 import { appAlert, appConfirm, choiceDialog } from "../ui/dialog";
 import { setIcon } from "../ui/icons";
@@ -29,33 +30,18 @@ export interface Tab {
  * 共享 model 存储（按 uri 引用计数）：分屏两侧打开同一文件时共用同一 model，
  * 编辑实时互通，避免双 model 内容分裂。
  */
-const modelStore = new Map<string, { model: monaco.editor.ITextModel; refs: number }>();
+const modelStore = sharedModelStore(monaco.editor);
 
 // 模块级计数：分屏各编辑组各持一个 TabManager，实例字段会让两组都从 untitled-1 开始，
 // uriKey 相同导致误共享 model，两组新建文件内容互相串扰
 let untitledSeq = 0;
 
 function acquireModel(uri: monaco.Uri, content: string, lang: string): monaco.editor.ITextModel {
-  const uriKey = uri.toString();
-  const hit = modelStore.get(uriKey);
-  if (hit) {
-    hit.refs += 1;
-    return hit.model;
-  }
-  // 序列化会归一盘符大小写；保留 file() 的原路径以匹配工程索引。
-  const model = monaco.editor.createModel(content, lang, uri);
-  modelStore.set(uriKey, { model, refs: 1 });
-  return model;
+  return modelStore.acquire(uri, content, lang);
 }
 
 function releaseModel(uriKey: string): void {
-  const entry = modelStore.get(uriKey);
-  if (!entry) return;
-  entry.refs -= 1;
-  if (entry.refs <= 0) {
-    entry.model.dispose();
-    modelStore.delete(uriKey);
-  }
+  modelStore.release(uriKey);
 }
 
 export interface TabEvents {

@@ -1,5 +1,6 @@
 import * as monaco from "monaco-editor/editor/editor.api";
 import { appAlert } from "../ui/dialog";
+import { registerEditorAction } from "./actions";
 
 type Editor = monaco.editor.ICodeEditor;
 
@@ -58,12 +59,12 @@ export function registerNotepadKeymap(): void {
   if (registered) return;
   registered = true;
   const ctrl = monaco.KeyMod.CtrlCmd, shift = monaco.KeyMod.Shift, alt = monaco.KeyMod.Alt;
-  monaco.editor.addEditorAction({
-    id: "rtl.cut-lines", label: "剪切整行", precondition: "editorTextFocus && !editorReadonly",
+  registerEditorAction({
+    id: "rtl.cut-lines", label: "剪切整行", precondition: "!editorReadonly",
     run: editor => clipboardLines(editor, true).catch(error => appAlert(`剪切失败：无法写入剪贴板（${String(error)}）`)),
   });
-  monaco.editor.addEditorAction({
-    id: "rtl.copy-lines", label: "复制整行", precondition: "editorTextFocus",
+  registerEditorAction({
+    id: "rtl.copy-lines", label: "复制整行",
     run: editor => clipboardLines(editor, false).catch(error => appAlert(`复制失败：无法写入剪贴板（${String(error)}）`)),
   });
   // 后注册的应用规则覆盖 Monaco 的同键绑定，包括 Ctrl+K 组合键前缀。

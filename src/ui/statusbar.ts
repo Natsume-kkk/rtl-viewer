@@ -108,7 +108,7 @@ export class StatusBar {
     editor.onDidChangeCursorPosition(() => {
       if (!isActive()) return;
       const pos = editor.getPosition();
-      if (pos) this.posEl.textContent = `行 ${pos.lineNumber}, 列 ${pos.column}`;
+      if (pos) this.posEl.textContent = `行 ${pos.lineNumber}，列 ${pos.column}`;
     });
   }
 
@@ -119,7 +119,7 @@ export class StatusBar {
 
   /** active 为 null 表示无打开文件 */
   update(lang: string | null, encoding: string | null): void {
-    this.posEl.textContent = lang ? this.posEl.textContent || "行 1, 列 1" : "";
+    this.posEl.textContent = lang ? this.posEl.textContent || "行 1，列 1" : "";
     this.langEl.textContent = lang ?? "";
     this.encEl.textContent = encoding ? (ENCODING_LABELS[encoding] ?? encoding) : "";
     this.encEl.disabled = !encoding;

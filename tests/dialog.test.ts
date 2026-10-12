@@ -17,6 +17,21 @@ function dialogButtons(): HTMLButtonElement[] {
 }
 
 describe("choiceDialog", () => {
+  it("长文件名与多行消息完整保留，消息和按钮分区且取消不改变默认选择", async () => {
+    const message = `无法保存 ${"a".repeat(220)}.v\n${"错误信息\n".repeat(200)}`;
+    const result = choiceDialog(message, ["保存并关闭", "不保存", "取消"], 2);
+    const msg = document.querySelector(".choice-msg")!;
+    expect(msg.textContent).toBe(message);
+    expect(msg.querySelector("button")).toBeNull();
+    const buttons = dialogButtons();
+    expect(document.activeElement).toBe(buttons[2]);
+    pressKey("Tab");
+    expect(document.activeElement).toBe(buttons[0]);
+    pressKey("Tab", true);
+    expect(document.activeElement).toBe(buttons[2]);
+    pressKey("Enter");
+    await expect(result).resolves.toBe(2);
+  });
   it("关闭确认可默认选择取消，Enter 不会丢弃修改", async () => {
     const result = choiceDialog("未保存", ["保存并关闭", "不保存", "取消"], 2);
     expect(document.activeElement?.textContent).toBe("取消");

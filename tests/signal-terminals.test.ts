@@ -19,7 +19,12 @@ it('未支持引用与未声明对象不能显示为无后续引用',async()=>{
 });
 it('被赋值的内部信号仍能追到控制用途，并发 when 条件也计为引用',async()=>{
   const r=await trace('module t(input clk,a,output reg y); reg q; always @(posedge clk) q<=a; always @* if(q) y=1; else y=0; endmodule','q','downstream');
-  expect(r.children.some(c=>c.reason?.includes('控制/时钟'))).toBe(true);
+  expect(r.children).toHaveLength(1);
+  expect(r.children[0].note).toBe('条件引用');
+  expect(r.children[0].target?.signal).toBe('y');
+  expect(r.children[0].statement).toContain('if (q)');
+  expect(r.children[0].statement).toContain('y=1;');
+  expect(r.children[0].children).toHaveLength(0);
   const v=await trace(`entity t is port(sel:in bit; y:out bit);end t; architecture rtl of t is begin y <= '1' when sel='1' else '0'; end rtl;`,'sel','downstream','t.vhd');
   expect(v.children).toHaveLength(1);expect(v.children[0].statement).toContain('when');
 });

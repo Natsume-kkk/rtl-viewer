@@ -1,11 +1,15 @@
 import type { Expr } from "../analysis/expression";
 import type { LogicGraph } from "../analysis/local";
 import type { Driver } from "../analysis/project";
-import { CARD_STEP, CANVAS_PAD, cardHeader, makeWires, drawWires, type CardPosition, type CardEdge } from "./signal-canvas";
-import type { SignalContext } from "../model/signal-flow";
+import type { TraceNode } from "../model/signal-flow";
+import { CARD_STEP, CANVAS_PAD, cardHeader, appendSource, makeWires, drawWires, type CardPosition, type CardEdge } from "./signal-canvas";
 import { setIcon } from "./icons";
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag:K,cls="",text=""):HTMLElementTagNameMap[K]=>{const n=document.createElement(tag);n.className=cls;n.textContent=text;return n;};
+const portEnds=(trace:TraceNode,signal:string):{site:TraceNode;signal:string}[]=>{
+  signal=trace.signal?.name??signal;
+  return trace.children.length?trace.children.flatMap(child=>portEnds(child,signal)):trace.reason==="模块端口"?[]:[{site:trace,signal}];
+};
 const code=(e:Expr):string=>{
   if(e.current)return e.value;
   if(e.kind==="cast")return `write<${e.value}>(${code(e.args[0])})`;
@@ -27,7 +31,7 @@ const choice=(e:Expr,depth=0):Expr|undefined=>{
 };
 interface Arm { guard:string; value:Expr; start:number }
 interface Branch { id:string; element:HTMLDetailsElement; value:Expr; driver:Driver; target:string; depth:number; nested:boolean; child?:string }
-export interface LogicViewState { open:string[]; routes:string[] }
+export interface LogicViewState { open:string[]; routes:string[]; sources?:boolean[] }
 
 export class SignalLogicView {
   private cards=new Map<string,HTMLElement>();
@@ -38,7 +42,7 @@ export class SignalLogicView {
   private canvas=el("div","logic-canvas");
   private svg=makeWires();
   private active=true;
-  constructor(private graph:LogicGraph, body:HTMLElement, private actions:{navigate(file:string,line:number):void; enter?(context:SignalContext,signal:string):void}, private files:ReadonlyMap<string,string>){
+  constructor(private graph:LogicGraph, body:HTMLElement, private files:ReadonlyMap<string,string>){
     body.classList.add("logic-body");body.append(this.canvas);this.canvas.append(this.svg);
     const base=graph.nodes.find(n=>n.id===graph.root)?.path??"";
     for(const node of graph.nodes){
@@ -54,16 +58,30 @@ export class SignalLogicView {
       if(node.kind==="resolved")card.append(el("span","logic-tag","多驱动"));
       if(node.kind!=="boundary"&&node.reason)card.append(el("p","flow-reason",node.reason));
       if(node.kind==="boundary"){
-        card.append(el("span","logic-tag",node.enter?"子模块端口":"分析边界"));
-        if(!node.enter&&(node.reason||node.detail))card.append(el("p","flow-reason",node.reason??node.detail));
+        if(!node.portContext){card.append(el("span","logic-tag","分析边界"));if(node.reason||node.detail)card.append(el("p","flow-reason",node.reason??node.detail));}
       }
       this.cards.set(node.id,card);this.canvas.append(card);
       for(const [i,driver]of node.drivers.entries()){
         const section=el("div","logic-driver");if(node.drivers.length>1)section.append(el("span","logic-tag",`驱动 ${i+1}`));
         card.append(section);this.expression(node.id,section,driver.expression,node.label,driver,`${node.id}/d${i}`,0);
       }
-      if(node.enter){const enter=el("button","text-button logic-enter","进入子模块");enter.type="button";enter.onclick=()=>this.actions.enter?.(node.enter!.context,node.enter!.signal);card.append(enter);}
-      if(node.kind==="boundary"&&!node.drivers.length&&!node.enter&&!node.detail)card.append(el("span","logic-tag","无法继续分析：缺少分析信息"));
+      for(const {direction,trace} of node.portSites??[]){
+        card.classList.add("port-endpoint");
+        card.append(el("span","logic-detail",direction==="upstream"?"驱动赋值":"使用位置"));
+        const sites=trace.children.flatMap(child=>portEnds(child,node.port!.name));
+        if(!sites.length)card.append(el("p","flow-reason",trace.reason??(direction==="upstream"?"无赋值来源":"无后续引用")));
+        for(const {site,signal} of sites){
+          const section=el("section","port-site");card.append(section);
+          const path=site.owner?.startsWith(node.path+"/")?site.owner.slice(node.path.length+1)+".":"";
+          const title=site.reason==="赋值位置"?path+(site.target?.signal??site.label):site.reason?.startsWith("控制/时钟")?path+"条件／时钟使用":site.label;
+          cardHeader(section,title,site.file?{file:site.file,line:site.line??1}:undefined);
+          const statement=site.statement??site.mapping??(site.file&&site.line?(this.files.get(site.file)??"").split("\n")[site.line-1]?.trim():undefined);
+          appendSource(section,{...site,statement},signal,()=>this.reveal());
+          if(site.note)section.append(el("code","flow-note",site.note));
+          if(site.reason&&site.reason!=="赋值位置")section.append(el("p","flow-reason",site.reason));
+        }
+      }
+      if(node.kind==="boundary"&&!node.drivers.length&&!node.portContext&&!node.detail)card.append(el("span","logic-tag","无法继续分析：缺少分析信息"));
       if(graph.edges.some(e=>e.from===node.id)&&!card.querySelector("details")){
         const next=el("button","text-button path-continue","继续追踪");next.type="button";
         next.onclick=()=>{this.routes.has(node.id)?this.routes.delete(node.id):this.routes.add(node.id);this.reveal();};
@@ -76,10 +94,10 @@ export class SignalLogicView {
     const focus=this.cards.get(graph.root);if(focus&&body.clientWidth>0&&focus.offsetLeft>body.clientWidth-236)body.scrollLeft=Math.max(0,focus.offsetLeft-body.clientWidth/2+118);
   }
   dispose():void{this.active=false;}
-  capture():LogicViewState{return {open:[...this.open],routes:[...this.routes]};}
-  restore(s:LogicViewState):void{this.open=new Set(s.open);this.routes=new Set(s.routes);this.reveal();}
-  expandAll():void{this.routes=new Set(this.cards.keys());this.reveal(true);}
-  collapseAll():void{this.open.clear();this.routes.clear();this.reveal();}
+  capture():LogicViewState{return {open:[...this.open],routes:[...this.routes],sources:[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].map(d=>d.open)};}
+  restore(s:LogicViewState):void{this.open=new Set(s.open);this.routes=new Set(s.routes);if(s.sources)[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].forEach((d,i)=>d.open=s.sources![i]??true);this.reveal();}
+  expandAll():void{this.routes=new Set(this.cards.keys());for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=true;this.reveal(true);}
+  collapseAll():void{this.open.clear();this.routes.clear();for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=false;this.reveal();}
   private location(file:string,start:number){return {file,line:(this.files.get(file)??"").slice(0,start).split("\n").length};}
   private unwrap(e:Expr,target:string):Expr{return e.kind==="cast"&&e.value===target&&!e.event?e.args[0]:e;}
   private group(e:Expr,target:string,vhdl:boolean):{header?:string;arms:Arm[]}|undefined{

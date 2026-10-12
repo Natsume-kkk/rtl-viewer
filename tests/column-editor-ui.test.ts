@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { openColumnEditor } from "../src/editor/column-editor";
 vi.mock("../src/editor/monaco", () => ({ monaco: { editor: { EditorOption: { readOnly: 1 } }, Selection: class {} } }));
+vi.mock("../src/editor/actions", () => ({ registerEditorAction: vi.fn() }));
 
 beforeEach(() => document.body.replaceChildren());
 function setup() {

@@ -12,16 +12,14 @@ export class SignalFlowPanel {
   private ports?: SignalPortsView;
   private identity: HTMLElement;
   private mode: HTMLElement;
-  private back: HTMLButtonElement;
   private contexts: HTMLSelectElement;
   private status: HTMLElement;
   private stale: HTMLButtonElement;
   private following: HTMLElement;
-  constructor(root: HTMLElement, private actions: { close(): void; refresh?(): void; context(index: number): void; navigate(file: string, line: number): void; enter?(context: SignalContext, signal: string, source?: {file:string;line:number}): void; back?(): void }) {
+  constructor(root: HTMLElement, actions: { close(): void; refresh?(): void; context(index: number): void; navigate(file: string, line: number): void }) {
     const head = document.createElement("div"); head.className = "panel-head"; head.textContent = "信号链";
     this.identity = document.createElement("span"); this.identity.className="flow-identity"; head.append(this.identity);
     this.mode = document.createElement("span"); this.mode.className = "flow-mode"; head.append(this.mode);
-    this.back = document.createElement("button"); this.back.className="text-button"; this.back.textContent="返回"; this.back.disabled=true; this.back.onclick=()=>actions.back?.(); head.append(this.back);
     const all = document.createElement("button"); all.className="text-button"; all.textContent="全部展开";
     all.onclick=()=>{ if(this.logic)this.logic.expandAll();else this.ports?.expandAll(); };head.append(all);
     const collapse = document.createElement("button");collapse.className="text-button";collapse.textContent="全部收起";
@@ -54,7 +52,6 @@ export class SignalFlowPanel {
   }
   hint(text: string): void { this.following.textContent = text; this.following.hidden=!text; }
   message(text: string): void { this.logic?.dispose(); this.logic=undefined; this.ports?.dispose(); this.ports=undefined; this.body.classList.remove("logic-body"); this.status.textContent = text; this.status.hidden=!text; this.identity.replaceChildren(); this.body.replaceChildren(); this.body.scrollLeft=0; this.body.scrollTop=0; }
-  setBack(enabled:boolean):void { this.back.disabled=!enabled; }
   capture():FlowViewState { return {open:[...this.body.querySelectorAll<HTMLDetailsElement>("details")].map(d=>d.open),left:this.body.scrollLeft,top:this.body.scrollTop,logic:this.logic?.capture(),ports:this.ports?.capture()}; }
   restore(s:FlowViewState):void { if(this.logic&&s.logic)this.logic.restore(s.logic);else if(this.ports&&s.ports)this.ports.restore(s.ports);else [...this.body.querySelectorAll<HTMLDetailsElement>("details")].forEach((d,i)=>d.open=s.open[i]??false);this.body.scrollLeft=s.left;this.body.scrollTop=s.top; }
   private identify(signal:string,path:string):void {
@@ -65,7 +62,7 @@ export class SignalFlowPanel {
   logicResult(signal:string,ctx:SignalContext,graph:LogicGraph,files:ReadonlyMap<string,string>,note:string):void {
     this.message(note);this.mode.textContent="模块内逻辑";this.identify(signal,ctx.path);
     if(graph.truncated){this.status.append("达到分析预算，部分路径未展开");this.status.hidden=false;}
-    this.logic=new SignalLogicView(graph,this.body,this.actions,files);
+    this.logic=new SignalLogicView(graph,this.body,files);
   }
   markStale(): void { this.stale.hidden = false; }
   clearStale(): void { this.stale.hidden = true; }
@@ -77,6 +74,6 @@ export class SignalFlowPanel {
   result(signal: string, upstream: TraceNode, downstream: TraceNode, note: string, mode = "端口连接"): void {
     this.message(note);this.mode.textContent=mode;
     this.identify(signal,upstream.label.slice(0,upstream.label.lastIndexOf(".")));
-    this.ports=new SignalPortsView(signal,upstream,downstream,this.body,this.actions.enter);
+    this.ports=new SignalPortsView(signal,upstream,downstream,this.body);
   }
 }

@@ -428,7 +428,7 @@ export class SignalProject {
 }
 
 export async function traceSignal(project: SignalProject, context: SignalContext, signal: string, direction: TraceDirection,
-  options: { maxNodes?: number; cancelled?(): boolean; source?: SourcePosition; stopAtAssignments?: boolean; localOnly?: boolean } = {}): Promise<TraceNode> {
+  options: { maxNodes?: number; cancelled?(): boolean; source?: SourcePosition; stopAtAssignments?: boolean; localOnly?: boolean; descendOnly?: boolean } = {}): Promise<TraceNode> {
   let count = 0;
   const limit = options.maxNodes ?? 500;
   async function visit(ctx: SignalContext, name: string, seen: Set<string>, depth: number, scope = -1): Promise<TraceNode> {
@@ -445,6 +445,11 @@ export async function traceSignal(project: SignalProject, context: SignalContext
     const declaredPort = scope < 0 ? mod.ports.find(p => same(p.name, name, mod.file)) : undefined;
     if (declaredPort) node.port = { path: ctx.path, name: declaredPort.name, direction: declaredPort.direction };
     if (mod.problem) { node.reason = mod.problem; return node; }
+    if (options.descendOnly && depth > 0) {
+      for (let parent = ctx.parent; parent; parent = parent.parent) {
+        if (same(parent.module, ctx.module, mod.file)) { node.reason = "循环例化，停止重复展开"; return node; }
+      }
+    }
     const identity = signalKey(mod, name, scope);
     const key = `${ctx.path}:${identity}`;
     if (scope >= 0) node.tip = `过程局部对象（第 ${scope + 1} 个过程）`;
@@ -471,7 +476,7 @@ export async function traceSignal(project: SignalProject, context: SignalContext
     const assignmentGroups = new Set<string>(), dataProcesses = new Set<number>();
     for (const a of mod.assignments) {
       if (signalKey(mod, name, a.proc) !== identity) continue;
-      const relevant = direction === "upstream" ? mentions(a.target, name, a.file) : mentions(a.expression, name, a.file);
+      const relevant = direction === "upstream" ? mentions(a.target, name, a.file) : mentions(a.expression, name, a.file) || options.stopAtAssignments && a.conditions?.some(c => mentions(c, name, a.file));
       if (!relevant) continue;
       if ((a.proc ?? -1) >= 0) dataProcesses.add(a.proc!);
       if (options.stopAtAssignments) {
@@ -480,7 +485,8 @@ export async function traceSignal(project: SignalProject, context: SignalContext
         if ((a.proc ?? -1) >= 0 && assignmentGroups.has(group)) continue;
         assignmentGroups.add(group);
         const rows = (a.proc ?? -1) >= 0 ? project.assignmentSource(mod,a.proc!,target) : undefined;
-        const leaf = stop(`${target} ← ${rows ? "过程赋值" : a.expression}`, "赋值位置", a.file, rows?.find(row=>row.line)?.line ?? a.line, undefined, a.clock?.join("，"));
+        const conditionOnly = direction === "downstream" && !mentions(a.expression, name, a.file);
+        const leaf = stop(`${target} ← ${rows ? "过程赋值" : a.expression}`, "赋值位置", a.file, rows?.find(row=>row.line)?.line ?? a.line, conditionOnly ? "条件引用" : undefined, a.clock?.join("，"));
         if (leaf) { leaf.target = { context: ctx, signal: target }; leaf.statement = rows ? rows.map(row=>row.text).join("\n") : a.statement; leaf.sourceRows = rows; }
         continue;
       }
@@ -551,13 +557,16 @@ export async function traceSignal(project: SignalProject, context: SignalContext
           const leaf = stop(`${pin.path}.${pin.name}`, "端口映射含运算或范围转换，停止追踪", instanceFile, conn.line);
           if (leaf) { leaf.port = pin; leaf.mapping = detectLang(instanceFile) === "vhdl" ? `${conn.port ?? port.name} => ${conn.expr}` : conn.port ? `.${conn.port}(${conn.expr})` : conn.expr; }
         }
-        else if (options.localOnly) stop(`${inst.inst}.${port.name}`, "子模块端口", instanceFile, conn.line);
+        else if (options.localOnly) {
+          const leaf = stop(`${inst.inst}.${port.name}`, "子模块端口", instanceFile, conn.line);
+          if (leaf) leaf.mapping = detectLang(instanceFile) === "vhdl" ? `${conn.port ?? port.name} => ${conn.expr}` : conn.port ? `.${conn.port}(${conn.expr})` : conn.expr;
+        }
         else await follow(project.child(ctx, inst), port.name, undefined, undefined, { file: instanceFile, line: conn.line });
       }
     }
     const port = mod.ports.find(p => same(p.name, name, mod.file));
     if (port && allows(port.direction, direction === "downstream")) {
-      if (options.localOnly || !ctx.parent) stop(name, options.localOnly ? "模块端口" : direction === "upstream" ? "顶层输入" : "顶层输出");
+      if (options.localOnly || options.descendOnly || !ctx.parent) stop(name, options.localOnly || options.descendOnly ? "模块端口" : direction === "upstream" ? "顶层输入" : "顶层输出");
       else {
         const parent = project.module(ctx.parent.module);
         const inst = parent?.instances.find(i => i.inst === ctx.instance?.inst && i.line === ctx.instance.line);

@@ -23,7 +23,7 @@ it("others 常量聚合保持原文，不误判为未知表达式",()=>{
 });
 it("复位移位寄存器区分当前值与更新，完整赋值可见且允许后续追踪",()=>{
   const files=new Map([["top.vhd",source]]),p=new SignalProject(files),ctx=p.root("top")!,g=localLogic(new ComputationProject(files,p),p,ctx,"s_ext_pps"),body=document.createElement("div");
-  new SignalLogicView(g,body,{navigate(){}},files);
+  new SignalLogicView(g,body,files);
   expect(g.nodes.find(n=>n.id===g.root)?.kind).toBe("register");
   const root=body.querySelector('[data-node="s_ext_pps"]')!;
   expect(root.textContent).not.toContain("分析边界");
@@ -37,7 +37,7 @@ it("复位移位寄存器区分当前值与更新，完整赋值可见且允许�
 it("时钟分支内部的条件保持嵌套，不把时钟条件丢掉",()=>{
   const nested=source.replace("s_ext_pps <= s_ext_pps(2 downto 0) & i_pps_ext;","if i_pps_ext = '1' then s_ext_pps <= s_ext_pps(2 downto 0) & i_pps_ext; end if;");
   const files=new Map([["top.vhd",nested]]),p=new SignalProject(files),ctx=p.root("top")!,body=document.createElement("div");
-  new SignalLogicView(localLogic(new ComputationProject(files,p),p,ctx,"s_ext_pps"),body,{navigate(){}},files);
+  new SignalLogicView(localLogic(new ComputationProject(files,p),p,ctx,"s_ext_pps"),body,files);
   const guards=[...body.querySelectorAll('[data-node="s_ext_pps"] .branch-guard')].map(e=>e.textContent);
   expect(guards).toContain("elsif rising_edge(i_clk) then");expect(body.querySelector('.branch-card')).toBeNull();
   body.querySelectorAll<HTMLElement>('[data-node="s_ext_pps"] summary')[1].click();
@@ -45,7 +45,7 @@ it("时钟分支内部的条件保持嵌套，不把时钟条件丢掉",()=>{
 });
 it("真正未知的表达式显示具体原因，不把位宽和时钟当停止原因",()=>{
   const files=new Map([["top.vhd",source.replace("(others => '0')","mystery(i_pps_ext)")]]),p=new SignalProject(files),ctx=p.root("top")!,g=localLogic(new ComputationProject(files,p),p,ctx,"s_ext_pps"),body=document.createElement("div");
-  new SignalLogicView(g,body,{navigate(){}},files);
+  new SignalLogicView(g,body,files);
   expect(body.querySelector('[data-node="s_ext_pps"] .flow-reason')?.textContent).toContain("mystery(i_pps_ext)");
 });
 it("多入和多出分别使用独立接点，连接不在同一个箭头处重叠",()=>{

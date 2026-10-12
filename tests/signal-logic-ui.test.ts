@@ -8,8 +8,8 @@ import { localLogic } from "../src/analysis/local";
 const setup=()=>{
  const files=new Map([["t.v","module t(input a,b,sel,clk,output y); wire x=a+b; reg r; always @(posedge clk) if(sel) r<=x; else r<=0; assign y=r+1; child u(.i(r)); endmodule module child(input i); wire q=~i; endmodule"]]);
  const p=new SignalProject(files),c=new ComputationProject(files,p),ctx=p.root("t")!,g=localLogic(c,p,ctx,"r");
- const root=document.createElement("aside"),navigate=vi.fn(),enter=vi.fn();document.body.append(root);
- const panel=new SignalFlowPanel(root,{close:vi.fn(),context:vi.fn(),navigate,enter});panel.logicResult("r",ctx,g,files,"");return{root,panel,navigate,enter};
+ const root=document.createElement("aside"),navigate=vi.fn();document.body.append(root);
+ const panel=new SignalFlowPanel(root,{close:vi.fn(),context:vi.fn(),navigate});panel.logicResult("r",ctx,g,files,"");return{root,panel,navigate};
 };
 it("条件全列出，多支共享一个输出，收起一支保留另一支",()=>{
  const{root}=setup();const card=root.querySelector<HTMLElement>('[data-node="r"]')!;
@@ -23,13 +23,13 @@ it("条件全列出，多支共享一个输出，收起一支保留另一支",()
  root.remove();
 });
 it("全部展开和返回恢复保留分支状态，定位不更换追踪目标",()=>{
- const{root,panel,navigate,enter}=setup();
+ const{root,panel,navigate}=setup();
  [...root.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="全部展开")!.click();
  expect([...root.querySelectorAll<HTMLDetailsElement>("details")].every(d=>d.open)).toBe(true);
  const saved=panel.capture();[...root.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="全部收起")!.click();expect(root.querySelector<HTMLElement>('[data-node="y"]')!.hidden).toBe(true);panel.restore(saved);
  expect([...root.querySelectorAll<HTMLDetailsElement>("details")].every(d=>d.open)).toBe(true);
  root.querySelector<HTMLButtonElement>('[data-node="r"] button[data-file]')!.click();expect(navigate).toHaveBeenCalled();expect(root.querySelector(".flow-selected")!.textContent).toBe("r");
- root.querySelector<HTMLButtonElement>(".logic-enter")!.click();expect(enter).toHaveBeenCalledWith(expect.objectContaining({path:"t/u"}),"i");root.remove();
+ expect(root.querySelector(".logic-enter")).toBeNull();root.remove();
 });
 
 it("分支后的运算保留在每支赋值中，不误显示为多次独立赋值",()=>{

@@ -27,6 +27,24 @@ export function signalCode(text: string, signal: string, insensitive = false): H
   }
   return code;
 }
+export function appendSource(parent: HTMLElement, source: {file?: string; statement?: string; sourceRows?: {text: string; line?: number}[]}, signal: string, redraw: () => void): void {
+  const rows = source.sourceRows, vhdl = /\.vhdl?$/i.test(source.file ?? "");
+  if (!rows?.length) { if (source.statement) parent.append(signalCode(source.statement, signal, vhdl)); return; }
+  const block = element("details", "assignment-block"); block.open = true;
+  const summary = element("summary", "assignment-header", rows[0].text);
+  const content = element("div", "assignment-body"); block.append(summary, content);
+  for (const row of rows.slice(1)) {
+    const line = element("div", "assignment-row"); line.append(signalCode(row.text, signal, vhdl));
+    if (row.line && source.file) {
+      const jump = element("button", "source-jump assignment-source"); jump.type = "button";
+      jump.dataset.file = source.file; jump.dataset.line = String(row.line);
+      jump.title = `定位赋值：第 ${row.line} 行`; jump.setAttribute("aria-label", jump.title);
+      setIcon(jump, "jump-inst"); line.append(jump);
+    }
+    content.append(line);
+  }
+  block.addEventListener("toggle", redraw); parent.append(block);
+}
 export interface CardPosition { x: number; y: number; h: number }
 export interface CardEdge { from: string; to: string; control?: boolean; current?: boolean; vertical?: boolean; both?: boolean; unknown?: boolean }
 let canvasSerial = 0;

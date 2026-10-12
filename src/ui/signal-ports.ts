@@ -1,6 +1,5 @@
-import type { SignalContext, TraceNode } from "../model/signal-flow";
-import { setIcon } from "./icons";
-import { CARD_STEP, CANVAS_PAD, element as el, cardHeader, signalCode, makeWires, drawWires, type CardEdge, type CardPosition } from "./signal-canvas";
+import type { TraceNode } from "../model/signal-flow";
+import { CARD_STEP, CANVAS_PAD, element as el, cardHeader, appendSource, signalCode, makeWires, drawWires, type CardEdge, type CardPosition } from "./signal-canvas";
 
 type Side = "up" | "down";
 interface PortCard { id: string; trace: TraceNode; column: number; children: string[]; card: HTMLElement; external?: boolean }
@@ -16,8 +15,7 @@ export class SignalPortsView {
   private branches = new Map<string, HTMLButtonElement>();
   private roots: Record<Side, string[]> = {up: [], down: []};
   private externalDirections = new Map<string, Set<Side>>();
-  constructor(signal: string, upstream: TraceNode, downstream: TraceNode, body: HTMLElement,
-    enter?: (context: SignalContext, signal: string, source?: {file: string; line: number}) => void) {
+  constructor(signal: string, upstream: TraceNode, downstream: TraceNode, body: HTMLElement) {
     body.classList.add("logic-body"); body.append(this.canvas); this.canvas.append(this.svg);
     const add = (id: string, trace: TraceNode, column: number, label: string, external = false): PortCard => {
       const old = this.nodes.get(id); if (old) return old;
@@ -30,30 +28,10 @@ export class SignalPortsView {
       cardHeader(card, title, location, [trace.label, trace.tip, trace.note].filter(Boolean).join("\n"));
       if (instance) card.append(el("code", `logic-detail ${trace.port ? "port-pin" : "signal-pin"}`, trace.port ? `${trace.port.direction ?? "方向待确认"} ${trace.port.name}` : `内部信号 ${trace.signal!.name}`));
       if (assignment && (trace.owner || trace.target)) card.append(el("code", "logic-detail assignment-context", trace.owner ?? trace.target!.context.path));
-      if (assignment && trace.sourceRows?.length) {
-        const block = el("details", "assignment-block"); block.open = true;
-        const summary = el("summary", "assignment-header", trace.sourceRows[0].text);
-        const content = el("div", "assignment-body"); block.append(summary, content);
-        for (const row of trace.sourceRows.slice(1)) {
-          const line = el("div", "assignment-row");
-          line.append(signalCode(row.text, signal, /\.vhdl?$/i.test(trace.file ?? "")));
-          if (row.line && trace.file) {
-            const jump = el("button", "source-jump assignment-source"); jump.type = "button";
-            jump.dataset.file = trace.file; jump.dataset.line = String(row.line);
-            jump.title = `定位赋值：第 ${row.line} 行`; jump.setAttribute("aria-label", jump.title);
-            setIcon(jump, "jump-inst"); line.append(jump);
-          }
-          content.append(line);
-        }
-        block.addEventListener("toggle", () => this.render()); card.append(block);
-      } else if (assignment) card.append(signalCode(trace.statement ?? trace.label, signal, /\.vhdl?$/i.test(trace.file ?? "")));
+      if (assignment) appendSource(card, {...trace, statement: trace.statement ?? trace.label}, signal, () => this.render());
       if (trace.mapping) { const code = signalCode(trace.mapping, signal, /\.vhdl?$/i.test(trace.file ?? "")); code.classList.add("port-mapping"); card.append(code); }
       if (trace.note) card.append(el("code", "flow-note", trace.note));
       if (trace.reason && trace.reason !== "赋值位置") card.append(el("p", "flow-reason", trace.reason));
-      if (trace.target && enter) {
-        const button = el("button", "text-button flow-enter", "查看模块内逻辑"); button.type = "button";
-        button.onclick = () => enter(trace.target!.context, trace.target!.signal, location); card.append(button);
-      }
       const node = {id, trace, column, children: [], card, external}; this.nodes.set(id, node); this.canvas.append(card); return node;
     };
     const base = upstream.label.slice(0, upstream.label.lastIndexOf("."));
@@ -112,12 +90,21 @@ export class SignalPortsView {
   collapseAll(): void { this.expanded.clear(); for(const block of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))block.open=false; this.render(); }
   private render(): void {
     const visible = new Set(["focus"]), traversed = new Set<string>(), choices = new Set<string>(), active = new Set<CardEdge>();
+    const assignmentEnd = (id: string) => {
+      const node = this.nodes.get(id)!;
+      return node.trace.reason === "赋值位置" && !node.children.length;
+    };
     const visit = (id: string, choice: boolean, parent: string) => {
       this.edges.filter(e=>e.from===parent&&e.to===id||e.from===id&&e.to===parent).forEach(e=>active.add(e));
       visible.add(id); const node = this.nodes.get(id)!;
-      if(choice&&node.children.length)choices.add(id);
+      const pending = choice && node.children.some(child => !assignmentEnd(child));
+      if(pending)choices.add(id);
       if (traversed.has(id)) return;
-      if (choice && node.children.length && !this.expanded.has(id)) return;
+      // A visible port includes its immediate assignment sites; only further routes need a click.
+      if (pending && !this.expanded.has(id)) {
+        node.children.filter(assignmentEnd).forEach(child => visit(child, false, id));
+        return;
+      }
       traversed.add(id);
       node.children.forEach(child => visit(child, node.children.length > 1, id));
     };

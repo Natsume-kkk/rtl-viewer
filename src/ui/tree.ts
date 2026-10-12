@@ -205,7 +205,7 @@ export class HierarchyTree {
     if (node.recursive) {
       const mark = document.createElement("span");
       mark.className = "tree-recursive";
-      mark.textContent = " (recursive)";
+      mark.textContent = "（循环例化）";
       label.appendChild(mark);
     }
     label.title = row.title;

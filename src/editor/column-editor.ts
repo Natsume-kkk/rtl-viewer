@@ -1,6 +1,7 @@
 import { monaco } from "./monaco";
 import { columnTargets, columnValues, type ColumnOptions } from "./column-edit";
 import { appAlert } from "../ui/dialog";
+import { registerEditorAction } from "./actions";
 
 let last: ColumnOptions = { mode: "number", initial: "1", step: "1", repeat: "1", base: 10, leading: "none", uppercase: true };
 
@@ -86,9 +87,16 @@ export async function openColumnEditor(editor: monaco.editor.IStandaloneCodeEdit
 }
 
 export function registerColumnActions(): void {
-  monaco.editor.addEditorAction({ id: "rtl.column-editor", label: "列编辑…", keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyC], precondition: "editorTextFocus && !editorReadonly", contextMenuGroupId: "modification", run: openColumnEditor });
-  monaco.editor.addEditorAction({ id: "rtl.column-selection", label: "切换矩形选择模式", contextMenuGroupId: "view", run: editor => editor.updateOptions({ columnSelection: !editor.getOption(monaco.editor.EditorOption.columnSelection) }) });
-  for (const [key, command] of [[monaco.KeyCode.UpArrow, "cursorColumnSelectUp"], [monaco.KeyCode.DownArrow, "cursorColumnSelectDown"], [monaco.KeyCode.LeftArrow, "cursorColumnSelectLeft"], [monaco.KeyCode.RightArrow, "cursorColumnSelectRight"], [monaco.KeyCode.PageUp, "cursorColumnSelectPageUp"], [monaco.KeyCode.PageDown, "cursorColumnSelectPageDown"]] as const) {
-    monaco.editor.addEditorAction({ id: `rtl.${command}`, label: command, precondition: "editorTextFocus", keybindings: [monaco.KeyMod.Alt | monaco.KeyMod.Shift | key], run: editor => editor.trigger("keyboard", command, {}) });
+  registerEditorAction({ id: "rtl.column-editor", label: "列编辑…", keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyC], precondition: "!editorReadonly", keybindingContext: "editorTextFocus", contextMenuGroupId: "modification", run: openColumnEditor });
+  registerEditorAction({ id: "rtl.column-selection", label: "切换矩形选择模式", contextMenuGroupId: "view", run: editor => editor.updateOptions({ columnSelection: !editor.getOption(monaco.editor.EditorOption.columnSelection) }) });
+  for (const [key, command, label] of [
+    [monaco.KeyCode.UpArrow, "cursorColumnSelectUp", "向上扩展矩形选区"],
+    [monaco.KeyCode.DownArrow, "cursorColumnSelectDown", "向下扩展矩形选区"],
+    [monaco.KeyCode.LeftArrow, "cursorColumnSelectLeft", "向左扩展矩形选区"],
+    [monaco.KeyCode.RightArrow, "cursorColumnSelectRight", "向右扩展矩形选区"],
+    [monaco.KeyCode.PageUp, "cursorColumnSelectPageUp", "向上扩展矩形选区一页"],
+    [monaco.KeyCode.PageDown, "cursorColumnSelectPageDown", "向下扩展矩形选区一页"],
+  ] as const) {
+    registerEditorAction({ id: `rtl.${command}`, label, keybindingContext: "editorTextFocus", keybindings: [monaco.KeyMod.Alt | monaco.KeyMod.Shift | key], run: editor => editor.trigger("keyboard", command, {}) });
   }
 }

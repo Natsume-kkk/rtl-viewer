@@ -1,6 +1,8 @@
 // 按需引入：不走 monaco-editor 整包入口（editor.main 会带上全部语言定义、
 // css/html/json/ts 语言服务和 LSP 客户端，约 11 MB 永不加载的 chunk 进 exe）。
 // 下面清单 = editor.main.js 的编辑器贡献部分（版本升级 monaco 时需同步核对）。
+// 必须先于编辑器及贡献模块加载：菜单、查找和命令标签在模块初始化时生成。
+import "monaco-editor/nls/lang/zh-cn";
 import * as monaco from "monaco-editor/editor/editor.api";
 import "monaco-editor/editor/contrib/anchorSelect/browser/anchorSelect";
 import "monaco-editor/editor/contrib/bracketMatching/browser/bracketMatching";
@@ -82,7 +84,14 @@ import "../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon
 // monaco-editor 0.57 的 exports 映射未开放深层 esm 路径，改用直接文件路径引入 worker
 import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
 import type { ModuleDef } from "../model";
+import { StandaloneServices } from "monaco-editor/editor/standalone/browser/standaloneServices";
+import { IModelService } from "monaco-editor/editor/common/services/model";
+import { InMemoryTextModelService } from "monaco-editor/editor/common/services/inMemoryTextModelService";
+import { DefinitionModelService } from "./definition-models";
+import { sharedModelStore } from "./model-store";
+import { pathFromUri } from "./file-path";
 import { installAltColumnDrag, registerNotepadKeymap } from "./notepad-keymap";
+import { installEditorActions } from "./actions";
 
 self.MonacoEnvironment = {
   getWorker: () => new EditorWorker(),
@@ -309,17 +318,24 @@ export function langForFile(file: string): string {
 }
 
 export type ResolveFn = (name: string) => ModuleDef | undefined;
+export type FileContentFn = (file: string) => string | undefined;
 
-function registerDefinitionProvider(resolve: ResolveFn): void {
+function registerDefinitionProvider(resolve: ResolveFn, fileContent: FileContentFn): void {
   const provider: monaco.languages.DefinitionProvider = {
     provideDefinition(model, position) {
       const word = model.getWordAtPosition(position);
       if (!word) return null;
       const def = resolve(word.word);
       if (!def) return null;
+      const uri = monaco.Uri.file(def.file);
+      const target = monaco.editor.getModel(uri);
+      const content = target?.getValue() ?? fileContent(def.file);
+      if (content === undefined) return null;
+      const line = content.split(/\r\n|\r|\n/, def.line)[def.line - 1];
+      if (line === undefined) return null;
       return {
-        uri: monaco.Uri.file(def.file),
-        range: new monaco.Range(def.line, 1, def.line, 1),
+        uri,
+        range: new monaco.Range(def.line, 1, def.line, line.length + 1),
       };
     },
   };
@@ -423,11 +439,10 @@ const MERIDIAN_LIGHT: monaco.editor.IStandaloneThemeData = {
 };
 
 export function setEditorTheme(theme: "dark" | "light"): void {
+  // 首次 initTheme 先设置 DOM 主题；编辑器稍后按该主题创建，不能在此提前初始化服务。
+  if (!registered) return;
   monaco.editor.setTheme(theme === "light" ? "meridian-light" : "meridian-dark");
 }
-
-monaco.editor.defineTheme("meridian-dark", MERIDIAN_DARK);
-monaco.editor.defineTheme("meridian-light", MERIDIAN_LIGHT);
 
 function editorThemeName(): string {
   return document.documentElement.dataset.theme === "light" ? "meridian-light" : "meridian-dark";
@@ -435,24 +450,41 @@ function editorThemeName(): string {
 
 let registered = false;
 
-function registerOnce(resolve: ResolveFn): void {
+function registerOnce(resolve: ResolveFn, fileContent: FileContentFn): void {
   if (registered) return;
   registered = true;
+  // defineTheme 等公共 API 会初始化服务，覆盖必须先安装；初始化期间不读取工程。
+  let baseService: InMemoryTextModelService | undefined;
+  const modelService = new DefinitionModelService(
+    sharedModelStore(monaco.editor),
+    (resource) => monaco.editor.getModel(resource),
+    (resource) => fileContent(pathFromUri(resource)),
+    (resource) => langForFile(pathFromUri(resource)),
+    () => baseService ??= new InMemoryTextModelService(StandaloneServices.get(IModelService)),
+  );
+  StandaloneServices.initialize({ textModelService: modelService });
+  monaco.editor.defineTheme("meridian-dark", MERIDIAN_DARK);
+  monaco.editor.defineTheme("meridian-light", MERIDIAN_LIGHT);
   registerVerilog();
   registerVhdl();
-  registerDefinitionProvider(resolve);
+  registerDefinitionProvider(resolve, fileContent);
   registerNotepadKeymap();
 }
 
 /** 新建一个编辑器实例（分屏的第二视图用）；语言与 provider 须已通过 initMonaco 注册。 */
 export function createEditor(container: HTMLElement): monaco.editor.IStandaloneCodeEditor {
+  const typography = getComputedStyle(container);
   const editor = monaco.editor.create(container, {
     theme: editorThemeName(),
     automaticLayout: true,
-    fontSize: window.innerWidth <= 1320 ? 13 : 14,
+    // 让菜单沿用应用字体样式，避免隔离样式内的默认字体与字号。
+    useShadowDOM: false,
+    // 补全、悬浮提示沿视口定位，避免被窄分屏的 overflow 裁剪。
+    fixedOverflowWidgets: true,
+    fontSize: Number.parseFloat(typography.getPropertyValue("--fs-editor")),
     lineHeight: 24,
     padding: { top: 14, bottom: 30 },
-    fontFamily: "'Cascadia Code', 'JetBrains Mono', Consolas, monospace",
+    fontFamily: typography.getPropertyValue("--font-mono").trim(),
     minimap: { enabled: true },
     scrollBeyondLastLine: false,
     renderWhitespace: "none",
@@ -460,11 +492,12 @@ export function createEditor(container: HTMLElement): monaco.editor.IStandaloneC
     tabSize: 4,
   });
   installAltColumnDrag(editor);
+  installEditorActions(editor);
   return editor;
 }
 
-export function initMonaco(container: HTMLElement, resolve: ResolveFn): monaco.editor.IStandaloneCodeEditor {
-  registerOnce(resolve);
+export function initMonaco(container: HTMLElement, resolve: ResolveFn, fileContent: FileContentFn): monaco.editor.IStandaloneCodeEditor {
+  registerOnce(resolve, fileContent);
   return createEditor(container);
 }
 

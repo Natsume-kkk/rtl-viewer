@@ -146,7 +146,7 @@ describe("HierarchyTree", () => {
     expect(primitiveRow.getAttribute("aria-label")).toBe("u_buf，厂商原语 BUFG");
     expect(primitiveRow.querySelector(".tree-type")?.getAttribute("title")).toBe("厂商原语 · BUFG");
     expect(rootEl.querySelector(".kind-unresolved")?.getAttribute("title")).toContain("未解析模块 · missing");
-    expect(labels.some((t) => t.textContent?.includes("(recursive)"))).toBe(true);
+    expect(labels.some((t) => t.textContent?.includes("（循环例化）"))).toBe(true);
 
     const rows = rootEl.querySelectorAll(".tree-row");
     (rows[1] as HTMLElement).click();

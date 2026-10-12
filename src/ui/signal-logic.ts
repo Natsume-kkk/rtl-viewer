@@ -144,7 +144,7 @@ export class SignalLogicView {
       if(index&&current.branch?.kind!=="case"&&selected.procedural)guard=guard.replace(/^if\b/,vhdl?"elsif":"else if");
       arms.push({guard,value:current.args[1],start:current.args[0].start});current=current.args[2];index++;
     }
-    let guard=selected.branch?.alternate??(selected.procedural||vhdl?"else":":");
+    let guard=selected.branch?.alternate??"else";
     const start=selected.branch?.alternateStart??current.start;
     if(vhdl&&current.event){guard=`elsif ${current.event} then`;arms.push({guard,value:{...current,event:undefined},start:current.eventStart??start});}
     else arms.push({guard,value:current,start});
@@ -214,6 +214,7 @@ export class SignalLogicView {
     };walk(this.graph.root);
     for(const[id,button]of this.continuations){const open=this.routes.has(id);button.hidden=!choices.has(id);button.textContent=open?"收起此路":"继续追踪";button.setAttribute("aria-expanded",String(open));button.setAttribute("aria-label",`${open?"收起":"继续追踪"} ${this.cards.get(id)!.dataset.signal}`);this.cards.get(id)!.classList.toggle("route-pending",choices.has(id)&&!open);}
     for(const[id,card]of this.cards)card.hidden=!visible.has(id);
+    this.widths.fit();
     const ranks=new Map<string,number>(),rank=(id:string,seen=new Set<string>()):number=>{if(ranks.has(id))return ranks.get(id)!;if(seen.has(id))return 0;const incoming=edges.filter(e=>e.to===id&&!e.control);const n=incoming.length?1+Math.max(...incoming.map(e=>rank(e.from,new Set(seen).add(id)))):0;ranks.set(id,n);return n;};
     const widths=new Map<number,number>();
     for(const[id,card]of this.cards)if(!card.hidden){const column=rank(id);widths.set(column,Math.max(widths.get(column)??0,this.widths.get(id)));}

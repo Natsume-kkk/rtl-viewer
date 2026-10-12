@@ -523,6 +523,8 @@ describe("信号链：VHDL 过程穿透（赋值池模型）", () => {
     const bDown = flatten(await traceSignal(p, ctx, "b", "downstream"));
     expect(bDown).toContain("选择赋值（不继续推导）");
     expect(bDown).not.toContain("t.y");
+    const selDown = flatten(await traceSignal(p, ctx, "sel", "downstream"));
+    expect(selDown).toContain("选择赋值（不继续推导）");
   });
   it("并发条件赋值 when/else：条件作标注，数据候选穿透", async () => {
     const p = new SignalProject(new Map([["t.vhd", `entity t is port(en: in bit; a: in bit; b: in bit; y: out bit); end t;

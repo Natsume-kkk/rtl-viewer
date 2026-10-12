@@ -1,5 +1,5 @@
 import { detectLang } from "../parser";
-import { traceSignal, type SignalProject, type SignalContext, type TraceNode } from "../model/signal-flow";
+import { boundaryAccess, traceSignal, type SignalProject, type SignalContext, type TraceNode } from "../model/signal-flow";
 import { type ComputationProject, type Driver, type SourceSpan, driverCount } from "./project";
 import { type Expr, parseExpression, expressionArgumentRole } from "./expression";
 import { findSignalDeclLine } from "../model/signals";
@@ -104,7 +104,13 @@ export function localLogic(comp: ComputationProject, project: SignalProject, ctx
     if(!n)return;
     if(ds.some(d=>unsupported(d.expression)||d.reason))n.reason=[...new Set(ds.flatMap(d=>[...reasons(d.expression),...(d.reason?[d.reason]:[])]))].join("；");
     if(!data||data.mod.problem){n.kind="boundary";n.detail=data?.mod.problem??"黑盒或缺失定义";return n;}
-    if(!port&&!ds.length&&!child.length&&object?.kind!=="constant"&&object?.kind!=="parameter"&& !object?.initializer){const reason=project.terminalReason(data.mod,name,"upstream");n.kind=reason==="无赋值来源"?"signal":"boundary";n.reason=reason;n.detail=[n.detail,reason].filter(Boolean).join(" · ");}
+    if(!port&&!ds.length&&!child.length&&object?.kind!=="constant"&&object?.kind!=="parameter"&& !object?.initializer){
+      // 并发区域的不支持语句（如 with...select）已登记为边界，优先于文本兜底判断
+      const boundary=(data.mod.boundaries??[]).find(b=>(b.proc??-1)<0&&!b.reason.includes("generate")&&boundaryAccess(b,name,"upstream"));
+      const reason=boundary?.reason??project.terminalReason(data.mod,name,"upstream");
+      n.kind=reason==="无赋值来源"?"signal":"boundary";n.reason=reason;n.detail=[n.detail,reason].filter(Boolean).join(" · ");
+      if(boundary)n.source=span(boundary.file,boundary.line);
+    }
     visiting.add(name);
     // Inputs are module boundaries; never cross into the parent's binding.
     if(!port||!/^(input|in)$/.test(port.direction??""))for(const d of ds)for(const r of driverReferences(d)){
@@ -142,6 +148,12 @@ export function localLogic(comp: ComputationProject, project: SignalProject, ctx
     if(name!==norm(signal)&&/^(output|out|buffer|inout)$/.test(port?.direction??""))continue;
     for(const[target,ds]of data?.drivers??[]){if(target===name)continue;
       if(ds.some(d=>driverReferences(d).some(r=>r.name===name&&!(d.relation&&d.process?.locals.includes(r.name))))){visit(target);queue.push(target);}
+    }
+    // 并发不支持语句（如 with...select）的读取也以边界节点接入，不再静默丢失
+    for(const[bi,b]of(data?.mod.boundaries??[]).entries()){
+      if((b.proc??-1)>=0||b.reason.includes("generate")||!boundaryAccess(b,name,"downstream"))continue;
+      const leaf=add(`boundary:${bi}`,{label:`${display(name)} · ${b.file.split(/[\\/]/).pop()}:${b.line}`,signal:name,path:ctx.path,kind:"boundary",drivers:[],detail:b.reason,source:span(b.file,b.line)});
+      if(leaf)edge(n,leaf);
     }
     for(const c of childPorts(name,false)){const leaf=add(c.key,c.node);if(leaf)edge(n,leaf,false,false,c.role,!!c.unknown);}
     expandStateSources();

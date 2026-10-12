@@ -35,6 +35,19 @@ describe("正式信号链两种模式",()=>{
  it("下游到无法推导的过程即停止，不穿透不确定关系",()=>{const{p,c,ctx}=setup("module top(input a,output y); wire x=a; reg r; always @* r=func(x); assign y=r; endmodule");const g=localLogic(c,p,ctx,"x");expect(g.nodes.find(n=>n.label==="r")!.kind).toBe("boundary");expect(g.nodes.some(n=>n.label==="y")).toBe(false);});
  it("下游信号用作判断条件时以条件连线连接",()=>{const{p,c,ctx}=setup("module top(input a,output y); wire x=a; wire en=x; assign y=en?1'b1:1'b0; endmodule");const g=localLogic(c,p,ctx,"x");expect(g.edges).toContainEqual(expect.objectContaining({from:"en",to:"y",control:true}));});
 
+ it("VHDL 选择赋值在模块内逻辑保留边界，不误报无赋值来源",()=>{
+  const files=new Map([["t.vhd",`entity vtop is port(sel: in bit; a: in bit; b: in bit; y: out bit); end;
+  architecture rtl of vtop is signal r: bit; begin
+  with sel select r <= a when '0', b when others;
+  y <= r; end;`]]);const p=new SignalProject(files),c=new ComputationProject(files,p),ctx=p.root("vtop")!;
+  const g=localLogic(c,p,ctx,"r"),r=g.nodes.find(n=>n.id==="r")!;
+  expect(r.kind).toBe("boundary");expect(r.reason).toBe("选择赋值（不继续推导）");expect(g.nodes.some(n=>n.id==="y")).toBe(true);
+  for(const signal of ["a","sel"]){
+   const gd=localLogic(c,p,ctx,signal),leaf=gd.nodes.find(n=>n.kind==="boundary");
+   expect(leaf?.detail).toBe("选择赋值（不继续推导）");expect(gd.edges).toContainEqual(expect.objectContaining({from:signal,to:leaf!.id}));
+  }
+ });
+
 });
 
 it("端口预览区分复用实例，双向端口仅显示本模块的直接读写",async()=>{

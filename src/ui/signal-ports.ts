@@ -118,13 +118,14 @@ export class SignalPortsView {
       button.setAttribute("aria-expanded",String(open));button.setAttribute("aria-label",`${open?"收起":"继续追踪"} ${this.nodes.get(id)!.trace.label}`);
       this.nodes.get(id)!.card.classList.toggle("route-pending", choices.has(id)&&!open);
     }
+    for (const node of this.nodes.values()) node.card.hidden = !visible.has(node.id);
+    this.widths.fit();
     const widths = new Map<number, number>();
     for (const node of this.nodes.values()) widths.set(node.column, Math.max(widths.get(node.column) ?? 0, this.widths.get(node.id)));
     const offsets = columnPositions(widths);
     const rows = new Map<number, number>(), positions = new Map<string, CardPosition>();
     // Reserve slots so choosing another route retains the preceding layout.
     for (const node of [...this.nodes.values()].sort((a, b) => Number(!!a.external) - Number(!!b.external))) {
-      node.card.hidden = !visible.has(node.id);
       const x = offsets.get(node.column)!, y = rows.get(node.column) ?? 38;
       const h = node.card.offsetHeight || Number(node.card.dataset.height) || 96;
       if (!node.card.hidden) node.card.dataset.height = String(h);

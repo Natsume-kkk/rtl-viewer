@@ -92,3 +92,17 @@ it("宽度相同列取最大值，垂直未知边连接各卡片实际中心",()
  expect(wire.getAttribute("d")).toBe("M142,174 L154,134");
  expect(unknown.style.width).toBe("236px");expect(root.querySelector<HTMLElement>(".logic-canvas")!.style.width).toBe("308px");panel.message("");root.remove();
 });
+
+it("卡片默认按内容自适应宽度并夹在边界内，手动调整优先、双击恢复自适应",()=>{
+ const descriptor=Object.getOwnPropertyDescriptor(HTMLElement.prototype,"offsetWidth");
+ Object.defineProperty(HTMLElement.prototype,"offsetWidth",{configurable:true,get(){return this.classList?.contains("logic-card")?(this.dataset.signal==="a"?400:2000):0;}});
+ try{
+  const {root,panel}=portSetup(),a=named(root,"a"),b=named(root,"b"),c=named(root,"c"),focus=node(root,"focus");
+  expect([a.style.width,focus.style.width,b.style.width,c.style.width]).toEqual(["400px","560px","560px","560px"]);
+  expect([a.style.left,focus.style.left,b.style.left]).toEqual(["24px","464px","1064px"]);
+  key(a,"ArrowRight");expect(a.style.width).toBe("424px");expect(focus.style.left).toBe("488px");expect(focus.style.width).toBe("560px");
+  a.querySelector<HTMLElement>(".card-resize")!.dispatchEvent(new MouseEvent("dblclick",{bubbles:true,cancelable:true}));
+  expect(a.style.width).toBe("400px");expect(focus.style.left).toBe("464px");
+  panel.message("");root.remove();
+ }finally{if(descriptor)Object.defineProperty(HTMLElement.prototype,"offsetWidth",descriptor);}
+});

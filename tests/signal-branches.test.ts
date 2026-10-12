@@ -140,3 +140,11 @@ it("重建视图后恢复嵌套分支身份，不依赖 DOM 创建顺序", () =>
   expect(second.body.querySelectorAll<HTMLDetailsElement>('.branch-card details')[0].open).toBe(false);
   expect(second.card('y').hidden).toBe(false);
 });
+
+it("连续赋值三态选择的否则臂显示 else，不使用裸冒号", () => {
+  const { card } = setup(`module t(input en, inout dq); wire dq_out; assign dq = en ? dq_out : 1'bz; endmodule`, "t.v", "dq_out");
+  const guards = [...card("dq").querySelectorAll<HTMLElement>(".branch-guard")].map(e => e.textContent);
+  expect(guards).toEqual(["en ?", "else"]);
+  const previews = [...card("dq").querySelectorAll<HTMLElement>(".branch-preview")].map(e => e.textContent);
+  expect(previews).toEqual(["dq = dq_out;", "dq = 1'bz;"]);
+});

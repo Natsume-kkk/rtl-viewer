@@ -83,7 +83,7 @@ const signalKey = (mod: SignalModule, name: string, proc = -1) => {
 };
 
 function processAccess(text: string, name: string, file: string, direction: TraceDirection): boolean {
-  const assignments = /(^|[;\n)]|\bbegin\b|\bthen\b|\belse\b)\s*([A-Za-z_]\w*)(?:\s*\.\s*\w+)*\s*(?:\[[^\]]*\]|\([^)]*\))?\s*(<=|:=|=(?!=))/gi;
+  const assignments = /(^|[;\n)]|\bbegin\b|\bthen\b|\belse\b|\bselect\b)\s*([A-Za-z_]\w*)(?:\s*\.\s*\w+)*\s*(?:\[[^\]]*\]|\([^)]*\))?\s*(<=|:=|=(?!=))/gi;
   let writes = false;
   const reads = text.replace(assignments, (whole, prefix: string, target: string, operator: string) => {
     if (same(target, name, file)) writes = true;
@@ -92,7 +92,7 @@ function processAccess(text: string, name: string, file: string, direction: Trac
   return direction === "upstream" ? writes : mentions(reads, name, file);
 }
 
-function boundaryAccess(boundary:Boundary,name:string,direction:TraceDirection):boolean {
+export function boundaryAccess(boundary:Boundary,name:string,direction:TraceDirection):boolean {
   const lexical=(value:string)=>value.replace(/^@local:(\d+):[A-Za-z_]\w*$/,"__process_local_$1");
   const text=boundary.bindings?boundary.text.replace(/\b[A-Za-z_]\w*\b/g,s=>lexical(boundary.bindings![detectLang(boundary.file)==="vhdl"?s.toLowerCase():s]??s)):boundary.text;
   return processAccess(text,lexical(name),boundary.file,direction);
@@ -334,7 +334,10 @@ export class SignalProject {
           // VHDL 并发条件赋值：when 段作条件标注，其余段作数据候选；选择赋值（逗号分隔 when 段）不硬拆
           const vhdlCond = vhdl ? splitVhdlWhen(masked.slice(after + op[0].length, a.index! + a[0].length - 1), body.slice(after + op[0].length, a.index! + a[0].length - 1)) : undefined;
           if (vhdlCond?.selected) {
-            result.boundaries.push({ text: statement.trim(), file, line: entry.line, reason: "选择赋值（不继续推导）", proc: -1 });
+            // with...select 头部在被匹配目标之前，并入边界文本以保留选择子的引用关系
+            const head = /\bwith\b[\s\S]*$/i.exec(body.slice(body.lastIndexOf(";", a.index! - 1) + 1, a.index!));
+            const full = head && /\bselect\s*$/i.test(head[0]) ? head[0] + statement : statement;
+            result.boundaries.push({ text: full.trim(), file, line: entry.line, reason: "选择赋值（不继续推导）", proc: -1 });
             continue;
           }
           const expr = analyzeExpression(vhdlCond?.valueText ?? masked.slice(after + op[0].length, a.index! + a[0].length - 1), vhdl);

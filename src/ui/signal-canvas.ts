@@ -1,15 +1,26 @@
 import { setIcon } from "./icons";
 
 export const CARD_WIDTH = 236, CARD_STEP = 276, CANVAS_PAD = 24;
-const MAX_CARD_WIDTH = 1200;
+const MAX_CARD_WIDTH = 1200, AUTO_MAX_WIDTH = 560;
 export type CardWidthState = Record<string, number>;
 /** Widths belong to a single trace; hidden and lazily created cards retain their entries. */
 export class CardWidths {
   private widths = new Map<string, number>();
+  private auto = new Map<string, number>();
   private cards = new Map<string, HTMLElement>();
   private cleanups: (() => void)[] = [];
   constructor(private redraw: () => void) {}
-  get(id: string): number { return this.widths.get(id) ?? CARD_WIDTH; }
+  get(id: string): number { return this.widths.get(id) ?? this.auto.get(id) ?? CARD_WIDTH; }
+  /** Measure content width for cards without a manual override; jsdom and hidden cards keep the fallback. */
+  fit(): void {
+    const pending: [string, HTMLElement][] = [];
+    for (const [id, card] of this.cards) if (!this.widths.has(id) && !card.hidden) { card.style.width = "max-content"; pending.push([id, card]); }
+    for (const [id, card] of pending) {
+      const measured = card.offsetWidth;
+      if (measured) this.auto.set(id, Math.max(CARD_WIDTH, Math.min(AUTO_MAX_WIDTH, Math.round(measured))));
+      this.apply(id, card);
+    }
+  }
   capture(): CardWidthState { return Object.fromEntries(this.widths); }
   restore(state: CardWidthState = {}): void {
     this.widths.clear();
@@ -23,9 +34,20 @@ export class CardWidths {
   }
   private set(id: string, width: number): void {
     width = Math.max(CARD_WIDTH, Math.min(MAX_CARD_WIDTH, Math.round(width)));
-    if (width === this.get(id)) return;
-    if (width === CARD_WIDTH) this.widths.delete(id); else this.widths.set(id, width);
+    if (width === this.get(id) && this.widths.has(id)) return;
+    this.widths.set(id, width);
     this.apply(id, this.cards.get(id)!); this.redraw();
+  }
+  private reset(id: string): void {
+    if (!this.widths.has(id)) return;
+    this.widths.delete(id);
+    const card = this.cards.get(id)!;
+    if (!card.hidden) {
+      card.style.width = "max-content";
+      const measured = card.offsetWidth;
+      if (measured) this.auto.set(id, Math.max(CARD_WIDTH, Math.min(AUTO_MAX_WIDTH, Math.round(measured))));
+    }
+    this.apply(id, card); this.redraw();
   }
   add(id: string, card: HTMLElement, label = card.dataset.signal ?? id): void {
     this.cards.set(id, card);
@@ -33,7 +55,7 @@ export class CardWidths {
     handle.setAttribute("role", "separator"); handle.setAttribute("aria-orientation", "vertical");
     handle.setAttribute("aria-label", `调整 ${label} 卡片宽度`);
     handle.setAttribute("aria-valuemin", String(CARD_WIDTH)); handle.setAttribute("aria-valuemax", String(MAX_CARD_WIDTH));
-    handle.title = "拖动调整宽度，双击恢复默认；方向键调整，Home 复位";
+    handle.title = "拖动调整宽度，双击恢复自适应；方向键调整，Home 复位";
     let drag: {pointer: number; x: number; width: number} | undefined;
     const end = () => {
       const pointer = drag?.pointer; drag = undefined; card.classList.remove("card-resizing");
@@ -49,11 +71,11 @@ export class CardWidths {
     const finish = (event: PointerEvent) => { if (drag?.pointer === event.pointerId) end(); };
     handle.onpointerup = finish; handle.onpointercancel = finish; handle.onlostpointercapture = finish;
     handle.onclick = event => event.stopPropagation();
-    handle.ondblclick = event => { event.preventDefault(); event.stopPropagation(); end(); this.set(id, CARD_WIDTH); };
+    handle.ondblclick = event => { event.preventDefault(); event.stopPropagation(); end(); this.reset(id); };
     handle.onkeydown = event => {
       if (!["ArrowLeft", "ArrowRight", "Home"].includes(event.key)) return;
       event.preventDefault(); event.stopPropagation(); end();
-      this.set(id, event.key === "Home" ? CARD_WIDTH : this.get(id) + (event.key === "ArrowRight" ? 24 : -24));
+      if (event.key === "Home") this.reset(id); else this.set(id, this.get(id) + (event.key === "ArrowRight" ? 24 : -24));
     };
     card.append(handle); this.apply(id, card);
     this.cleanups.push(() => { end(); handle.onpointerdown = handle.onpointermove = handle.onpointerup = handle.onpointercancel = handle.onlostpointercapture = null; handle.onclick = handle.ondblclick = handle.onkeydown = null; });

@@ -557,12 +557,15 @@ end process;`);
     expect(parsed.assignments.map(a => a.target)).toEqual(["y"]);
   });
 
-  it("位选/索引赋值保持位选边界，不判为调用", () => {
+  it("位选/索引赋值保留完整目标与范围边界，不判为调用", () => {
     const parsed = parseVhdlProcess(`process(clk) begin
   a(3) <= x;
   arr(i) := x;
 end process;`);
-    expect(parsed.assignments).toEqual([]);
+    expect(parsed.assignments).toEqual(expect.arrayContaining([
+      expect.objectContaining({target:"a",targetText:"a(3)",expression:"x"}),
+      expect.objectContaining({target:"arr",targetText:"arr(i)",expression:"x"}),
+    ]));
     expect(parsed.boundaries.map(b => b.reason)).toEqual([
       "位选/切片赋值（范围转换）",
       "位选/切片赋值（范围转换）",

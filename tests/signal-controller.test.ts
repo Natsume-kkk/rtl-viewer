@@ -7,7 +7,7 @@ const fake = vi.hoisted(() => ({ panels: [] as any[] }));
 vi.mock("../src/editor/monaco", () => ({ monaco: { editor: { tokenize: (source:string) => source.split("\n").map(()=>[{ offset: 0, type: "identifier" }]) } } }));
 vi.mock("../src/ui/signal-flow", () => ({
   SignalFlowPanel: class {
-    hint = vi.fn(); setContexts = vi.fn(); clearStale = vi.fn(); markStale = vi.fn();
+    hint = vi.fn(); objectHint = vi.fn(); setContexts = vi.fn(); clearStale = vi.fn(); markStale = vi.fn();
     message = vi.fn(); result = vi.fn(); logicResult = vi.fn();
     constructor(_root: unknown, readonly actions: any) { fake.panels.push(this); }
   },
@@ -15,6 +15,72 @@ vi.mock("../src/ui/signal-flow", () => ({
 import { createSignalController } from "../src/app/signal-controller";
 
 beforeEach(() => { fake.panels.length = 0; });
+
+it("生成块同一源码的多个局部对象可区分选择，刷新保留所选身份",async()=>{
+  let source="module top(input a,b,output [1:0] y); generate for(genvar i=0;i<2;i++) begin : lanes wire w; assign w=i?a:b; assign y[i]=w; end endgenerate endmodule";
+  const file="D:/test/generate.v",files=new Map([[file,source]]),structures=new Map([[file,scanStructure(source,file)]]),index=new ModuleIndex();index.addStructure([...structures.values()].flat());
+  const model={uri:{path:`/${file}`,authority:""},getWordAtPosition:()=>({word:"w"}),getLanguageId:()=>"verilog",getVersionId:()=>1,getValue:()=>source};
+  const controller=createSignalController(document.createElement("div"),{editor:()=>({getModel:()=>model,getPosition:()=>({lineNumber:1,column:source.indexOf("w=i")+1})}) as any,files:()=>files.keys(),structures:()=>structures,index:()=>index,topName:()=>"top",instancePath:()=>"top",fileContent:()=>source,isOpen:()=>true,close:vi.fn(),navigate:vi.fn(),hint:vi.fn()});
+  const panel=fake.panels[0];await controller.analyze();
+  const labels=panel.setContexts.mock.lastCall[2];
+  expect(labels).toEqual(["top/lanes[0].w","top/lanes[1].w"]);
+  const first=panel.logicResult.mock.lastCall[2];
+  expect(first.nodes.find((n:any)=>n.id===first.root).drivers).not.toHaveLength(0);
+  expect(panel.logicResult.mock.lastCall[4]).toContain("当前生成对象：lanes[0].w");
+  panel.actions.context(1);await vi.waitFor(()=>expect(panel.logicResult).toHaveBeenCalledTimes(2));
+  const second=panel.logicResult.mock.lastCall[2];expect(second.root).not.toBe(first.root);
+  expect(panel.logicResult.mock.lastCall[5]).toBe(false);
+  panel.actions.refresh();await vi.waitFor(()=>expect(panel.logicResult).toHaveBeenCalledTimes(3));
+  expect(panel.logicResult.mock.lastCall[2].root).toBe(second.root);
+  expect(panel.logicResult.mock.lastCall[5]).toBe(true);
+  source=source.replace("i<2","i<1");controller.invalidate();panel.actions.refresh();
+  await vi.waitFor(()=>expect(panel.hint).toHaveBeenLastCalledWith("当前生成对象已不在有效展开范围，请重新右键追踪。"));
+  expect(panel.logicResult).toHaveBeenCalledTimes(3);
+});
+
+it("同一过程不同块的同名局部对象不能复用前一个追踪结果",async()=>{
+  const source="module top(input a,b,output reg y,z); always @* begin begin : left logic tmp; tmp=a; y=tmp; end begin : right logic tmp; tmp=b; z=tmp; end end endmodule";
+  const file="D:/test/locals.v",files=new Map([[file,source]]),structures=new Map([[file,scanStructure(source,file)]]),index=new ModuleIndex();index.addStructure([...structures.values()].flat());
+  let column=source.indexOf("tmp=a")+1;
+  const model={uri:{path:`/${file}`,authority:""},getWordAtPosition:()=>({word:"tmp"}),getLanguageId:()=>"verilog",getVersionId:()=>1,getValue:()=>source};
+  const controller=createSignalController(document.createElement("div"),{editor:()=>({getModel:()=>model,getPosition:()=>({lineNumber:1,column})}) as any,files:()=>files.keys(),structures:()=>structures,index:()=>index,topName:()=>"top",instancePath:()=>"top",fileContent:()=>source,isOpen:()=>true,close:vi.fn(),navigate:vi.fn(),hint:vi.fn()});
+  const panel=fake.panels[0];await controller.analyze();
+  expect(panel.result).toHaveBeenCalledTimes(1);
+  column=source.indexOf("tmp=b")+1;await controller.analyze();
+  expect(panel.result).toHaveBeenCalledTimes(2);
+  expect(panel.result.mock.lastCall[5]).toBe(false);
+});
+
+it("生成过程的同名局部变量刷新保留所选过程",async()=>{
+  const source="module top(input a,output reg [1:0] y); for(genvar i=0;i<2;i++) begin:lanes always @* begin logic tmp; tmp=a; y[i]=tmp; end end endmodule";
+  const file="D:/test/generated_process.v",files=new Map([[file,source]]),structures=new Map([[file,scanStructure(source,file)]]),index=new ModuleIndex();index.addStructure([...structures.values()].flat());
+  const model={uri:{path:`/${file}`,authority:""},getWordAtPosition:()=>({word:"tmp"}),getLanguageId:()=>"verilog",getVersionId:()=>1,getValue:()=>source};
+  const controller=createSignalController(document.createElement("div"),{editor:()=>({getModel:()=>model,getPosition:()=>({lineNumber:1,column:source.indexOf("tmp=a")+1})}) as any,files:()=>files.keys(),structures:()=>structures,index:()=>index,topName:()=>"top",instancePath:()=>"top",fileContent:()=>source,isOpen:()=>true,close:vi.fn(),navigate:vi.fn(),hint:vi.fn()});
+  const panel=fake.panels[0];await controller.analyze();
+  expect(panel.setContexts.mock.lastCall[2]).toEqual(["top/lanes[0].tmp","top/lanes[1].tmp"]);
+  panel.actions.context(1);await vi.waitFor(()=>expect(panel.result).toHaveBeenCalledTimes(2));
+  expect(panel.result.mock.lastCall[1].scope).toBe(1);
+  panel.actions.refresh();await vi.waitFor(()=>expect(panel.result).toHaveBeenCalledTimes(3));
+  expect(panel.result.mock.lastCall[1].scope).toBe(1);expect(panel.result.mock.lastCall[5]).toBe(true);
+});
+
+it("自定义数组类型提供定义提示，追踪实际 ROM 仍进入信号分析",async()=>{
+  const source=`entity t is end t;
+architecture rtl of t is
+type rom_type is array (0 to 1) of bit;
+signal ROM: rom_type := ('0', '1');
+signal q:bit;
+begin q <= ROM(0); end rtl;`;
+  const file="D:/test/rom.vhd",files=new Map([[file,source]]),structures=new Map([[file,scanStructure(source,file)]]),index=new ModuleIndex();index.addStructure([...structures.values()].flat());
+  let word="rom_type";
+  const model={uri:{path:`/${file}`,authority:""},getWordAtPosition:()=>({word}),getLanguageId:()=>"vhdl",getVersionId:()=>1,getValue:()=>source};
+  const controller=createSignalController(document.createElement("div"),{editor:()=>({getModel:()=>model,getPosition:()=>({lineNumber:4,column:source.split("\n")[3].indexOf(word)+1})}) as any,files:()=>files.keys(),structures:()=>structures,index:()=>index,topName:()=>"t",instancePath:()=>"t",fileContent:()=>source,isOpen:()=>true,close:vi.fn(),navigate:vi.fn(),hint:vi.fn()});
+  const panel=fake.panels[0];await controller.analyze();
+  expect(panel.objectHint).toHaveBeenCalledWith("rom_type","数组类型",{file,line:3});
+  expect(panel.logicResult).not.toHaveBeenCalled();
+  word="ROM";await controller.analyze();expect(panel.logicResult).toHaveBeenCalledTimes(1);
+});
+
 function setup(scanned = true) {
   let source = "module top(input a, output q); wire mid; assign mid = a; assign q = mid; endmodule";
   let word = "mid", version = 1;

@@ -27,11 +27,11 @@ export class CardWidths {
     if (width === CARD_WIDTH) this.widths.delete(id); else this.widths.set(id, width);
     this.apply(id, this.cards.get(id)!); this.redraw();
   }
-  add(id: string, card: HTMLElement): void {
+  add(id: string, card: HTMLElement, label = card.dataset.signal ?? id): void {
     this.cards.set(id, card);
     const handle = element("div", "card-resize"); handle.tabIndex = 0;
     handle.setAttribute("role", "separator"); handle.setAttribute("aria-orientation", "vertical");
-    handle.setAttribute("aria-label", `调整 ${card.dataset.signal ?? id} 卡片宽度`);
+    handle.setAttribute("aria-label", `调整 ${label} 卡片宽度`);
     handle.setAttribute("aria-valuemin", String(CARD_WIDTH)); handle.setAttribute("aria-valuemax", String(MAX_CARD_WIDTH));
     handle.title = "拖动调整宽度，双击恢复默认；方向键调整，Home 复位";
     let drag: {pointer: number; x: number; width: number} | undefined;
@@ -112,7 +112,7 @@ export function appendSource(parent: HTMLElement, source: {file?: string; statem
   block.addEventListener("toggle", redraw); parent.append(block);
 }
 export interface CardPosition { x: number; y: number; h: number; w?: number; column?: number }
-export interface CardEdge { from: string; to: string; control?: boolean; current?: boolean; vertical?: boolean; both?: boolean; unknown?: boolean }
+export interface CardEdge { from: string; to: string; control?: boolean; current?: boolean; vertical?: boolean; both?: boolean; unknown?: boolean; role?: string }
 let canvasSerial = 0;
 export function makeWires(): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -162,7 +162,7 @@ export function drawWires(canvas: HTMLElement, svg: SVGSVGElement, positions: Ma
     }
     if (!edge.unknown) path.setAttribute("marker-end", `url(#${marker.id})`);
     if (edge.both) path.setAttribute("marker-start", `url(#${marker.id})`);
-    const title = document.createElementNS(ns, "title"); title.textContent = edge.unknown ? "方向待确认" : edge.current ? "读取当前 Q" : edge.control ? "条件引用" : "信号连接"; path.append(title); svg.append(path);
+    const title = document.createElementNS(ns, "title"); title.textContent = edge.unknown ? edge.role==="调用参数"?"调用参数，内部语义未展开":"方向待确认" : edge.current ? "读取当前 Q" : edge.role??(edge.control ? "条件引用" : "信号连接"); path.append(title); svg.append(path);
   }
   if (bypassCount) { const routedHeight=height+bypassCount*12;canvas.style.height=`${routedHeight}px`;svg.setAttribute('height',String(routedHeight)); }
 }

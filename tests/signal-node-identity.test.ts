@@ -18,6 +18,13 @@ function logic(source:string,signal="q") {
   new SignalLogicView(localLogic(comp,p,ctx,signal),body,files);
   return body;
 }
+it("同一行不同块的局部对象保留独立卡片身份",()=>{
+  const child=(identity:string)=>({label:"top.tmp",owner:"top",scope:0,file:"t.v",line:1,signal:{path:"top",name:"tmp",identity},children:[]});
+  const upstream={label:"top.a",children:[]},downstream={label:"top.a",children:[child("@local:10:tmp"),child("@local:40:tmp")]};
+  const body=document.createElement("div"),view=new SignalPortsView("a",upstream,downstream,body);view.expandAll();
+  expect([...body.querySelectorAll('.signal-pin')].filter(n=>n.textContent==="内部信号 tmp")).toHaveLength(2);
+  expect(body.textContent).not.toContain("@local:");
+});
 it("复用模块赋值按实例隔离，分别显示正确实例",async()=>{
   const {body}=await ports("module top(input a); child u1(.i(a)); child u2(.i(a)); endmodule module child(input i); wire q=~i; endmodule");
   const cards=[...body.querySelectorAll<HTMLElement>(".port-card")].filter(c=>c.querySelector(".logic-expression"));

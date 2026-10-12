@@ -4,10 +4,19 @@ import { stripComments } from "../parser/verilog";
 import { stripVhdlComments } from "../parser/vhdl";
 import { processTargetSource } from "../analysis/process";
 import { sourceEntry } from "../analysis/source-cache";
+import { cloneConstants, expandStaticGenerate, setConstant, specializeText, type ConstantValues, type SourceView } from "../parser/static-generate";
+import { parseParameters } from "../parser/parameters";
+import { mappingAccess } from "../parser/port-mapping";
 
 interface Assignment {
   /** 连续赋值 RHS 在原文件中的精确偏移。 */
   expressionStart?: number;
+  expressionSourceMap?: number[];
+  selectors?: string[];
+  targetText?:string;
+  selectorReads?:string[];
+  reason?:string;
+  contexts?:string[];
   statement?: string;
   target: string; expression: string; direct: boolean; line: number; file: string;
   /** 过程内赋值的条件标注（if/case 外层在前） */
@@ -22,14 +31,16 @@ interface Assignment {
   blockedReads?: string[];
   hasCall?: boolean;
 }
-interface Boundary { text: string; line: number; file: string; reason: string; proc?: number; start?: number; end?: number }
+interface Boundary { text: string; line: number; file: string; reason: string; proc?: number; start?: number; end?: number; bindings?:Record<string,string> }
 interface SourcePosition { file: string; line: number; column?: number }
 export interface SignalModule extends ModuleInfo {
+  parameterValues?: ConstantValues;
+  sourceViews?: SourceView[];
   regions: { file: string; start: number; end: number }[];
   instances: (InstanceInfo & { file: string })[];
   assignments: Assignment[];
   boundaries: Boundary[];
-  processes: { file: string; start: number; end: number; locals: Set<string> }[];
+  processes: { file: string; start: number; end: number; locals: Set<string>; text?: string; sourceMap?: number[]; generateScope?: string; localBindings?:{name:string;identity:string;start:number;end:number}[] }[];
   /** 只出现在敏感表/条件中、不作为数据链展开的信号 */
   controlOnly: Set<string>;
   controlSites: { signal: string; file: string; line: number; proc: number }[];
@@ -40,10 +51,11 @@ export interface SignalModule extends ModuleInfo {
   problem?: string;
 }
 export interface SignalContext { module: string; path: string; parent?: SignalContext; instance?: InstanceInfo }
+export interface SignalCandidate {name:string;scope:number;label:string}
 export interface TraceNode {
   owner?: string;
   scope?: number;
-  signal?: { path: string; name: string };
+  signal?: { path: string; name: string; identity?:string };
   port?: { path: string; name: string; direction?: string };
   mapping?: string;
   statement?: string;
@@ -57,6 +69,9 @@ export interface TraceNode {
 }
 export type TraceDirection = "upstream" | "downstream";
 const identifier = /^[A-Za-z_]\w*$/;
+const objectIdentity = (s:string)=>identifier.test(s)||/^@local:\d+:[A-Za-z_]\w*$/.test(s);
+const displayObject = (s:string)=>s.replace(/^@local:\d+:/,"");
+const targetObject = (s:string)=>/^(?:@local:\d+:[A-Za-z_]\w*|[A-Za-z_]\w*)/.exec(s)?.[0]??s;
 const same = (a: string, b: string, file: string) => detectLang(file) === "vhdl" ? a.toLowerCase() === b.toLowerCase() : a === b;
 const mentions = (text: string, name: string, file: string) => (text.match(/[A-Za-z_]\w*/g) ?? []).some(s => same(s, name, file));
 const localScope = (mod: SignalModule, name: string, proc = -1) =>
@@ -68,13 +83,19 @@ const signalKey = (mod: SignalModule, name: string, proc = -1) => {
 };
 
 function processAccess(text: string, name: string, file: string, direction: TraceDirection): boolean {
-  const assignments = /(^|[;\n)]|\bbegin\b|\bthen\b|\belse\b)\s*([A-Za-z_]\w*)\s*(?:\[[^\]]*\]|\([^)]*\))?\s*(<=|:=|=(?!=))/gi;
+  const assignments = /(^|[;\n)]|\bbegin\b|\bthen\b|\belse\b)\s*([A-Za-z_]\w*)(?:\s*\.\s*\w+)*\s*(?:\[[^\]]*\]|\([^)]*\))?\s*(<=|:=|=(?!=))/gi;
   let writes = false;
   const reads = text.replace(assignments, (whole, prefix: string, target: string, operator: string) => {
     if (same(target, name, file)) writes = true;
     return prefix + " " + operator;
   });
   return direction === "upstream" ? writes : mentions(reads, name, file);
+}
+
+function boundaryAccess(boundary:Boundary,name:string,direction:TraceDirection):boolean {
+  const lexical=(value:string)=>value.replace(/^@local:(\d+):[A-Za-z_]\w*$/,"__process_local_$1");
+  const text=boundary.bindings?boundary.text.replace(/\b[A-Za-z_]\w*\b/g,s=>lexical(boundary.bindings![detectLang(boundary.file)==="vhdl"?s.toLowerCase():s]??s)):boundary.text;
+  return processAccess(text,lexical(name),boundary.file,direction);
 }
 
 /** 跳过配对的括号，返回右括号之后的位置。 */
@@ -195,6 +216,7 @@ export class SignalProject {
   private structures: Map<string, ModuleInfo[]>;
   private detail = new Map<string, ModuleInfo[]>();
   private modules = new Map<string, SignalModule | undefined>();
+  private specialized = new Map<string, SignalModule>();
   constructor(private files: Map<string, string>, structures?: Map<string, ModuleInfo[]>, private binding?: {name:string;file:string;start:number}) {
     this.structures = structures ?? new Map([...files].map(([file, source]) => [file, scanStructure(source, file)]));
   }
@@ -275,17 +297,19 @@ export class SignalProject {
           if (vhdl && !/^process\b/i.test(head)) { result.boundaries.push({ text: p.text, file, line, reason: "函数/过程（不继续推导）" }); continue; }
           if (!vhdl && !/^(always\w*|initial)\b/.test(head)) { result.boundaries.push({ text: p.text, file, line, start: start + p.index, end: start + p.index + p.text.length, reason: "函数/任务（不继续推导）" }); continue; }
           const parsed = vhdl ? parseVhdlProcess(p.text) : parseVerilogProcess(p.text);
-          result.processes.push({ file, start: start + p.index, end: start + p.index + p.text.length, locals: new Set(parsed.locals) });
+          result.processes.push({ file, start: start + p.index, end: start + p.index + p.text.length, locals: new Set(parsed.locals),localBindings:parsed.localBindings?.map(b=>({...b,start:start+p.index+b.start,end:start+p.index+b.end})) });
           for (const pa of parsed.assignments) {
             result.assignments.push({
-              target: pa.target, expression: pa.expression, statement: `${pa.target} ${pa.operator} ${pa.expression};`,
-              direct: !pa.hasCall && !pa.blockedReads.length && identifier.test(pa.target) && identifier.test(pa.expression),
+              target: pa.target+(pa.targetText?.replace(/^[A-Za-z_]\w*/,"")??""),targetText:pa.targetText, expression: pa.expression, statement: `${pa.targetText ?? displayObject(pa.target)} ${pa.operator} ${pa.expression};`,
+              direct: !pa.hasCall && !pa.blockedReads.length && identifier.test(pa.targetText ?? pa.target) && identifier.test(pa.expression),
               file, line: fileEntry.lineAt(start + p.index + pa.index),
               conditions: pa.conditions, clock: pa.clock, proc: procSeq,
+              selectors:pa.selectors,
+              selectorReads:pa.selectorReads,reason:pa.reason,contexts:pa.contexts,
               reads: pa.reads, blockedReads: pa.blockedReads, hasCall: pa.hasCall,
             });
           }
-          for (const b of parsed.boundaries) result.boundaries.push({ text: p.text.slice(b.index, b.endIndex), file, line: fileEntry.lineAt(start + p.index + b.index), reason: b.reason, proc: procSeq });
+          for (const b of parsed.boundaries) result.boundaries.push({ text: p.text.slice(b.index, b.endIndex), file, line: fileEntry.lineAt(start + p.index + b.index), reason: b.reason, proc: procSeq,bindings:b.bindings });
           for (const s of parsed.controlSignals) {
             control.add(signalKey(result, norm(s), procSeq));
             result.controlSites.push({ signal: norm(s), file, line, proc: procSeq });
@@ -294,7 +318,7 @@ export class SignalProject {
           procSeq++;
         }
         const assignments = vhdl
-          ? /\b([A-Za-z_]\w*(?:\s*\([^;]*?\))?)\s*<=\s*([^;]+);/gd
+          ? /\b([A-Za-z_]\w*(?:\s*\.\s*\w+)*(?:\s*\([^;]*?\))?)\s*<=\s*([^;]+);/gd
           : /\b(?:assign\s+|wire\s+(?:(?:signed|unsigned)\s+)?(?:\[[^\]]+\]\s*)?)([A-Za-z_]\w*(?:\s*\[[^\]]*\])?)\s*=\s*([^;]+);/gd;
         // 匹配在字符串已遮蔽且索引对齐的 clean 副本上进行，展示文本仍取 body
         const masked = clean.slice(start, end);
@@ -325,7 +349,7 @@ export class SignalProject {
     for (const s of control) if (!data.has(s)) result.controlOnly.add(s);
     const byTarget = new Map<string, Assignment[]>();
     for (const a of result.assignments) {
-      const key = signalKey(result, a.target.replace(/\s*\[.*\]$/, "").replace(/\s*\(.*\)$/, ""), a.proc);
+      const key = signalKey(result, targetObject(a.target), a.proc);
       const list = byTarget.get(key) ?? [];
       list.push(a);
       byTarget.set(key, list);
@@ -342,6 +366,85 @@ export class SignalProject {
     return result;
   }
 
+  /** 实例参数与静态 generate 只在显式分析时展开；不同实例不共享可变结果。 */
+  moduleForContext(ctx: SignalContext): SignalModule | undefined {
+    const base=this.module(ctx.module);if(!base)return;
+    const cacheKey=`${ctx.path}:${ctx.module}:${JSON.stringify(ctx.instance?.parameterOverrides ?? [])}`;
+    const cached=this.specialized.get(cacheKey);if(cached)return cached;
+    const vhdl=detectLang(base.file)==="vhdl",norm=(s:string)=>vhdl?s.toLowerCase():s;
+    const values:ConstantValues=new Map();
+    const parentValues=ctx.instance?.parameterEnvironment??(ctx.parent?this.moduleForContext(ctx.parent)?.parameterValues??new Map():new Map());
+    const overrides=ctx.instance?.parameterOverrides??[];
+    for(const [i,p] of (base.parameters??[]).entries()) {
+      const override=overrides.find((o,j)=>o.name?norm(o.name)===norm(p.name):j===i);
+      const expression=override?.expression??p.defaultValue;
+      const parentVhdl=ctx.parent?detectLang(this.module(ctx.parent.module)?.file??base.file)==="vhdl":vhdl;
+      setConstant(values,norm(p.name),expression,override?parentValues:values,override?parentVhdl:vhdl,p.typeDeclaration);
+    }
+    for(const r of base.regions) {
+      const clean=sourceEntry(r.file,this.files.get(r.file)!).text(false).slice(r.start,r.end);
+      // 模块级常量在 generate 前声明；块内常量不能污染其他分支。
+      const prefix=clean.split(vhdl?/\b\w+\s*:\s*(?:if|for|case)\b[\s\S]*?\bgenerate\b/i:/\bgenerate\b|\b(?:if|for|case|casex|casez)\s*\(/)[0];
+      const re=vhdl?/\bconstant\s+(\w+)\s*:[^;]*?:=\s*([^;]+);/gi:/\b(?:localparam|parameter)\s+([^;]+);/g;
+      for(const m of prefix.matchAll(re)) {
+        const absolute=r.start+m.index!;
+        if(base.processes.some(p=>p.file===r.file&&absolute>=p.start&&absolute<p.end))continue;
+        if(vhdl)for(const p of parseParameters(m[0],m[0],true,true))setConstant(values,norm(p.name),p.defaultValue,values,true,p.typeDeclaration);
+        else for(const p of parseParameters(m[1],m[1],false,true))if(!values.has(p.name))setConstant(values,p.name,p.defaultValue,values,false,p.typeDeclaration);
+      }
+    }
+    const widthRegion={start:0,end:0,scope:"",values,names:new Map<string,string>()};
+    const out:SignalModule={...base,ports:base.ports.map(p=>({...p,width:p.width?specializeText(p.width,0,widthRegion,vhdl,true).text:undefined})),parameterValues:values,sourceViews:[],instances:[],assignments:[],boundaries:[],processes:[],controlOnly:new Set(),controlSites:[],multiSameProc:new Set(),multiDriver:new Set()};
+    if(base.problem?.startsWith("generate"))delete out.problem;
+    for(const region of base.regions) {
+      const raw=this.files.get(region.file)!,language=detectLang(region.file)==="vhdl";
+      const excluded=[...base.processes.filter(p=>p.file===region.file),...base.boundaries.filter(b=>b.file===region.file&&b.start!==undefined&&b.end!==undefined).map(b=>({start:b.start!,end:b.end!}))];
+      const plan=expandStaticGenerate(raw,region.start,region.end,values,language,excluded);
+      for(const boundary of plan.boundaries)out.boundaries.push({...boundary,text:raw.slice(boundary.start,boundary.end),file:region.file,line:sourceEntry(region.file,raw).lineAt(boundary.start)});
+      for(const active of plan.regions) {
+        const transformed=specializeText(raw.slice(active.start,active.end),active.start,active,language);
+        out.sourceViews!.push({...active,...transformed,file:region.file});
+        const contains=(start:number)=>start>=active.start&&start<active.end;
+        const procMap=new Map<number,number>();
+        for(const [old,p] of base.processes.entries())if(p.file===region.file&&contains(p.start)) {
+          const next=out.processes.length;procMap.set(old,next);
+          out.processes.push({...p,...specializeText(raw.slice(p.start,p.end),p.start,active,language),generateScope:active.scope,locals:new Set(p.locals)});
+        }
+        for(const a of base.assignments)if(a.file===region.file&&((a.proc??-1)<0?contains(a.expressionStart??sourceEntry(region.file,raw).lineOffset(a.line)):procMap.has(a.proc!))) {
+          const expression=specializeText(a.expression,a.expressionStart??sourceEntry(region.file,raw).lineOffset(a.line),active,language);
+          const target=a.target.startsWith("@local:")?a.target:specializeText(a.target,0,active,language).text;
+          const transformReads=(items:string[]|undefined)=>items?.map(s=>s.startsWith("@local:")?s:specializeText(s,0,active,language).text).filter(objectIdentity);
+          out.assignments.push({...a,target,expression:expression.text,expressionSourceMap:expression.sourceMap,statement:a.statement?specializeText(a.statement,0,active,language).text:undefined,
+            targetText:a.targetText?specializeText(a.targetText,0,active,language).text:undefined,
+            conditions:a.conditions?.map(c=>specializeText(c,0,active,language).text),clock:a.clock?.map(c=>specializeText(c,0,active,language).text),
+            selectors:a.selectors?.map(c=>specializeText(c,0,active,language).text),
+            selectorReads:transformReads(a.selectorReads),contexts:a.contexts?.map(c=>specializeText(c,0,active,language).text),
+            reads:transformReads(a.reads),blockedReads:transformReads(a.blockedReads),direct:objectIdentity(target)&&identifier.test(expression.text),proc:(a.proc??-1)<0?-1:procMap.get(a.proc!)});
+        }
+        for(const b of base.boundaries)if(b.file===region.file&&contains(b.start??sourceEntry(region.file,raw).lineOffset(b.line)))out.boundaries.push({...b,text:specializeText(b.text,0,active,language).text,proc:b.proc===undefined?undefined:procMap.get(b.proc)});
+        for(const site of base.controlSites)if(site.file===region.file&&procMap.has(site.proc))out.controlSites.push({...site,signal:specializeText(site.signal,0,active,language).text,proc:procMap.get(site.proc)!});
+        for(const inst of base.instances)if(inst.file===region.file&&contains(inst.start??sourceEntry(region.file,raw).lineOffset(inst.line))) {
+          if(out.instances.length>=2000) {
+            if(!out.boundaries.some(b=>b.reason==="generate 实例展开达到分析预算"))out.boundaries.push({file:region.file,line:sourceEntry(region.file,raw).lineAt(region.start),start:region.start,end:region.end,text:raw.slice(region.start,region.end),reason:"generate 实例展开达到分析预算"});
+            continue;
+          }
+          out.instances.push({...inst,
+            inst:active.scope?`${active.scope}.${inst.inst}`:inst.inst,
+            connections:inst.connections?.map(c=>({...c,expr:specializeText(c.expr,0,active,language).text})),
+            parameterOverrides:inst.parameterOverrides?.map(p=>({...p,expression:specializeText(p.expression,0,{...active,names:new Map()},language).text})),
+            parameterEnvironment:cloneConstants(active.values),
+          });
+        }
+      }
+    }
+    const groups=new Map<string,Assignment[]>();
+    for(const a of out.assignments) {const key=signalKey(out,targetObject(a.target),a.proc);const list=groups.get(key)??[];list.push(a);groups.set(key,list);}
+    for(const [key,entries]of groups){const procs=new Set(entries.map(a=>a.proc??-1));if(procs.size>1)out.multiDriver.add(key);if(entries.length>procs.size)out.multiSameProc.add(key);}
+    const data=new Set(out.assignments.flatMap(a=>[targetObject(a.target),...(a.reads??[]),...(a.blockedReads??[])].map(n=>signalKey(out,n,a.proc))));
+    for(const site of out.controlSites){const key=signalKey(out,site.signal,site.proc);if(!data.has(key))out.controlOnly.add(key);}
+    this.specialized.set(cacheKey,out);return out;
+  }
+
   root(module: string): SignalContext | undefined { return this.module(module) ? { module, path: module } : undefined; }
   assignmentSource(mod: SignalModule, proc: number, target: string): {text: string; line?: number}[] {
     const region = mod.processes[proc], source = this.files.get(region.file)!;
@@ -350,7 +453,7 @@ export class SignalProject {
     if (rows) return rows.map(row => ({text: row.text, line: row.offset === undefined ? undefined : sourceEntry(region.file, source).lineAt(region.start + row.offset)}));
     // 不支持的过程仅展示原文，不重建或猜测其控制结构。
     const first = sourceEntry(region.file, source).lineAt(region.start);
-    const sites = new Set(mod.assignments.filter(a => a.proc === proc && same(a.target.replace(/\s*[\[(].*$/, ""), target, a.file)).map(a => a.line));
+    const sites = new Set(mod.assignments.filter(a => a.proc === proc && same(targetObject(a.target), target, a.file)).map(a => a.line));
     return text.split("\n").map((text, i) => ({text, line: sites.has(first + i) ? first + i : undefined}));
   }
   terminalReason(mod: SignalModule, name: string, direction: TraceDirection, scope = -1): string {
@@ -397,17 +500,41 @@ export class SignalProject {
   }
   /** 光标入口保留过程作用域；链内追踪则从赋值所在过程传播。 */
   signalScope(module: string, name: string, source?: SourcePosition): number {
-    const mod = this.module(module);
-    const text = source && this.files.get(source.file);
-    if (!mod || !source || text === undefined) return -1;
-    const offset = sourceEntry(source.file, text).lineOffset(source.line) + (source.column ?? 1) - 1;
-    const proc = mod.processes.findIndex(p => p.file === source.file && offset >= p.start && offset < p.end);
-    return localScope(mod, name, proc);
+    return this.signalIdentity(module,name,source).scope;
+  }
+  signalIdentity(module:string,name:string,source?:SourcePosition):{name:string;scope:number;candidates?:SignalCandidate[]} {
+    const candidates=this.signalCandidates({module,path:module},name,source);
+    if(candidates.length===1)return{name:candidates[0].name,scope:candidates[0].scope};
+    return{name,scope:-1,candidates};
+  }
+  signalCandidates(ctx:SignalContext,name:string,source?:SourcePosition):SignalCandidate[] {
+    const mod=this.moduleForContext(ctx);if(!mod)return[{name,scope:-1,label:displayObject(name)}];
+    const raw=source&&this.files.get(source.file),offset=source&&raw!==undefined?sourceEntry(source.file,raw).lineOffset(source.line)+(source.column??1)-1:undefined;
+    const candidates:SignalCandidate[]=[];
+    for(const [scope,p] of mod.processes.entries()) {
+      if(source&&p.file!==source.file||offset!==undefined&&(offset<p.start||offset>=p.end))continue;
+      const binding=p.localBindings?.filter(b=>same(b.name,name,p.file)&&offset!==undefined&&offset>=b.start&&offset<b.end).sort((a,b)=>b.start-a.start)[0];
+      const identity=(offset!==undefined||name.startsWith("@local:"))&&p.locals.has(name.toLowerCase())?name:binding?.identity;
+      if(identity)candidates.push({name:identity,scope,label:[p.generateScope,displayObject(name)].filter(Boolean).join(".")});
+    }
+    if(candidates.length)return candidates;
+    for(const view of mod.sourceViews??[]) {
+      if(source&&view.file!==source.file||offset!==undefined&&(offset<view.start||offset>=view.end))continue;
+      const generated=view.names?.get(detectLang(view.file)==="vhdl"?name.toLowerCase():name);
+      const internal=generated??[...view.names?.values()??[]].find(n=>n===name);
+      if(internal)candidates.push({name:internal,scope:-1,label:`${view.scope}.${generated?name:[...view.names!.entries()].find(([,v])=>v===name)?.[0]??name}`});
+    }
+    const unique=[...new Map(candidates.map(c=>[`${c.scope}:${c.name}`,c])).values()];
+    return unique.length?unique:[{name,scope:-1,label:name}];
   }
   child(parent: SignalContext, instance: InstanceInfo): SignalContext {
     return { module: instance.module, path: `${parent.path}/${instance.inst}`, parent, instance };
   }
   contexts(top: string, module: string): { items: SignalContext[]; truncated: boolean } {
+    // 先通过轻量结构反向筛出候选模块，详细解析不触及与目标无关的子树。
+    const reachable=new Set([module.toLowerCase()]);let changed=true;
+    while(changed){changed=false;for(const parts of this.structures.values())for(const part of parts)if(!reachable.has(part.name.toLowerCase())&&part.instances.some(i=>reachable.has(i.module.toLowerCase()))){reachable.add(part.name.toLowerCase());changed=true;}}
+    if(!reachable.has(top.toLowerCase()))return{items:[],truncated:false};
     const root = { module: top, path: top };
     const queue: { context: SignalContext; ancestors: string[] }[] = [{ context: root, ancestors: [] }];
     const items: SignalContext[] = [];
@@ -416,27 +543,23 @@ export class SignalProject {
       const { context, ancestors } = queue.shift()!;
       if (context.module.toLowerCase() === module.toLowerCase()) { items.push(context); continue; }
       if (ancestors.includes(context.module.toLowerCase()) || ancestors.length >= 32) continue;
-      // 仅用结构边寻找上下文，不触发所有模块的端口解析。
-      for (const parts of this.structures.values()) for (const part of parts) {
-        if (same(part.name, context.module, part.file)) for (const inst of part.instances) {
-          queue.push({ context: this.child(context, inst), ancestors: [...ancestors, context.module.toLowerCase()] });
-        }
-      }
+      // 显式选择分析上下文时按访问路径特化，互斥分支和迭代身份与追踪一致。
+      for(const inst of this.moduleForContext(context)?.instances??[])if(reachable.has(inst.module.toLowerCase())) queue.push({context:this.child(context,inst),ancestors:[...ancestors,context.module.toLowerCase()]});
     }
     return { items, truncated: queue.length > 0 };
   }
 }
 
 export async function traceSignal(project: SignalProject, context: SignalContext, signal: string, direction: TraceDirection,
-  options: { maxNodes?: number; cancelled?(): boolean; source?: SourcePosition; stopAtAssignments?: boolean; localOnly?: boolean; descendOnly?: boolean } = {}): Promise<TraceNode> {
+  options: { maxNodes?: number; cancelled?(): boolean; source?: SourcePosition; scope?:number; stopAtAssignments?: boolean; localOnly?: boolean; descendOnly?: boolean } = {}): Promise<TraceNode> {
   let count = 0;
   const limit = options.maxNodes ?? 500;
   async function visit(ctx: SignalContext, name: string, seen: Set<string>, depth: number, scope = -1): Promise<TraceNode> {
     if (options.cancelled?.()) throw new Error("cancelled");
-    const node: TraceNode = { label: `${ctx.path}.${name}`, owner: ctx.path, scope, signal: {path: ctx.path, name}, children: [] };
+    const node: TraceNode = { label: `${ctx.path}.${displayObject(name)}`, owner: ctx.path, scope, signal: {path: ctx.path, name:displayObject(name),identity:name}, children: [] };
     if (++count > limit || depth > 40) { node.reason = "达到分析预算，结果未完全展开"; return node; }
     if (count % 24 === 0) await new Promise(r => setTimeout(r, 0));
-    const mod = project.module(ctx.module);
+    const mod = project.moduleForContext(ctx);
     if (!mod) { node.reason = "黑盒或缺失定义"; return node; }
     node.file = mod.file; node.line = mod.line;
     // The selected root points to the source occurrence that started the trace.
@@ -476,17 +599,19 @@ export async function traceSignal(project: SignalProject, context: SignalContext
     const assignmentGroups = new Set<string>(), dataProcesses = new Set<number>();
     for (const a of mod.assignments) {
       if (signalKey(mod, name, a.proc) !== identity) continue;
-      const relevant = direction === "upstream" ? mentions(a.target, name, a.file) : mentions(a.expression, name, a.file) || options.stopAtAssignments && a.conditions?.some(c => mentions(c, name, a.file));
+      const dataRead=[...(a.reads??[]),...(a.blockedReads??[])].some(r=>same(r,name,a.file));
+      const addressRead=a.selectorReads?a.selectorReads.some(s=>same(s,name,a.file)):a.selectors?.some(s=>!s.startsWith(".")&&mentions(s,name,a.file));
+      const relevant = direction === "upstream" ? same(targetObject(a.target),name,a.file) : dataRead || options.stopAtAssignments && (addressRead||a.conditions?.some(c => mentions(c, name, a.file)));
       if (!relevant) continue;
       if ((a.proc ?? -1) >= 0) dataProcesses.add(a.proc!);
       if (options.stopAtAssignments) {
-        const target = a.target.replace(/\s*[\[(].*$/, "");
+        const target = targetObject(a.target);
         const group = `${a.proc}:${signalKey(mod,target,a.proc)}`;
         if ((a.proc ?? -1) >= 0 && assignmentGroups.has(group)) continue;
         assignmentGroups.add(group);
         const rows = (a.proc ?? -1) >= 0 ? project.assignmentSource(mod,a.proc!,target) : undefined;
-        const conditionOnly = direction === "downstream" && !mentions(a.expression, name, a.file);
-        const leaf = stop(`${target} ← ${rows ? "过程赋值" : a.expression}`, "赋值位置", a.file, rows?.find(row=>row.line)?.line ?? a.line, conditionOnly ? "条件引用" : undefined, a.clock?.join("，"));
+        const conditionOnly = direction === "downstream" && !dataRead;
+        const leaf = stop(`${displayObject(target)} ← ${rows ? "过程赋值" : a.expression}`, "赋值位置", a.file, rows?.find(row=>row.line)?.line ?? a.line, [conditionOnly?addressRead?"写地址引用":"条件引用":undefined,a.reason].filter(Boolean).join("；")||undefined, a.clock?.join("，"));
         if (leaf) { leaf.target = { context: ctx, signal: target }; leaf.statement = rows ? rows.map(row=>row.text).join("\n") : a.statement; leaf.sourceRows = rows; }
         continue;
       }
@@ -496,28 +621,29 @@ export async function traceSignal(project: SignalProject, context: SignalContext
         else stop(`${a.target} ← ${a.expression}`, "运算或范围转换（不继续推导）", a.file, a.line);
         continue;
       }
-      if (!identifier.test(a.target.trim())) {
-        stop(`${a.target} ← ${a.expression}`, "位选/切片赋值（范围转换）", a.file, a.line);
+      if (!objectIdentity(a.target.trim())) {
+        stop(`${a.targetText??displayObject(a.target)} ← ${a.expression}`, "位选/切片赋值（范围转换）", a.file, a.line);
         continue;
       }
       const parts: string[] = [];
       if (a.conditions?.length) parts.push(`条件: ${a.conditions.join("，")}`);
-      if (!a.direct) parts.push(`${a.target} = ${a.expression}`);
-      const key = a.target.replace(/\s*\[.*\]$/, "").replace(/\s*\(.*\)$/, "");
+      if (!a.direct) parts.push(`${a.targetText??displayObject(a.target)} = ${a.expression}`);
+      const key = targetObject(a.target);
       const mkey = signalKey(mod, key, a.proc);
       if (mod.multiSameProc.has(mkey)) parts.push("同一过程多次赋值，后者覆盖");
       else if (mod.multiDriver.has(mkey)) parts.push("多驱动");
       const note = parts.join("；") || undefined;
       const tip = a.clock?.length ? `寄存器级：${a.clock.join("，")}` : undefined;
+      if(a.reason?.includes("循环")){stop(`${a.targetText??displayObject(a.target)} ← ${a.expression}`,a.reason,a.file,a.line,note,tip);continue;}
       const blockReason = detectLang(a.file) === "vhdl" ? "位选/下标/函数调用（不继续推导）" : "位选/切片（范围转换，不继续推导）";
       if (direction === "upstream") {
-        if (a.hasCall) { stop(`${a.target} ← ${a.expression}`, "含函数调用（不继续推导）", a.file, a.line, note, tip); continue; }
+        if (a.hasCall) { stop(`${a.targetText??displayObject(a.target)} ← ${a.expression}`, "含函数调用（不继续推导）", a.file, a.line, note, tip); continue; }
         let followed = false;
         for (const r of a.reads) { followed = true; await follow(ctx, r, note, tip, a, localScope(mod, r, a.proc)); }
-        if (a.blockedReads?.length) stop(`${a.target} ← ${a.expression}`, blockReason, a.file, a.line, note, tip);
-        if (!followed && !a.blockedReads?.length) stop(`${a.target} ← ${a.expression}`, "常量赋值（终点）", a.file, a.line, note, tip);
+        if (a.blockedReads?.length) stop(`${a.targetText??displayObject(a.target)} ← ${a.expression}`, blockReason, a.file, a.line, note, tip);
+        if (!followed && !a.blockedReads?.length) stop(`${a.targetText??displayObject(a.target)} ← ${a.expression}`, "常量赋值（终点）", a.file, a.line, note, tip);
       } else {
-        if (a.hasCall) { stop(`${a.target} ← ${a.expression}`, "含函数调用（不继续推导）", a.file, a.line, note, tip); continue; }
+        if (a.hasCall) { stop(`${a.targetText??displayObject(a.target)} ← ${a.expression}`, "含函数调用（不继续推导）", a.file, a.line, note, tip); continue; }
         if (!a.reads.some(r => same(r, name, a.file))) {
           if ((a.blockedReads ?? []).some(b => same(b, name, a.file))) stop(`${a.target} ← ${a.expression}`, blockReason, a.file, a.line, note, tip);
           else if (a.conditions?.some(c => mentions(c,name,a.file))) stop(`${a.target} ← ${a.expression}`, "控制条件引用", a.file, a.line, note, tip);
@@ -526,8 +652,8 @@ export async function traceSignal(project: SignalProject, context: SignalContext
         await follow(ctx, key, note, tip, a, localScope(mod, key, a.proc));
       }
     }
-    for (const b of mod.boundaries) if (signalKey(mod, name, b.proc) === identity && processAccess(b.text, name, b.file, direction)) {
-      stop(`${name} · ${b.file.split(/[\\/]/).pop()}:${b.line}`, b.reason, b.file, b.line);
+    for (const b of mod.boundaries) if (signalKey(mod, name, b.proc) === identity && (b.reason.includes("generate") ? mentions(b.text,name,b.file) : boundaryAccess(b,name,direction))) {
+      stop(`${displayObject(name)} · ${b.file.split(/[\\/]/).pop()}:${b.line}`, b.reason, b.file, b.line);
     }
     if (direction === "downstream") {
         for (const site of mod.controlSites.filter(s => same(s.signal, name, s.file) && signalKey(mod, s.signal, s.proc) === identity && !dataProcesses.has(s.proc))) {
@@ -542,9 +668,11 @@ export async function traceSignal(project: SignalProject, context: SignalContext
     const allows = (dir: string | undefined, upstream: boolean) => upstream ? ["output", "out", "buffer", "inout"].includes(dir ?? "") : ["input", "in", "inout"].includes(dir ?? "");
     for (const inst of mod.instances) {
       const instanceFile = inst.file;
-      const child = project.module(inst.module);
+      const child = project.moduleForContext(project.child(ctx,inst));
       for (const [i, conn] of (inst.connections ?? []).entries()) {
-        if (!mentions(conn.expr, name, mod.file)) continue;
+        const access=mappingAccess(conn.expr,detectLang(instanceFile)==="vhdl");
+        const uncertainWrite=direction==="upstream"&&!access.writable&&access.reads.some(n=>same(n,name,mod.file));
+        if (!uncertainWrite&&!(direction==="upstream"?access.targets:access.reads).some(n=>same(n,name,mod.file))) continue;
         const port = conn.port ? child?.ports.find(p => same(p.name, conn.port!, child.file)) : child?.ports[i];
         const pin = {path: `${ctx.path}/${inst.inst}`, name: port?.name ?? conn.port ?? String(i + 1), direction: port?.direction};
         if (!child || !port?.direction) {
@@ -553,35 +681,48 @@ export async function traceSignal(project: SignalProject, context: SignalContext
           continue;
         }
         if (!allows(port.direction, direction === "upstream")) continue;
-        if (!identifier.test(conn.expr)) {
-          const leaf = stop(`${pin.path}.${pin.name}`, "端口映射含运算或范围转换，停止追踪", instanceFile, conn.line);
-          if (leaf) { leaf.port = pin; leaf.mapping = detectLang(instanceFile) === "vhdl" ? `${conn.port ?? port.name} => ${conn.expr}` : conn.port ? `.${conn.port}(${conn.expr})` : conn.expr; }
-        }
-        else if (options.localOnly) {
+        const mapping=detectLang(instanceFile) === "vhdl" ? `${conn.port ?? port.name} => ${conn.expr}` : conn.port ? `.${conn.port}(${conn.expr})` : conn.expr;
+        if(uncertainWrite) {
+          const leaf=stop(`${inst.inst}.${port.name}`,"端口映射写入目标无法确定",instanceFile,conn.line);
+          if(leaf){leaf.port=pin;leaf.mapping=mapping;}
+        }else if (options.localOnly) {
           const leaf = stop(`${inst.inst}.${port.name}`, "子模块端口", instanceFile, conn.line);
-          if (leaf) leaf.mapping = detectLang(instanceFile) === "vhdl" ? `${conn.port ?? port.name} => ${conn.expr}` : conn.port ? `.${conn.port}(${conn.expr})` : conn.expr;
+          if (leaf) {leaf.port=pin;leaf.mapping=mapping;}
         }
-        else await follow(project.child(ctx, inst), port.name, undefined, undefined, { file: instanceFile, line: conn.line });
+        else {
+          await follow(project.child(ctx, inst), port.name,identifier.test(conn.expr)?undefined:"端口表达式关系，未计算逐位对应", undefined, { file: instanceFile, line: conn.line });
+          const leaf=node.children.at(-1);if(leaf&&!identifier.test(conn.expr))leaf.mapping=mapping;
+        }
       }
     }
     const port = mod.ports.find(p => same(p.name, name, mod.file));
     if (port && allows(port.direction, direction === "downstream")) {
       if (options.localOnly || options.descendOnly || !ctx.parent) stop(name, options.localOnly || options.descendOnly ? "模块端口" : direction === "upstream" ? "顶层输入" : "顶层输出");
       else {
-        const parent = project.module(ctx.parent.module);
+        const parent = project.moduleForContext(ctx.parent);
         const inst = parent?.instances.find(i => i.inst === ctx.instance?.inst && i.line === ctx.instance.line);
         const connection = inst?.connections?.find((c, i) => c.port ? same(c.port, port.name, mod.file) : mod.ports[i]?.name === port.name);
         if (!parent || parent.problem || !inst) stop(name, parent?.problem ?? "无法继续分析：实例绑定不明");
         else if (!connection || !connection.expr || /^open$/i.test(connection.expr)) stop(name, "未连接端口");
-        else if (!identifier.test(connection.expr)) {
-          const leaf = stop(connection.expr, "端口映射含常量、运算或范围转换，停止追踪", inst?.file, connection.line);
-          if (leaf) { leaf.owner = ctx.parent.path; leaf.mapping = detectLang(inst!.file) === "vhdl" ? `${connection.port ?? port.name} => ${connection.expr}` : connection.port ? `.${connection.port}(${connection.expr})` : connection.expr; }
+        else {
+          const access=mappingAccess(connection.expr,detectLang(inst.file)==="vhdl");
+          const names=direction==="upstream"?access.reads:access.targets;
+          if(!names.length) {
+            const leaf=stop(connection.expr,access.writable||direction==="upstream"?"常量端口映射（终点）":"端口映射写入目标无法确定",inst.file,connection.line);
+            if(leaf){leaf.owner=ctx.parent.path;leaf.mapping=connection.expr;}
+          }
+          for(const next of names) {
+            await follow(ctx.parent,next,identifier.test(connection.expr)?undefined:`端口映射：${connection.expr}；未计算逐位对应`,undefined,{file:inst.file,line:connection.line});
+            const leaf=node.children.at(-1);if(leaf&&!identifier.test(connection.expr))leaf.mapping=connection.expr;
+          }
         }
-        else await follow(ctx.parent, connection.expr, undefined, undefined, { file: inst!.file, line: connection.line });
       }
     }
     if (!node.children.length) node.reason = project.terminalReason(mod,name,direction);
     return node;
   }
-  return visit(context, signal, new Set(), 0, project.signalScope(context.module, signal, options.source));
+  const candidates=project.signalCandidates(context,signal,options.source).filter(c=>options.scope===undefined||c.scope===options.scope);
+  if(candidates.length!==1)return{label:`${context.path}.${displayObject(signal)}`,file:options.source?.file,line:options.source?.line,reason:"当前位置对应多个生成块对象，请选择生成实例后分析",children:[]};
+  const entry=candidates[0];
+  return visit(context, entry.name, new Set(), 0, entry.scope);
 }

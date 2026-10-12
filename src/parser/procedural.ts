@@ -6,6 +6,11 @@ export interface ExprAnalysis { reads: string[]; blockedReads: string[]; hasCall
 export interface ProcAssign extends ExprAnalysis {
   operator: "=" | "<=" | ":=";
   target: string;
+  targetText?: string;
+  selectors?: string[];
+  selectorReads?: string[];
+  reason?: string;
+  contexts?: string[];
   expression: string;
   /** 相对过程文本的偏移 */
   index: number;
@@ -13,7 +18,8 @@ export interface ProcAssign extends ExprAnalysis {
   /** 边沿敏感信号（非空 = 时钟过程） */
   clock: string[];
 }
-export interface ProcBoundary { index: number; endIndex: number; reason: string }
+export interface ProcBoundary { index: number; endIndex: number; reason: string; bindings?: Record<string,string> }
+export interface ProcLocalBinding { name:string; identity:string; start:number; end:number }
 export interface ProcInfo {
   assignments: ProcAssign[];
   boundaries: ProcBoundary[];
@@ -23,6 +29,8 @@ export interface ProcInfo {
   dataSignals: string[];
   /** 当前过程声明的局部对象，不含嵌套子程序的声明。 */
   locals?: string[];
+  /** 块局部名字从声明至所属块结束的可见范围；相对过程文本偏移。 */
+  localBindings?: ProcLocalBinding[];
 }
 
 interface Token { text: string; index: number }
@@ -43,6 +51,33 @@ const isVhdlIdent = (t: string) => /^[A-Za-z_]\w*$/.test(t) && !VHDL_KEYWORDS.ha
 
 function tokenize(text: string): Token[] {
   return [...text.matchAll(tokenRe)].map(m => ({ text: m[0], index: m.index! }));
+}
+
+/** 只识别循环头声明的局部名字，不求值或执行循环。 */
+export function loopLocalDeclarations(header:string,vhdl=false):{name:string;index:number}[] {
+  const ts=tokenize(header),word=(i:number)=>vhdl?ts[i]?.text.toLowerCase():ts[i]?.text;
+  if(vhdl) return word(0)==="for"&&word(2)==="in"&&isVhdlIdent(ts[1]?.text??"")?[{name:word(1)!,index:ts[1].index}]:[];
+  if(word(0)==="foreach") {
+    const open=ts.findIndex(t=>t.text==="["),out:{name:string;index:number}[]=[];
+    if(open<0)return out;
+    for(let i=open+1;i<ts.length&&word(i)!=="]";i++) if(/^[A-Za-z_]\w*$/.test(word(i)??"")&&["[",","].includes(word(i-1)??""))out.push({name:word(i)!,index:ts[i].index});
+    return out;
+  }
+  if(word(0)!=="for"||word(1)!=="(")return[];
+  const builtin=/^(?:int|integer|bit|logic|reg|byte|shortint|longint|time|var)$/;
+  const namedType=/^[A-Za-z_]\w*$/.test(word(2)??"")&&/^[A-Za-z_]\w*$/.test(word(3)??"")&&word(4)==="=";
+  if(!builtin.test(word(2)??"")&&!namedType)return[];
+  let i=3;while(/^(?:signed|unsigned|int|integer|bit|logic|reg|byte|shortint|longint|time)$/.test(word(i)??""))i++;
+  while(word(i)==="[") {while(i<ts.length&&word(i)!=="]")i++;i++;}
+  const out:{name:string;index:number}[]=[];
+  while(i<ts.length&&word(i)!==";") {
+    if(!/^[A-Za-z_]\w*$/.test(word(i)??""))break;
+    out.push({name:word(i)!,index:ts[i].index});i++;
+    let depth=0;
+    while(i<ts.length) {const w=word(i);if(!depth&&(w===","||w===";"))break;if(["(","[","{"].includes(w??""))depth++;if([")","]","}"].includes(w??""))depth--;i++;}
+    if(word(i)===",")i++;else break;
+  }
+  return out;
 }
 
 /** 遮蔽字符串内容（保留长度与索引）供匹配用；展示文本仍取原文。VHDL 的字符字面量 'U' 与基符位串 x"FF" 整体是值不是标识符，一并遮蔽。 */
@@ -99,10 +134,15 @@ export function analyzeExpression(expression: string, vhdl = false): ExprAnalysi
 }
 
 export function parseVerilogProcess(text: string): ProcInfo {
-  const info: ProcInfo = { assignments: [], boundaries: [], controlSignals: [], dataSignals: [] };
+  const info: ProcInfo = { assignments: [], boundaries: [], controlSignals: [], dataSignals: [], locals: [], localBindings: [] };
   const tokens = tokenize(maskLiterals(text, false));
   const control = new Set<string>(), data = new Set<string>();
   const edges: string[] = [];
+  const scopes: Map<string,string>[]=[new Map()];
+  const scopeBindings:ProcLocalBinding[][]=[[]];
+  const scopedName=(name:string):string=>{for(let k=scopes.length-1;k>=0;k--){const local=scopes[k].get(name);if(local)return local;}return name;};
+  const facts=(expression:string):ExprAnalysis=>{const e=analyzeExpression(expression);return {...e,reads:e.reads.map(scopedName),blockedReads:e.blockedReads.map(scopedName)};};
+  const bindings=():Record<string,string>=>Object.fromEntries(scopes.flatMap(scope=>[...scope]));
   let i = 0;
   if (!/^(always\w*|initial)$/.test(tokens[0]?.text ?? "")) return info;
   i = 1;
@@ -126,6 +166,7 @@ export function parseVerilogProcess(text: string): ProcInfo {
   parseSeq(i, tokens.length, [], 0);
   info.controlSignals = [...control];
   info.dataSignals = [...data];
+  info.boundaries.sort((a,b)=>a.index-b.index);
   return info;
 
   function matchPair(open: number, l: string, r: string): number {
@@ -152,10 +193,10 @@ export function parseVerilogProcess(text: string): ProcInfo {
   }
   function boundaryAt(startIndex: number, endToken: number, reason: string): void {
     const t = tokens[endToken];
-    info.boundaries.push({ index: startIndex, endIndex: t ? t.index + t.text.length : text.length, reason });
+    info.boundaries.push({ index: startIndex, endIndex: t ? t.index + t.text.length : text.length, reason, bindings:bindings() });
   }
   function addConditionSignals(expression: string): void {
-    const expr = analyzeExpression(expression);
+    const expr = facts(expression);
     for (const r of [...expr.reads, ...expr.blockedReads]) control.add(r);
   }
 
@@ -165,10 +206,11 @@ export function parseVerilogProcess(text: string): ProcInfo {
     while (i < end && depth < 200) {
       const t = tokens[i];
       if (t.text === "end" || t.text === "endcase") return i + 1;
-      if (t.text === "begin") { i = parseSeq(i + 1, end, conds, depth + 1); continue; }
+      if (t.text === "begin") { i = parseBlock(i, end, conds, depth); continue; }
+      if (/^(logic|reg|integer|int|bit|automatic|static)$/.test(t.text)) {i=parseDeclaration(i,end,conds);continue;}
       if (t.text === "if") { i = parseIf(i, end, conds, depth); continue; }
       if (/^(case|casex|casez)$/.test(t.text)) { i = parseCase(i, end, conds, depth); continue; }
-      if (/^(for|while|repeat|forever)$/.test(t.text)) { i = skipLoop(i, end); continue; }
+      if (/^(for|foreach|while|repeat|forever)$/.test(t.text)) { i = parseLoop(i, end, conds, depth); continue; }
       if (t.text === "{") {
         const semi = findSemi(i + 1, end);
         boundaryAt(t.index, semi, "拼接目标赋值（不继续推导）");
@@ -184,10 +226,10 @@ export function parseVerilogProcess(text: string): ProcInfo {
   function parseStmt(i: number, end: number, conds: string[], depth: number): number {
     const t = tokens[i];
     if (!t) return end;
-    if (t.text === "begin") return parseSeq(i + 1, end, conds, depth + 1);
+    if (t.text === "begin") return parseBlock(i, end, conds, depth);
     if (t.text === "if") return parseIf(i, end, conds, depth);
     if (/^(case|casex|casez)$/.test(t.text)) return parseCase(i, end, conds, depth);
-    if (/^(for|while|repeat|forever)$/.test(t.text)) return skipLoop(i, end);
+    if (/^(for|foreach|while|repeat|forever)$/.test(t.text)) return parseLoop(i, end, conds, depth);
     if (t.text === "{") {
       const semi = findSemi(i + 1, end);
       boundaryAt(t.index, semi, "拼接目标赋值（不继续推导）");
@@ -195,6 +237,42 @@ export function parseVerilogProcess(text: string): ProcInfo {
     }
     if (isIdent(t.text) || t.text.startsWith("$")) return parseStatement(i, end, conds);
     return i + 1;
+  }
+
+  function parseBlock(i:number,end:number,conds:string[],depth:number):number {
+    i++;if(tokens[i]?.text===":")i+=2;
+    scopes.push(new Map());
+    scopeBindings.push([]);
+    i=parseSeq(i,end,conds,depth+1);
+    const scopeEnd=tokens[i-1]?.text==="end"?tokens[i-1].index:text.length;
+    for(const binding of scopeBindings.pop()!)binding.end=scopeEnd;
+    scopes.pop();
+    if(tokens[i]?.text===":")i+=2;
+    return i;
+  }
+
+  function parseDeclaration(i:number,end:number,conds:string[]):number {
+    i++;
+    while(/^(signed|unsigned|logic|reg|integer|int|bit)$/.test(tokens[i]?.text??""))i++;
+    while(tokens[i]?.text==="[")i=matchPair(i,"[","]")+1;
+    const semi=findSemi(i,end);
+    while(i<semi) {
+      const t=tokens[i];if(!isIdent(t.text))break;
+      const identity=`@local:${t.index}:${t.text}`;
+      scopes.at(-1)!.set(t.text,identity);info.locals!.push(identity);i++;
+      const binding={name:t.text,identity,start:t.index,end:text.length};
+      info.localBindings!.push(binding);scopeBindings.at(-1)!.push(binding);
+      while(tokens[i]?.text==="[")i=matchPair(i,"[","]")+1;
+      if(tokens[i]?.text==="=") {
+        const exprStart=tokens[i].index+1;let k=i+1,nesting=0;
+        while(k<semi) {const w=tokens[k].text;if(!nesting&&w===",")break;if(["(","[","{"].includes(w))nesting++;if([")","]","}"].includes(w))nesting--;k++;}
+        const expression=text.slice(exprStart,tokens[k]?.index??text.length).trim(),expr=facts(expression);
+        info.assignments.push({target:identity,targetText:t.text,selectors:[],operator:"=",expression,index:t.index,conditions:conds,clock:[...edges],...expr});
+        data.add(identity);expr.reads.forEach(r=>data.add(r));i=k;
+      }
+      if(tokens[i]?.text===",")i++;else break;
+    }
+    return semi<end?semi+1:end;
   }
 
   function parseIf(i: number, end: number, conds: string[], depth: number): number {
@@ -232,20 +310,24 @@ export function parseVerilogProcess(text: string): ProcInfo {
     return tokens[i]?.text === "endcase" ? i + 1 : i;
   }
 
-  function skipLoop(i: number, end: number): number {
+  function parseLoop(i: number, end: number,conds:string[],depth:number): number {
+    if(depth>=200) {boundaryAt(tokens[i].index,end-1,"语句嵌套超过分析上限");return end;}
     const start = tokens[i].index;
     let j = i + 1;
     if (tokens[j]?.text === "(") j = matchPair(j, "(", ")") + 1;
-    let bodyEnd: number;
-    if (tokens[j]?.text === "begin") {
-      let depth = 0, k = j;
-      for (; k < end; k++) {
-        if (tokens[k].text === "begin") depth++;
-        else if (tokens[k].text === "end") { depth--; if (!depth) break; }
-      }
-      bodyEnd = k + 1;
-    } else bodyEnd = skipToSemi(j, end);
+    const header=text.slice(start,tokens[j]?.index??text.length).trim();
+    scopes.push(new Map());scopeBindings.push([]);
+    for(const declaration of loopLocalDeclarations(header)) {
+      const index=start+declaration.index,identity=`@local:${index}:${declaration.name}`;
+      scopes.at(-1)!.set(declaration.name,identity);info.locals!.push(identity);
+      const binding={name:declaration.name,identity,start:index,end:text.length};
+      info.localBindings!.push(binding);scopeBindings.at(-1)!.push(binding);
+    }
+    const firstAssignment=info.assignments.length,bodyEnd=parseStmt(j,end,conds,depth+1);
+    for(const assignment of info.assignments.slice(firstAssignment)) {assignment.reason="循环内赋值只展示源码关系";assignment.contexts=[header,...assignment.contexts??[]];}
     boundaryAt(start, bodyEnd - 1, "循环内逻辑（不继续推导）");
+    for(const binding of scopeBindings.pop()!)binding.end=tokens[bodyEnd]?.index??text.length;
+    scopes.pop();
     return bodyEnd;
   }
 
@@ -253,8 +335,10 @@ export function parseVerilogProcess(text: string): ProcInfo {
     const t = tokens[i];
     if (t.text.startsWith("$")) return skipToSemi(i, end);
     let j = i + 1;
-    let selected = false;
-    while (tokens[j]?.text === "[") { selected = true; j = matchPair(j, "[", "]") + 1; }
+    const selectors: string[] = [];
+    while (tokens[j]?.text === "[") { const close=matchPair(j,"[","]"); selectors.push(text.slice(tokens[j].index+1,tokens[close].index).trim()); j=close+1; }
+    while(tokens[j]?.text === "." && isIdent(tokens[j+1]?.text ?? "")) { selectors.push("."+tokens[j+1].text); j+=2; }
+    const selected = selectors.length > 0;
     const op = tokens[j]?.text;
     if (op === "<=" || op === "=") {
       // 从运算符之后切原文：RHS 为纯字面量（遮蔽后无 token）时仍能保留展示文本
@@ -263,15 +347,13 @@ export function parseVerilogProcess(text: string): ProcInfo {
       const semiTok = tokens[semi];
       const expression = text.slice(exprStart, semiTok ? semiTok.index : text.length).trim();
       if (selected) {
-        info.boundaries.push({ index: t.index, endIndex: semiTok ? semiTok.index + 1 : text.length, reason: "位选/切片赋值（范围转换）" });
-        data.add(t.text);
-        for (const r of analyzeExpression(expression).reads) data.add(r);
-      } else {
-        const expr = analyzeExpression(expression);
-        info.assignments.push({ target: t.text, operator: op, expression, index: t.index, conditions: conds, clock: [...edges], ...expr });
-        data.add(t.text);
-        for (const r of [...expr.reads, ...expr.blockedReads]) data.add(r);
+        info.boundaries.push({ index: t.index, endIndex: semiTok ? semiTok.index + 1 : text.length, reason: "位选/切片赋值（范围转换）", bindings:bindings() });
       }
+      const expr = facts(expression), target=scopedName(t.text);
+      const selectorReads=selectors.filter(s=>!s.startsWith(".")).flatMap(s=>{const e=facts(s);return [...e.reads,...e.blockedReads];});
+      info.assignments.push({ target, targetText:text.slice(t.index,tokens[j].index).trim(), selectors, selectorReads, reason:selected?"位选/切片赋值（范围转换）":undefined, operator: op, expression, index: t.index, conditions: conds, clock: [...edges], ...expr });
+      data.add(target);
+      for (const r of [...expr.reads, ...expr.blockedReads, ...selectorReads]) data.add(r);
       return semi < end ? semi + 1 : end;
     }
     if (op === "(") boundaryAt(t.index, Math.max(i, findSemi(i + 1, end) - 1), "任务/函数调用（不继续推导）");
@@ -327,7 +409,7 @@ export function scanVhdlRegion(text: string, from = 0): { end: number; begin: nu
 
 /** VHDL process 语句级解析：与 Verilog 侧同为赋值池模型；`(...)` 位选/调用、循环、聚合目标为断点。 */
 export function parseVhdlProcess(text: string): ProcInfo {
-  const info: ProcInfo = { assignments: [], boundaries: [], controlSignals: [], dataSignals: [] };
+  const info: ProcInfo = { assignments: [], boundaries: [], controlSignals: [], dataSignals: [], localBindings: [] };
   const masked = maskLiterals(text, true);
   const region = scanVhdlRegion(masked);
   if (!region.closed || region.begin < 0) {
@@ -343,6 +425,10 @@ export function parseVhdlProcess(text: string): ProcInfo {
     .flatMap(m => m[1].split(",").map(name => name.trim().toLowerCase()));
   const tokens = tokenize(masked);
   const control = new Set<string>(), data = new Set<string>();
+  const scopes:Map<string,string>[]=[new Map()];
+  const scopedName=(name:string):string=>{for(let k=scopes.length-1;k>=0;k--){const local=scopes[k].get(name.toLowerCase());if(local)return local;}return name;};
+  const facts=(expression:string):ExprAnalysis=>{const e=analyzeExpression(expression,true);return {...e,reads:e.reads.map(scopedName),blockedReads:e.blockedReads.map(scopedName)};};
+  const bindings=():Record<string,string>=>Object.fromEntries(scopes.flatMap(scope=>[...scope]));
   const edges: string[] = [];
   let i = 0;
   if (tokens[0]?.text.toLowerCase() !== "process") return info;
@@ -366,6 +452,7 @@ export function parseVhdlProcess(text: string): ProcInfo {
   if (i < tokens.length) parseSeq(i + 1, tokens.length, [], 0, new Set(["end"]));
   info.controlSignals = [...control];
   info.dataSignals = [...data];
+  info.boundaries.sort((a,b)=>a.index-b.index);
   return info;
 
   function matchPair(open: number, l: string, r: string): number {
@@ -392,10 +479,10 @@ export function parseVhdlProcess(text: string): ProcInfo {
   }
   function boundaryAt(startIndex: number, endToken: number, reason: string): void {
     const t = tokens[endToken];
-    info.boundaries.push({ index: startIndex, endIndex: t ? t.index + t.text.length : text.length, reason });
+    info.boundaries.push({ index: startIndex, endIndex: t ? t.index + t.text.length : text.length, reason,bindings:bindings() });
   }
   function addConditionSignals(expression: string): void {
-    const expr = analyzeExpression(expression, true);
+    const expr = facts(expression);
     for (const r of [...expr.reads, ...expr.blockedReads]) control.add(r.toLowerCase());
   }
   /** 条件文本：从 start 到目标关键字（括号深度 0 处）。 */
@@ -417,7 +504,7 @@ export function parseVhdlProcess(text: string): ProcInfo {
       if (stops.has(t)) return i;
       if (t === "if") { i = parseIf(i, end, conds, depth); continue; }
       if (t === "case") { i = parseCase(i, end, conds, depth); continue; }
-      if (/^(for|while|loop)$/.test(t)) { i = skipLoop(i, end); continue; }
+      if (/^(for|while|loop)$/.test(t)) { i = parseLoop(i, end,conds,depth); continue; }
       if (t === "wait" || t === "report" || t === "assert") { i = skipToSemi(i, end); continue; }
       if (tokens[i].text === "(") {
         const semi = findSemi(i + 1, end);
@@ -478,27 +565,37 @@ export function parseVhdlProcess(text: string): ProcInfo {
     return i;
   }
 
-  function skipLoop(i: number, end: number): number {
+  function parseLoop(i: number, end: number,conds:string[],depth:number): number {
+    if(depth>=200) {boundaryAt(tokens[i].index,end-1,"语句嵌套超过分析上限");return end;}
     const start = tokens[i].index;
-    let depth = 0, k = i;
-    for (; k < end; k++) {
-      const t = tokens[k].text.toLowerCase();
-      if (t === "loop") depth++;
-      else if (t === "end" && tokens[k + 1]?.text.toLowerCase() === "loop") {
-        depth--;
-        if (!depth) { k += 2; break; }
-      }
+    let j=i+1;
+    if(tokens[i].text.toLowerCase()!=="loop") {while(j<end&&tokens[j].text.toLowerCase()!=="loop")j++;j++;}
+    const header=text.slice(start,tokens[j]?.index??text.length).trim(),locals:ProcLocalBinding[]=[];
+    scopes.push(new Map());
+    for(const declaration of loopLocalDeclarations(header,true)) {
+      const index=start+declaration.index,identity=`@local:${index}:${declaration.name}`;
+      scopes.at(-1)!.set(declaration.name,identity);info.locals!.push(identity);
+      const binding={name:declaration.name,identity,start:index,end:text.length};
+      info.localBindings!.push(binding);locals.push(binding);
     }
+    const firstAssignment=info.assignments.length;
+    let k=parseSeq(j,end,conds,depth+1,new Set(["end"]));
+    if(tokens[k]?.text.toLowerCase()==="end"&&tokens[k+1]?.text.toLowerCase()==="loop")k+=2;
     if (tokens[k]?.text === ";") k++;
+    for(const assignment of info.assignments.slice(firstAssignment)) {assignment.reason="循环内赋值只展示源码关系";assignment.contexts=[header,...assignment.contexts??[]];}
     boundaryAt(start, k - 1, "循环内逻辑（不继续推导）");
+    for(const binding of locals)binding.end=tokens[k]?.index??text.length;
+    scopes.pop();
     return k;
   }
 
   function parseStatement(i: number, end: number, conds: string[]): number {
     const t = tokens[i];
     let j = i + 1;
-    let selected = false;
-    while (tokens[j]?.text === "(") { selected = true; j = matchPair(j, "(", ")") + 1; }
+    const selectors: string[] = [];
+    while (tokens[j]?.text === "(") { const close=matchPair(j,"(",")"); selectors.push(text.slice(tokens[j].index+1,tokens[close].index).trim()); j=close+1; }
+    while(tokens[j]?.text === "." && isVhdlIdent(tokens[j+1]?.text ?? "")) { selectors.push("."+tokens[j+1].text); j+=2; }
+    const selected = selectors.length > 0;
     const op = tokens[j]?.text;
     if (op === "<=" || op === ":=") {
       // 从运算符之后切原文：RHS 为纯字面量（遮蔽后无 token）时仍能保留展示文本
@@ -507,15 +604,13 @@ export function parseVhdlProcess(text: string): ProcInfo {
       const semiTok = tokens[semi];
       const expression = text.slice(exprStart, semiTok ? semiTok.index : text.length).trim();
       if (selected) {
-        info.boundaries.push({ index: t.index, endIndex: semiTok ? semiTok.index + 1 : text.length, reason: "位选/切片赋值（范围转换）" });
-        data.add(t.text.toLowerCase());
-        for (const r of analyzeExpression(expression, true).reads) data.add(r.toLowerCase());
-      } else {
-        const expr = analyzeExpression(expression, true);
-        info.assignments.push({ target: t.text, operator: op, expression, index: t.index, conditions: conds, clock: [...edges], ...expr });
-        data.add(t.text.toLowerCase());
-        for (const r of [...expr.reads, ...expr.blockedReads]) data.add(r.toLowerCase());
+        info.boundaries.push({ index: t.index, endIndex: semiTok ? semiTok.index + 1 : text.length, reason: "位选/切片赋值（范围转换）",bindings:bindings() });
       }
+      const expr = facts(expression),target=scopedName(t.text);
+      const selectorReads=selectors.filter(s=>!s.startsWith(".")).flatMap(s=>{const e=facts(s);return [...e.reads,...e.blockedReads];});
+      info.assignments.push({ target, targetText:text.slice(t.index,tokens[j].index).trim(), selectors, selectorReads, reason:selected?"位选/切片赋值（范围转换）":undefined, operator: op, expression, index: t.index, conditions: conds, clock: [...edges], ...expr });
+      data.add(target.toLowerCase());
+      for (const r of [...expr.reads, ...expr.blockedReads, ...selectorReads]) data.add(r.toLowerCase());
       return semi < end ? semi + 1 : end;
     }
     if (selected) boundaryAt(t.index, Math.max(i, findSemi(i + 1, end) - 1), "函数/过程调用（不继续推导）");

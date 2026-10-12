@@ -15,5 +15,5 @@ it("连接与参数中的字符串常量不丢失，注释不进入补全默认�
 });
 it("VHDL generic 提取名字与默认值，保留无默认值的必填项", () => {
   const mod = parseFile('entity child is generic (W, H : integer := 8; MODE : string := "FAST"; REQUIRED : integer); port (clk : in bit); end child;', "child.vhd")[0];
-  expect(mod.parameters).toEqual([{ name: "W", defaultValue: "8" }, { name: "H", defaultValue: "8" }, { name: "MODE", defaultValue: '"FAST"' }, { name: "REQUIRED" }]);
+  expect(mod.parameters).toEqual([{ name: "W", typeDeclaration: "integer", defaultValue: "8" }, { name: "H", typeDeclaration: "integer", defaultValue: "8" }, { name: "MODE", typeDeclaration: "string", defaultValue: '"FAST"' }, { name: "REQUIRED", typeDeclaration: "integer" }]);
 });

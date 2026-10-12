@@ -1,5 +1,5 @@
 import type { InstanceInfo, ModuleInfo, PortInfo } from "./types";
-import { parseParameters } from "./parameters";
+import { parseOverrides, parseParameters } from "./parameters";
 
 function computeLineStarts(s: string): number[] {
   const starts = [0];
@@ -225,6 +225,7 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
         line: lineAt(lineStarts, bodyStart + im.index),
       };
       if (withConn) {
+        info.start = bodyStart + im.index;
         // port map 可能跟在 generic map 之后，但搜索不得越过本例化语句终点
         // （balanced 括号扫描后深度 0 的 ';'），否则会错抓下一个例化的 port map
         let stmtEnd = body.length;
@@ -237,6 +238,11 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
             stmtEnd = k;
             break;
           }
+        }
+        const gm = /\bgeneric\s+map\s*\(/i.exec(body.slice(im.index,stmtEnd));
+        if (gm) {
+          const open=im.index+gm.index+gm[0].length-1, close=skipBalanced(body,open);
+          if (close>0) info.parameterOverrides=parseOverrides(expressions.slice(bodyStart+open+1,bodyStart+close-1),true);
         }
         const pm = /\bport\s+map\s*\(/i.exec(body.slice(im.index, stmtEnd));
         if (pm) {

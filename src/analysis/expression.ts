@@ -14,6 +14,9 @@ export interface Expr {
   eventStart?: number;
   assignment?: { start: number; end: number };
   branch?: { kind: "if" | "case"; group: number; header?: string; guard: string; alternate: string; alternateStart: number };
+  access?: { kind: "index" | "range" | "field"; dynamic?: boolean; field?: string };
+  conversion?: { name: string; signed?: boolean; width?: string; description: string };
+  roles?: ("数据" | "地址" | "条件" | "调用参数")[];
 }
 export interface Token { text: string; start: number; end: number }
 export function tokens(text: string, offset = 0): Token[] {
@@ -28,7 +31,8 @@ export function formatExpr(e: Expr): string {
     : `(${formatExpr(e.args[0])} ? ${formatExpr(e.args[1])} : ${formatExpr(e.args[2])})`;
   if (e.kind === "op") return e.args.length === 1 ? `${e.value}(${formatExpr(e.args[0])})` : `(${formatExpr(e.args[0])} ${e.value} ${formatExpr(e.args[1])})`;
   if (e.kind === "concat") return `{${e.args.map(formatExpr).join(", ")}}`;
-  if (e.kind === "slice") return `${formatExpr(e.args[0])}[${e.args.slice(1).map(formatExpr).join(":")}]`;
+  if (e.access?.kind === "field") return `${formatExpr(e.args[0])}.${e.access.field}`;
+  if (e.kind === "slice") return `${formatExpr(e.args[0])}[${e.args.slice(1).map(formatExpr).join(e.access?.kind === "index" ? "," : ":")}]`;
   return e.text;
 }
 export function choose(cond: Expr, yes: Expr, no: Expr, branch?: Expr["branch"]): Expr {
@@ -42,9 +46,30 @@ export function substitute(e: Expr, values: Map<string, Expr>): Expr {
 export function refs(e: Expr): string[] {
   return [...new Set(e.kind === "ref" ? [e.value] : e.args.flatMap(refs))];
 }
+export interface ExpressionRelation { name: string; role: "数据" | "地址" | "条件" | "调用参数"; current?: boolean; unknown?: boolean }
+export function expressionArgumentRole(e: Expr, index: number, role: ExpressionRelation["role"]): ExpressionRelation["role"] {
+  if (e.conversion || e.kind === "slice" && index === 0) return role;
+  return e.roles?.[index] ?? (e.kind === "select" && index === 0 ? "条件" : e.kind === "call" ? "调用参数" : role);
+}
+export function expressionRelations(e: Expr, role: ExpressionRelation["role"] = "数据", unknown = false): ExpressionRelation[] {
+  if (e.kind === "ref") return [{ name: e.value, role, current: e.current, unknown }];
+  if (e.kind === "unknown") return [];
+  return e.args.flatMap((arg, i) => expressionRelations(arg, expressionArgumentRole(e, i, role), unknown || e.kind === "call" && !e.conversion));
+}
+function accessPath(e: Expr): string | undefined {
+  if (e.kind === "ref") return e.value;
+  if (e.kind !== "slice") return;
+  const base = accessPath(e.args[0]); if (!base) return;
+  return e.access?.kind === "field" ? `${base}.${e.access.field}` : e.access?.kind === "range" ? base : `${base}[]`;
+}
 
 /** 有界表达式解析；无法完整消费时返回原文边界，不以部分树冒充完整表达式。 */
 export function parseExpression(text: string, lang: HdlLang, offset = 0, vectors = new Set<string>()): Expr {
+  if (lang === "vhdl") {
+    const literal = '(?:[boxd]"[^"\\n]*"|\'[^\'\\n]\'|\\d[\\d_]*)';
+    const entry = `(?:(?:\\d+|others)\\s*=>\\s*)?${literal}`;
+    if (!/\bothers\s*=>[^,]*,/i.test(text) && new RegExp(`^\\s*\\(\\s*${entry}(?:\\s*,\\s*${entry})+\\s*\\)\\s*$`, "i").test(text)) return { kind: "literal", value: text, text, start: offset, end: offset + text.length, args: [] };
+  }
   const ts = tokens(text, offset);
   let pos = 0, depth = 0;
   const norm = (s: string) => lang === "vhdl" ? s.toLowerCase() : s;
@@ -79,21 +104,39 @@ export function parseExpression(text: string, lang: HdlLang, offset = 0, vectors
     } else if (/^(?:\d|'|"|[boxd]")/i.test(word)) e = make("literal", t.text, [], t.start, t.end);
     else if (/^[a-zA-Z_$][\w$]*$/.test(word)) e = { ...reference(word, t.start, t.end), text: t.text };
     else throw Error("不支持的操作数");
-    if (e.kind === "ref" && peek() === "(") {
+    while (peek() === "." || peek() === "[" && lang === "verilog" || peek() === "(" && (e.kind === "ref" || e.kind === "slice")) {
+    if (peek() === ".") {
+      take(); const field = take();
+      if (!field || !/^[a-zA-Z_]\w*$/.test(field.text)) throw Error("不完整字段访问");
+      e = { ...make("slice", "字段访问", [e], e.start, field.end), access: { kind: "field", field: norm(field.text) }, roles: ["数据"] };
+    } else if (peek() === "(") {
       take(); const args: Expr[] = [];
       if (peek() !== ")") args.push(parse());
       let range = false;
       if (peek() === "downto" || peek() === "to") { take(); range = true; args.push(parse()); }
       while (peek() === ",") { take(); args.push(parse()); }
       const end = expect(")").end;
-      const slice = lang === "vhdl" && vectors.has(e.value) && args.length > 0 && (range || args.length === 1);
-      e = make(slice ? (args.every(a => a.kind === "literal") ? "slice" : "unknown") : "call", e.value, slice ? [e, ...args] : args, e.start, end);
-    }
-    if (peek() === "[" && lang === "verilog") {
+      const base = accessPath(e);
+      const slice = lang === "vhdl" && base !== undefined && vectors.has(base) && args.length > 0;
+      e = { ...make(slice ? "slice" : "call", e.value, slice ? [e, ...args] : args, e.start, end),
+        ...(slice ? { access: { kind: range ? "range" as const : "index" as const, dynamic: args.some(a => a.kind !== "literal") }, roles: ["数据" as const, ...args.map(() => "地址" as const)] } : {}) };
+      if (!slice) {
+        const name = norm(e.value);
+        const one = (lang === "vhdl" ? /^(?:std_logic_vector|bit_vector|unsigned|signed|integer|natural|positive|to_integer)$/ : /^\$(?:signed|unsigned)$/).test(name) && args.length === 1;
+        const two = lang === "vhdl" && /^(?:to_unsigned|to_signed|resize)$/.test(name) && args.length === 2;
+        if (one || two) {
+          const signed = /^(?:signed|to_signed|\$signed)$/.test(name) ? true : /^(?:unsigned|to_unsigned|\$unsigned)$/.test(name) ? false : undefined;
+          e.conversion = { name, signed, width: two ? args[1].text : undefined, description: `${name} 类型转换${two ? `，结果宽度 ${args[1].text}` : ""}${signed === undefined ? "" : signed ? "，有符号" : "，无符号"}；未计算转换后的值` };
+          e.roles = args.map(() => "数据");
+        } else e.roles = args.map(() => "调用参数");
+      }
+    } else {
       take(); const args = [e, parse()];
-      if (peek() === ":") { take(); args.push(parse()); }
+      let range = false;
+      if (peek() === ":") { take(); range = true; args.push(parse()); }
       const end = expect("]").end;
-      e = make(args.slice(1).every(a => a.kind === "literal") ? "slice" : "unknown", "切片", args, e.start, end);
+      e = { ...make("slice", "切片", args, e.start, end), access: { kind: range ? "range" : "index", dynamic: args.slice(1).some(a => a.kind !== "literal") }, roles: ["数据", ...args.slice(1).map(() => "地址" as const)] };
+    }
     }
     while (precedence[peek()] !== undefined && precedence[peek()] >= min) {
       const op = norm(take().text), p = precedence[op];

@@ -248,11 +248,17 @@ describe("信号链：按实例追踪端口与直接赋值", () => {
     const vUp = collect(await traceSignal(vhdl, vhdl.root("t")!, "q", "upstream"));
     expect(vUp.some(n => n.label.toLowerCase() === "t.clk" && n.tip?.includes("寄存器"))).toBe(true);
   });
-  it("切片与 generate 不冒充已展开的精确连线", async () => {
+  it("切片保留范围提示，静态 generate 展开带独立作用域的连线", async () => {
     const p = new SignalProject(new Map([["t.v", "module t(input [7:0] a, output q); assign q = a[0]; endmodule"]]));
     expect(flatten(await traceSignal(p, p.root("t")!, "a", "downstream"))).toContain("范围转换");
     const g = new SignalProject(new Map([["g.v", "module g(input a); generate if(1) begin wire x; assign x=a; end endgenerate endmodule"]]));
-    expect(flatten(await traceSignal(g, g.root("g")!, "a", "downstream"))).toContain("generate 需展开");
+    const generated=g.moduleForContext(g.root("g")!)!;
+    expect(generated.assignments).toHaveLength(1);
+    expect(generated.assignments[0].expression).toBe("a");
+    expect(generated.assignments[0].target).toMatch(/^__gen_.*_x$/);
+    const traced=flatten(await traceSignal(g, g.root("g")!, "a", "downstream"));
+    expect(traced).toContain(generated.assignments[0].target);
+    expect(traced).not.toContain("generate 需展开");
   });
 });
 

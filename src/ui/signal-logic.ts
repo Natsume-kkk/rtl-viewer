@@ -61,9 +61,17 @@ export class SignalLogicView {
       if(node.kind==="boundary"){
         if(!node.portContext){card.append(el("span","logic-tag","分析边界"));if(node.reason||node.detail)card.append(el("p","flow-reason",node.reason??node.detail));}
       }
-      this.cards.set(node.id,card);this.canvas.append(card);this.widths.add(node.id,card);
-      for(const [i,driver]of node.drivers.entries()){
-        const section=el("div","logic-driver");if(node.drivers.length>1)section.append(el("span","logic-tag",`驱动 ${i+1}`));
+      for(const role of ["地址","条件","调用参数"] as const){
+        const names=[...new Set(graph.edges.filter(e=>e.to===node.id&&e.role===role).map(e=>graph.nodes.find(n=>n.id===e.from)?.signal??e.from))];
+        if(names.length)card.append(el("code","logic-detail",`${role}：${names.join("、")}${role==="调用参数"?"（调用内部未展开）":""}`));
+      }
+      this.cards.set(node.id,card);this.canvas.append(card);this.widths.add(node.id,card,node.label);
+      const relations=new Map<object,Driver[]>();
+      for(const driver of node.drivers)if(driver.relation){const key=driver.process??driver;const items=relations.get(key)??[];items.push(driver);relations.set(key,items);}
+      for(const drivers of relations.values())this.sourceRelations(card,drivers,node.signal??node.label);
+      const expressions=node.drivers.filter(driver=>!driver.relation);
+      for(const [i,driver]of expressions.entries()){
+        const section=el("div","logic-driver");if(expressions.length>1)section.append(el("span","logic-tag",`驱动 ${i+1}`));
         card.append(section);this.expression(node.id,section,driver.expression,node.label,driver,`${node.id}/d${i}`,0);
       }
       for(const {direction,trace} of node.portSites??[]){
@@ -100,6 +108,29 @@ export class SignalLogicView {
   expandAll():void{this.routes=new Set(this.cards.keys());for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=true;this.reveal(true);}
   collapseAll():void{this.open.clear();this.routes.clear();for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=false;this.reveal();}
   private location(file:string,start:number){return {file,line:(this.files.get(file)??"").slice(0,start).split("\n").length};}
+  private sourceRelations(card:HTMLElement,drivers:Driver[],target:string):void{
+    const section=el("div","logic-driver"),rows:{text:string;line?:number}[]=[{text:drivers[0].initialization?"声明初值 · 源码关系":drivers[0].process?"过程内赋值 · 源码关系":"赋值 · 源码关系"}];
+    card.append(section);
+    const boundaries=(drivers[0].process?.boundaries??[]).filter(b=>!drivers.some(d=>d.source.start>=b.start&&d.source.end<=b.end));
+    const entries=[...drivers.map(driver=>({start:driver.source.start,driver,boundary:undefined})),...boundaries.map(boundary=>({start:boundary.start,driver:undefined,boundary}))].sort((a,b)=>a.start-b.start);
+    for(const {driver,boundary} of entries){
+      if(boundary){
+        const file=drivers[0].source.file,first=this.location(file,boundary.start).line;
+        const text=(this.files.get(file)??"").slice(boundary.start,boundary.end).trim()||boundary.text;
+        text.split("\n").forEach((text,i)=>rows.push({text,line:first+i}));
+        rows.push({text:boundary.reason});continue;
+      }
+      if(!driver)continue;
+      for(const context of driver.contexts??[])rows.push({text:context});
+      if(driver.conditions?.length)rows.push({text:`条件：${driver.conditions.map(code).join("；")}`});
+      const source=this.files.get(driver.source.file)??"",raw=source.slice(driver.source.start,driver.source.end).trim();
+      const statement=(driver.initialization&&raw)||/(?:<=|:=|=(?!=))[\s\S]*;\s*$/.test(raw)?raw:`${driver.targetText??target} ${driver.operator??"←"} ${code(driver.expression)};`;
+      const first=this.location(driver.source.file,driver.source.start).line;
+      statement.split("\n").forEach((text,i)=>rows.push({text,line:first+i}));
+      if(driver.reason)rows.push({text:driver.reason});
+    }
+    appendSource(section,{file:drivers[0].source.file,sourceRows:rows},target,()=>this.reveal());
+  }
   private unwrap(e:Expr,target:string):Expr{return e.kind==="cast"&&e.value===target&&!e.event?e.args[0]:e;}
   private group(e:Expr,target:string,vhdl:boolean):{header?:string;arms:Arm[]}|undefined{
     e=this.unwrap(e,target);
@@ -124,7 +155,8 @@ export class SignalLogicView {
     this.sections.set(cardId,sections);
     if(!group){
       e=this.unwrap(e,target);parent.append(el("pre","logic-expression",this.assignment(e,target,driver,vhdl)));sections.push([]);
-      if(e.kind==="unknown"||e.kind==="call")parent.append(el("span","logic-tag","分析边界"));return;
+      if(e.kind==="unknown"||e.kind==="call"&&!e.conversion)parent.append(el("span","logic-tag","分析边界"));
+      if(e.conversion)parent.append(el("span","logic-detail",e.conversion.description));return;
     }
     if(group.header&&!parent.querySelector('.branch-heading'))parent.append(el("code","branch-heading",group.header));
     const list=el("div","logic-branches");parent.append(list);const branches:Branch[]=[];sections.push(branches);
@@ -143,7 +175,7 @@ export class SignalLogicView {
   private reveal(all=false):void{
     if(!this.active)return;
     const visible=new Set<string>(),edges:CardEdge[]=[],choices=new Set<string>(),visited=new Set<string>();
-    const addEdge=(edge:CardEdge)=>{if(!edges.some(e=>e.from===edge.from&&e.to===edge.to&&e.control===edge.control))edges.push(edge);};
+    const addEdge=(edge:CardEdge)=>{if(!edges.some(e=>e.from===edge.from&&e.to===edge.to&&e.control===edge.control&&e.role===edge.role&&e.unknown===edge.unknown))edges.push(edge);};
     // Every redraw derives reachability again; remembered selections are not visibility.
     const branchEnds=(id:string):string[]=>{
       visible.add(id);const sections=this.sections.get(id);if(!sections?.length)return[id];

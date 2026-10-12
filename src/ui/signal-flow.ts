@@ -51,6 +51,12 @@ export class SignalFlowPanel {
     this.hint("在源码信号上右键，选择“追踪此信号”。");
   }
   hint(text: string): void { this.following.textContent = text; this.following.hidden=!text; }
+  objectHint(name:string,kind:string,source:{file:string;line:number}):void {
+    this.hint(`${name} 是${kind}，请选择使用它的信号进行追踪。`);
+    const jump=document.createElement("button");jump.type="button";jump.className="text-button";jump.textContent="查看定义";
+    jump.dataset.file=source.file;jump.dataset.line=String(source.line);jump.setAttribute("aria-label",`查看 ${name} 定义`);
+    this.following.append(" ",jump);
+  }
   message(text: string): void { this.logic?.dispose(); this.logic=undefined; this.ports?.dispose(); this.ports=undefined; this.body.classList.remove("logic-body"); this.status.textContent = text; this.status.hidden=!text; this.identity.replaceChildren(); this.body.replaceChildren(); this.body.scrollLeft=0; this.body.scrollTop=0; }
   capture():FlowViewState { return {open:[...this.body.querySelectorAll<HTMLDetailsElement>("details")].map(d=>d.open),left:this.body.scrollLeft,top:this.body.scrollTop,logic:this.logic?.capture(),ports:this.ports?.capture()}; }
   restore(s:FlowViewState):void { if(this.logic&&s.logic)this.logic.restore(s.logic);else if(this.ports&&s.ports)this.ports.restore(s.ports);else [...this.body.querySelectorAll<HTMLDetailsElement>("details")].forEach((d,i)=>d.open=s.open[i]??false);this.body.scrollLeft=s.left;this.body.scrollTop=s.top; }
@@ -68,8 +74,8 @@ export class SignalFlowPanel {
   }
   markStale(): void { this.stale.hidden = false; }
   clearStale(): void { this.stale.hidden = true; }
-  setContexts(items: SignalContext[], selected: number): void {
-    this.contexts.replaceChildren(...items.map(item => { const option = document.createElement("option"); option.textContent = item.path; option.title = item.path; return option; }));
+  setContexts(items: SignalContext[], selected: number, labels?: string[]): void {
+    this.contexts.replaceChildren(...items.map((item,index) => { const option = document.createElement("option"); option.textContent = labels?.[index] ?? item.path; option.title = option.textContent; return option; }));
     this.contexts.selectedIndex = selected;
     this.contexts.hidden = items.length < 2;
   }

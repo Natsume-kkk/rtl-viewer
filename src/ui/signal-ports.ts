@@ -39,7 +39,7 @@ export class SignalPortsView {
     const base = upstream.label.slice(0, upstream.label.lastIndexOf("."));
     const focus = add("focus", {...upstream,reason:undefined,note:undefined}, 0, signal);
     focus.card.append(el("code", "logic-detail", [upstream.port?.direction, base].filter(Boolean).join(" · ")));
-    const identity = (n: TraceNode) => JSON.stringify([n.owner ?? n.target?.context.path, n.scope, n.port?.path, n.label, n.file, n.line, n.reason, n.note, n.mapping]);
+    const identity = (n: TraceNode) => JSON.stringify([n.owner ?? n.target?.context.path, n.scope, n.signal?.identity, n.port?.path, n.label, n.file, n.line, n.reason, n.note, n.mapping]);
     const walk = (trace: TraceNode, parent: PortCard, side: Side, depth: number): string => {
       const external = /^顶层(?:输入|输出)$/.test(trace.reason ?? "");
       if (external) {

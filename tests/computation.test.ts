@@ -41,9 +41,9 @@ describe("运算图表达式", () => {
     expect(parseExpression("data(7 downto 0)", "vhdl", 0, new Set(["data"])).kind).toBe("slice");
     expect(parseExpression("to_unsigned(n, 20)", "vhdl").kind).toBe("call");
   });
-  it("不吞掉未知语法、动态下标、四态常量或恶意文本", () => {
+  it("动态下标保留地址角色，未知语法和四态常量不被吞掉", () => {
     expect(parseExpression("a inside {b}", "verilog").kind).toBe("unknown");
-    expect(parseExpression("a[i]", "verilog").kind).toBe("unknown");
+    expect(parseExpression("a[i]", "verilog")).toMatchObject({kind:"slice",access:{kind:"index",dynamic:true}});
     expect(parseExpression("1'bz", "verilog").value).toBe("1'bz");
     expect(parseExpression("<img src=x>", "verilog").kind).toBe("unknown");
   });

@@ -53,6 +53,10 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Release.ps1
 
 `npm test` 默认运行单元测试及 `tests/samples/basic/` 中随仓库提供的独立样例，覆盖 Verilog／VHDL 混合层级、IP 黑盒、约束文件和寄存器来源。样例用于查看器验收，不是可综合工程，其中 `.xci` 是手工编写的最小解析输入。
 
+`tests/samples/analysis/` 覆盖位赋值、静态 generate 实例、ROM 声明初值、动态地址、类型转换及同模块不同参数实例；对应整合回归为 `tests/analysis-coverage.test.ts`。过程、对象表达式和展开的边界回归分别在 `tests/process-relations.test.ts`、`tests/source-objects.test.ts` 和 `tests/static-generate.test.ts`。
+
+`generated_locals.sv` 用于核对同一生成块局部信号的多个展开身份；入口选择与刷新由 `tests/signal-controller.test.ts` 覆盖。`tests/expression-access-combinations.test.ts` 检查转换嵌套后的地址／条件角色、record 字段与数组／subtype 的组合访问，防止将地址误报为驱动目标。
+
 三个私有工程套件默认跳过，显式配置目录后才运行；配置不存在或不是目录时直接报错，不作为跳过处理：
 
 | 环境变量 | 对应测试输入 |
@@ -122,7 +126,7 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 | 宏调用形式的例化 | 不支持 |
 | 非 ANSI 端口的体内声明 | 不提取方向和宽度 |
 | SystemVerilog 嵌套 module | 不支持 |
-| Verilog 命名 begin 块中的局部变量 | 不区分局部作用域，可能与同名模块信号混同 |
+| Verilog 块局部变量 | 过程赋值池使用声明位置区分词法身份，不与块外同名模块信号合并；不执行完整 SystemVerilog 名称绑定 |
 | Verilog 无端口例化 `foo u;` | 不支持 |
 | VHDL 端口省略 mode | 不按语言默认的 `in` 补全，该端口被丢弃 |
 | VHDL 裸名无 map 例化 `u1: foo;` | 为避免误匹配 signal／constant 声明，不支持；与 entity／component 形式区分 |
@@ -140,6 +144,12 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 3. 向仿真候选内部解包，取可达子图最大的 DUT，再比较各有效顶层的可达规模；实际顶层不一定在原始候选列表中。用户仍可手动切换。
 
 层级节点的 children getter 首次访问才物化直接子节点。修改消费方遍历时要保留这一边界，避免菱形复用结构沿实例路径组合爆炸。
+
+信号分析通过 `SignalProject.moduleForContext` 按实例惰性应用参数和静态 generate；结构索引仍保持轻量。`src/parser/static-generate.ts` 只求解有界整数常量子集，源视图逐字符映射回原偏移；未知或超预算区域保留独立边界。修改此处必须覆盖不同参数实例、嵌套 generate、未知条件、范围溢出和无关模块不触发详细解析。
+
+参数声明保留类型，支持的标量／单维整数参数先按位宽与符号转换再参与静态选择；未知类型、多维 packed 参数和不能确定的宽度传播保留边界。子实例的参数覆盖使用所属生成块的常量环境。`signalCandidates` 在实际实例上下文返回源码对象候选，生成过程局部对象还须携带过程 `scope`，不能仅按原始名称或源码偏移选定。组合回归见 `tests/static-parameter-followup.test.ts`。
+
+`src/analysis/objects.ts` 收集类型、声明和初始化事实；`ProcessResult.updates` 仅保存可靠更新表达式，`assignments` 保存逐语句源码关系。同一目标已有可靠更新时不重复绘制逐语句驱动。初值不计持续驱动，地址与条件不计数据输入，未知调用参数不绘制确定方向。新增语法必须同时检查这两种表示、过程局部身份及原始源码定位。
 
 ### 编码边界
 

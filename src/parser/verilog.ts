@@ -1,5 +1,5 @@
 import type { InstanceInfo, ModuleInfo, PortInfo } from "./types";
-import { parseParameters } from "./parameters";
+import { parseOverrides, parseParameters } from "./parameters";
 
 export const KEYWORDS = new Set([
   "module", "endmodule", "macromodule", "begin", "end", "if", "else", "always",
@@ -211,11 +211,14 @@ function scanInstances(
     const typeName = m[0];
     if (KEYWORDS.has(typeName) || typeName === selfName) continue;
     let i = skipWs(body, re.lastIndex);
+    let parameterOverrides: InstanceInfo["parameterOverrides"];
     if (body[i] === "#") {
       i = skipWs(body, i + 1);
       if (body[i] !== "(") continue;
+      const open = i;
       i = skipBalanced(body, i);
       if (i < 0) continue;
+      if (withConn) parameterOverrides = parseOverrides(expressions.slice(bodyStart+open+1,bodyStart+i-1),false);
       i = skipWs(body, i);
     }
     // 同组例化：类型名后可逗号续多个例化名，例化名可带数组维度 [n:0]
@@ -240,6 +243,8 @@ function scanInstances(
       if (body[k] !== ";" && body[k] !== ",") break;
       const info: InstanceInfo = { module: typeName, inst: instName, line: groupLine };
       if (withConn) {
+        info.start = bodyStart+m.index;
+        if (parameterOverrides) info.parameterOverrides = parameterOverrides;
         info.connections = parseConnections(body.slice(p + 1, j - 1), bodyStart + p + 1, lineStarts, expressions);
         info.endLine = lineAt(lineStarts, bodyStart + j - 1);
       }

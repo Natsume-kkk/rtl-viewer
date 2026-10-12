@@ -25,7 +25,7 @@
 
 运行环境：Windows x64，并已安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。下载便携版后，解压并运行 `rtl-viewer.exe`；Node、Rust 和 C++ 工具链仅用于源码构建。
 
-在 [Windows CI](https://github.com/Natsume-kkk/rtl-viewer/actions/workflows/ci.yml) 中选择最近一次成功的 `main` 运行，从页面底部 Artifacts 下载 `rtl-viewer-windows-x64`。需要登录有仓库访问权限的 GitHub 账号；构建产物保留 7 天，过期后可手动运行工作流重新生成。
+在 [Windows CI](https://github.com/Natsume-kkk/rtl-viewer/actions/workflows/ci.yml) 中选择最近一次成功的 `main` 运行，从页面底部 Artifacts 下载 `rtl-viewer-windows-x64`。GitHub 要求下载 Artifacts 必须登录账号；构建产物保留 7 天，过期后可手动运行工作流重新生成。
 
 1. 点击“打开文件夹”或将源码文件夹拖入窗口；也可先打开仓库中的 `tests/samples/basic/` 熟悉界面。
 2. 展开左侧层级树，点击模块查看定义；通过节点跳转按钮查看父模块中的例化位置。
@@ -78,6 +78,6 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Release.ps1
 - [开发指南](docs/development.md)：环境准备、构建测试、浏览器预览与目录职责。
 - [独立分析样例](examples/computation/README.md)：源码运算图的离线交互实验。
 
-## 仓库授权
+## 许可证
 
-本仓库为私有仓库，未添加开源许可证。
+本项目以 [MIT 许可证](LICENSE)开源。

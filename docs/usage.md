@@ -4,7 +4,7 @@
 
 ## 打开与浏览工程
 
-点击“打开文件夹”、按 `Ctrl+Alt+O`，或将源码文件夹拖入窗口。应用扫描 Verilog／SystemVerilog／VHDL 源码、Vivado IP 配置和约束文件；“最近打开的工程”保留最近 8 个目录。可以先打开 [独立样例](../tests/samples/basic) 熟悉操作。
+点击“打开文件夹”、按 `Ctrl+Alt+O`，或将源码文件夹拖入窗口。应用扫描 Verilog／SystemVerilog／VHDL 源码、Vivado IP 配置和约束文件；“最近打开的工程”保留最近 8 个目录。可以先打开 [独立样例](../tests/samples/basic) 熟悉操作。没有打开文件时，编辑区显示空态面板，可直接打开文件夹、全工程搜索或新建文件。
 
 ### 层级树
 

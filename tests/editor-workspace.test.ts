@@ -149,6 +149,7 @@ async function setup() {
   const ctx = {
     cachedFile: vi.fn((path: string) => path.includes("slow") ? undefined : ({ content: "module top;\nwire a;\nwire b;\nendmodule", encoding: "utf8", mtime: 10 })),
     onFileChanged: vi.fn(), onActiveChange: vi.fn(), onContentChange: vi.fn(), onCursorChange: vi.fn(), hint: vi.fn(),
+    hasProject: vi.fn(() => true), openFolder: vi.fn(), openSearch: vi.fn(), newFile: vi.fn(),
   };
   const workspace = createEditorWorkspace(editors as unknown as Parameters<typeof createEditorWorkspace>[0], ctx);
   cleanup.push(() => workspace.dispose());
@@ -174,6 +175,31 @@ describe("编辑工作区", () => {
     expect(tab.model.getValue()).toBe("unsaved");
     expect(tab.model.isDisposed()).toBe(false);
     expect(read).not.toHaveBeenCalled(); expect(choice).not.toHaveBeenCalled();
+  });
+
+  it("无标签页时显示空态面板并隐藏面包屑，按钮接线到工程动作", async () => {
+    const { workspace: w, ctx } = await setup();
+    const empty = document.getElementById("group-1")!.querySelector<HTMLElement>(".editor-empty")!;
+    const button = (label: string) => [...empty.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent!.includes(label))!;
+    expect(empty.hidden).toBe(false);
+    expect(empty.textContent).toContain("未打开文件");
+    expect(document.getElementById("breadcrumb-1")!.hidden).toBe(true);
+    button("全工程搜索").click();
+    expect(ctx.openSearch).toHaveBeenCalled();
+    button("新建").click();
+    expect(ctx.newFile).toHaveBeenCalled();
+
+    await w.openFile("D:/p/a.v");
+    expect(empty.hidden).toBe(true);
+    expect(document.getElementById("breadcrumb-1")!.hidden).toBe(false);
+
+    await w.closeAll();
+    vi.mocked(ctx.hasProject).mockReturnValue(false);
+    w.refreshChrome();
+    expect(empty.hidden).toBe(false);
+    expect(empty.textContent).toContain("未打开工程");
+    button("打开文件夹").click();
+    expect(ctx.openFolder).toHaveBeenCalled();
   });
 
   it("移走左侧最后一个标签时保留右侧，重复克隆不增加标签或改变对侧阅读位置", async () => {

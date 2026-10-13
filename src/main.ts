@@ -483,6 +483,10 @@ const workspace = createEditorWorkspace([editor, editor2], {
     outline.highlightLine(line);
   },
   hint: message => statusbar.hint(message),
+  hasProject: () => !!state.folder,
+  openFolder: () => void openProject(),
+  openSearch: () => setSearchVisible(true),
+  newFile: () => void activeGroup().tabs.newFile(preferredNewFileType(), state.folder),
 });
 const { groups, activeGroup, focusGroup, navigateTo, navBack, navForward,
   openInOtherGroup, openFile: openProjectFile } = workspace;
@@ -616,6 +620,7 @@ async function openFolder(folder: string): Promise<void> {
   watcher.stop();
   state.folder = folder;
   updateProjectChrome();
+  workspace.refreshChrome();
   setSignalFlowVisible(false);
   signalController.reset();
   treeContextPath = undefined;
@@ -671,7 +676,7 @@ const projectScanner = createProjectScanner({
   complete: () => { rebuildIndex(); setProgress(""); renderTree(); watcher.start(); },
   failed: async error => {
     state.folder = "";
-    updateProjectChrome(); setProgress(""); rebuildIndex(); renderTree();
+    updateProjectChrome(); workspace.refreshChrome(); setProgress(""); rebuildIndex(); renderTree();
     await appAlert(`打开工程失败：${String(error)}`);
   },
 });

@@ -5,7 +5,7 @@ import { attachTabDrag } from "../ui/tab-drag";
 import { showCtxMenu, type MenuItem } from "../ui/menu";
 import { NavHistory, type NavEntry } from "../model/history";
 import { PathBreadcrumb } from "../ui/breadcrumb";
-import { setIcon } from "../ui/icons";
+import { setIcon, type IconName } from "../ui/icons";
 import { openDirectory, showInFolder } from "../ipc";
 import type { CachedFile } from "./watcher";
 import { sameFilePath } from "../file-path";
@@ -22,6 +22,10 @@ interface WorkspaceContext {
   onContentChange(active: boolean): void;
   onCursorChange(line: number): void;
   hint(message: string): void;
+  hasProject(): boolean;
+  openFolder(): void;
+  openSearch(): void;
+  newFile(): void;
 }
 
 /** 两组编辑器的布局与导航状态；工程缓存和其他视图通过事件接线。 */
@@ -138,6 +142,13 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
     path => void openDirectory(path).catch(error => ctx.hint(`打开文件夹失败：${String(error)}`)),
     path => void showInFolder(path).catch(error => ctx.hint(`定位文件失败：${String(error)}`)),
   ));
+  const empties = [1, 2].map(index => {
+    const el = document.createElement("div");
+    el.className = "editor-empty";
+    el.hidden = true;
+    document.getElementById(`group-${index}`)!.append(el);
+    return el;
+  });
   disposables.push({ dispose: attachTabDrag(groups.map(g => g.tabs), () => layout.splitVisible, hit => {
     if (hit.split) showCtxMenu(hit.x, hit.y, transferMenu(hit.source, hit.tab));
     else if (hit.source === hit.target) groups[hit.source].tabs.reorder(hit.tab, hit.before);
@@ -154,6 +165,39 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
     showViewMenu(rect.left, rect.top);
   });
 
+  function emptyAction(icon: IconName, label: string, primary: boolean, action: () => void): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = primary ? "btn btn-primary" : "btn btn-ghost";
+    setIcon(button, icon);
+    button.append(document.createTextNode(label));
+    button.addEventListener("click", action);
+    return button;
+  }
+
+  function renderEmpty(el: HTMLElement): void {
+    el.textContent = "";
+    const panel = document.createElement("div");
+    panel.className = "editor-empty-panel";
+    const title = document.createElement("div");
+    title.className = "editor-empty-title";
+    const hintEl = document.createElement("div");
+    hintEl.className = "editor-empty-hint";
+    const actions = document.createElement("div");
+    actions.className = "editor-empty-actions";
+    if (ctx.hasProject()) {
+      title.textContent = "未打开文件";
+      hintEl.textContent = "从左侧层级树选择模块，或使用全工程搜索定位源码";
+      actions.append(emptyAction("search", "全工程搜索", true, ctx.openSearch), emptyAction("plus", "新建 .v", false, ctx.newFile));
+    } else {
+      title.textContent = "未打开工程";
+      hintEl.textContent = "打开源码文件夹后，从层级树选择模块开始阅读";
+      actions.append(emptyAction("folder", "打开文件夹 (Ctrl+Alt+O)", true, ctx.openFolder), emptyAction("plus", "新建 .v", false, ctx.newFile));
+    }
+    panel.append(title, hintEl, actions);
+    el.append(panel);
+  }
+
   function syncEditorChrome(idx: number): void {
     const g = groups[idx];
     const tab = g.tabs.activeTab;
@@ -161,6 +205,10 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
     breadcrumbs[idx].setPath(tab?.path ?? "", tab?.title ?? "未打开文件");
     foot.textContent = tab ? `${tab.title} · ${tab.model.getLanguageId()}` : "打开工程，开始阅读源码";
     foot.title = foot.textContent;
+    const emptyEl = empties[idx];
+    emptyEl.hidden = !!tab;
+    if (!tab) renderEmpty(emptyEl);
+    document.getElementById(`breadcrumb-${idx + 1}`)!.hidden = !tab;
   }
 
   function activeGroup(): EditorGroup {
@@ -304,6 +352,9 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
     groups[idx].editor.focus();
   }
 
+  syncEditorChrome(0);
+  syncEditorChrome(1);
+
   return {
     groups: groups as readonly EditorGroup[],
     get activeIndex() { return activeGroupIdx; },
@@ -311,6 +362,7 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
     activeGroup, focusGroup, openFile, navigateTo, navBack, navForward, jumpToLine,
     ensureSplit, collapseSplit, openInOtherGroup, switchView, transferTab, showViewMenu,
     resetHistory() { histories.forEach(history => history.clear()); updateNavButtons(); },
+    refreshChrome() { groups.forEach((_, idx) => syncEditorChrome(idx)); },
     saveAll: () => TabManager.saveGroups(groups.map(group => group.tabs)),
     closeAll: () => TabManager.closeGroups(groups.map(group => group.tabs)),
     dispose() {

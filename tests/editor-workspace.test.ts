@@ -44,6 +44,7 @@ vi.mock("../src/editor/monaco", () => {
   return {
     monaco: {
       editor: {
+        ScrollType: { Immediate: 1 },
         getModel: () => null,
         createModel: (content: string, lang: string, uri: { toString(): string }) =>
           new FakeModel(content, lang, uri),
@@ -92,13 +93,17 @@ function makeEditor() {
   let position: Position = { lineNumber: 1, column: 1 };
   let selection: Selection = { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 };
   const focus = new Set<() => void>(), content = new Set<() => void>();
+  const modelChanged = new Set<() => void>();
   const cursor = new Set<(event: { position: Position }) => void>();
+  const scroll = new Set<(event: { scrollTop: number; scrollLeft: number; scrollTopChanged: boolean; scrollLeftChanged: boolean }) => void>();
+  let scrollTop = 0, scrollLeft = 0;
   function listen<T>(set: Set<T>, cb: T) { set.add(cb); return { dispose: () => set.delete(cb) }; }
   const ed = {
     getModel: () => model,
     setModel: (next: Model | null) => {
       contentListener?.dispose(); model = next;
       contentListener = next?.onDidChangeContent(() => content.forEach(cb => cb()));
+      modelChanged.forEach(cb => cb());
     },
     getPosition: () => position,
     getSelection: () => selection,
@@ -112,10 +117,18 @@ function makeEditor() {
     restoreViewState: (state: { position: Position; selection: Selection }) => { position = state.position; selection = state.selection; },
     focus: () => focus.forEach(cb => cb()),
     onDidFocusEditorText: (cb: () => void) => listen(focus, cb),
+    onDidChangeModel: (cb: () => void) => listen(modelChanged, cb),
     onDidChangeModelContent: (cb: () => void) => listen(content, cb),
     onDidChangeCursorPosition: (cb: (event: { position: Position }) => void) => listen(cursor, cb),
+    onDidScrollChange: (cb: (event: { scrollTop: number; scrollLeft: number; scrollTopChanged: boolean; scrollLeftChanged: boolean }) => void) => listen(scroll, cb),
+    getScrollTop: () => scrollTop, getScrollLeft: () => scrollLeft,
+    setScrollPosition: (next: { scrollTop?: number; scrollLeft?: number }) => {
+      const top = next.scrollTop ?? scrollTop, left = next.scrollLeft ?? scrollLeft;
+      const event = { scrollTop: top, scrollLeft: left, scrollTopChanged: top !== scrollTop, scrollLeftChanged: left !== scrollLeft };
+      scrollTop = top; scrollLeft = left; scroll.forEach(cb => cb(event));
+    },
     revealLineInCenter: vi.fn(), revealRangeInCenterIfOutsideViewport: vi.fn(),
-    listenerCount: () => focus.size + content.size + cursor.size,
+    listenerCount: () => focus.size + content.size + cursor.size + scroll.size + modelChanged.size,
   };
   return ed;
 }
@@ -135,7 +148,7 @@ async function setup() {
   const editors = [makeEditor(), makeEditor()] as const;
   const ctx = {
     cachedFile: vi.fn((path: string) => path.includes("slow") ? undefined : ({ content: "module top;\nwire a;\nwire b;\nendmodule", encoding: "utf8", mtime: 10 })),
-    onFileChanged: vi.fn(), onActiveChange: vi.fn(), onContentChange: vi.fn(), onCursorChange: vi.fn(), onSplit: vi.fn(), hint: vi.fn(),
+    onFileChanged: vi.fn(), onActiveChange: vi.fn(), onContentChange: vi.fn(), onCursorChange: vi.fn(), hint: vi.fn(),
   };
   const workspace = createEditorWorkspace(editors as unknown as Parameters<typeof createEditorWorkspace>[0], ctx);
   cleanup.push(() => workspace.dispose());
@@ -143,6 +156,97 @@ async function setup() {
 }
 
 describe("编辑工作区", () => {
+  it("移动脏标签到另一侧并拖回合并，不读盘、不询问丢弃且保留模型和位置", async () => {
+    const { workspace: w, editors, choice, read } = await setup();
+    await w.openFile("D:/p/a.v");
+    const tab = w.activeGroup().tabs.activeTab!;
+    tab.model.setValue("unsaved");
+    editors[0].setPosition({ lineNumber: 3, column: 4 });
+    await w.openFile("D:/p/b.v");
+    await w.transferTab(0, tab, false);
+    expect(w.groups.map(g => g.tabs.count)).toEqual([1, 1]);
+    expect(editors[1].getPosition()).toEqual({ lineNumber: 3, column: 4 });
+    expect(w.activeIndex).toBe(1);
+    await w.transferTab(1, w.groups[1].tabs.activeTab!, false);
+    expect(w.splitVisible).toBe(false);
+    expect(w.groups.map(g => g.tabs.count)).toEqual([2, 0]);
+    expect(w.activeGroup().tabs.activeTab!.model).toBe(tab.model);
+    expect(tab.model.getValue()).toBe("unsaved");
+    expect(tab.model.isDisposed()).toBe(false);
+    expect(read).not.toHaveBeenCalled(); expect(choice).not.toHaveBeenCalled();
+  });
+
+  it("移走左侧最后一个标签时保留右侧，重复克隆不增加标签或改变对侧阅读位置", async () => {
+    const { workspace: w, editors } = await setup();
+    await w.openFile("D:/p/a.v");
+    await w.openInOtherGroup();
+    editors[1].setPosition({ lineNumber: 4, column: 5 });
+    w.switchView(); await w.openInOtherGroup();
+    expect(w.groups.map(g => g.tabs.count)).toEqual([1, 1]);
+    expect(editors[1].getPosition()).toEqual({ lineNumber: 4, column: 5 });
+    await w.transferTab(0, w.groups[0].tabs.activeTab!, false);
+    expect(w.splitVisible).toBe(false); expect(w.activeIndex).toBe(1);
+    expect(document.getElementById("group-1")!.hidden).toBe(true);
+    expect(document.getElementById("group-2")!.hidden).toBe(false);
+    await w.openInOtherGroup();
+    expect(w.splitVisible).toBe(true); expect(w.activeIndex).toBe(0);
+  });
+
+  it("上下排列、交换及键盘调整不改变标签归属，同步滚动保持两轴独立与相对偏移", async () => {
+    const { workspace: w, editors } = await setup();
+    await w.openFile("D:/p/a.v"); await w.openInOtherGroup();
+    const choose = (label: string) => {
+      w.showViewMenu(0, 0);
+      [...document.querySelectorAll<HTMLButtonElement>(".ctx-item")].find(b => b.textContent === label)!.click();
+    };
+    choose("上下排列"); choose("交换两侧位置");
+    expect(document.getElementById("main-area")!.classList.contains("stacked")).toBe(true);
+    expect(document.getElementById("group-1")!.style.order).toBe("2");
+    const pane = document.getElementById("group-1")!, divider = document.getElementById("group-splitter")!;
+    vi.spyOn(pane, "getBoundingClientRect").mockReturnValue({ height: 300 } as DOMRect);
+    vi.spyOn(document.getElementById("main-area")!, "getBoundingClientRect").mockReturnValue({ height: 600 } as DOMRect);
+    divider.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp" }));
+    expect(pane.style.flex).toBe("0 0 324px");
+    divider.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
+    expect(pane.style.flex).toBe("");
+    editors[0].setScrollPosition({ scrollTop: 100, scrollLeft: 20 });
+    editors[1].setScrollPosition({ scrollTop: 300, scrollLeft: 80 });
+    choose("同步纵向滚动");
+    editors[1].setScrollPosition({ scrollTop: 350, scrollLeft: 90 });
+    expect(editors[0].getScrollTop()).toBe(150); expect(editors[0].getScrollLeft()).toBe(20);
+    choose("同步横向滚动");
+    editors[0].setScrollPosition({ scrollLeft: 50 });
+    expect(editors[1].getScrollLeft()).toBe(120);
+    expect(w.activeIndex).toBe(1);
+    w.collapseSplit(); editors[0].setScrollPosition({ scrollTop: 500 });
+    expect(editors[1].getScrollTop()).toBe(350);
+  });
+
+  it("拖出标签弹出移动／克隆菜单，跨侧拖回自动合并，Esc 取消无副作用", async () => {
+    const { workspace: w } = await setup();
+    await w.openFile("D:/p/a.v"); await w.openFile("D:/p/b.v");
+    const tab = w.activeGroup().tabs.activeTab!;
+    let hit: Element = document.getElementById("editor-foot-1")!;
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => hit });
+    const pointer = (target: EventTarget, type: string, x: number) => target.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: 100, button: 0 }));
+    pointer(tab.element, "pointerdown", 10); pointer(document, "pointermove", 80);
+    expect(document.querySelector(".tab-drop-hint")?.textContent).toContain("移动或克隆");
+    pointer(document, "pointerup", 80);
+    document.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    document.querySelector<HTMLButtonElement>(".ctx-item")!.click();
+    await vi.waitFor(() => expect(w.splitVisible).toBe(true));
+    const moved = w.groups[1].tabs.activeTab!;
+    hit = document.getElementById("tabbar")!;
+    pointer(moved.element, "pointerdown", 10); pointer(document, "pointermove", 80);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    pointer(document, "pointerup", 80);
+    expect(w.groups.map(g => g.tabs.count)).toEqual([1, 1]);
+    pointer(moved.element, "pointerdown", 10); pointer(document, "pointermove", 80); pointer(document, "pointerup", 80);
+    await vi.waitFor(() => expect(w.splitVisible).toBe(false));
+    expect(w.groups.map(g => g.tabs.count)).toEqual([2, 0]);
+    expect(document.querySelector(".tab-drop-hint")).toBeNull();
+  });
+
   it("两侧历史独立，后退和前进恢复原文件及选择范围", async () => {
     const { workspace: w, editors } = await setup();
     await w.openFile("D:/p/a.v", 2, 0, 2, 3);
@@ -162,7 +266,7 @@ describe("编辑工作区", () => {
   });
 
   it("分屏共用缓冲区，隐藏和恢复保留修改、光标、标签与宽度", async () => {
-    const { workspace: w, editors, ctx } = await setup();
+    const { workspace: w, editors } = await setup();
     await w.openFile("D:/p/a.v", 2);
     const original = w.activeGroup().tabs.activeTab!;
     await w.openInOtherGroup();
@@ -172,14 +276,14 @@ describe("编辑工作区", () => {
     editors[1].setPosition({ lineNumber: 3, column: 4 });
     document.getElementById("group-1")!.style.flex = "0 0 450px";
     w.collapseSplit();
-    expect(w.activeIndex).toBe(0);
+    expect(w.activeIndex).toBe(1);
     expect(w.groups[1].tabs.count).toBe(1);
-    w.ensureSplit(); w.switchView();
+    w.ensureSplit();
     expect(w.activeIndex).toBe(1);
     expect(editors[1].getPosition()).toEqual({ lineNumber: 3, column: 4 });
     expect(document.getElementById("group-1")!.style.flex).toBe("0 0 450px");
     expect(w.groups[1].tabs.activeTab!.model.getValue()).toBe("changed");
-    expect(ctx.onSplit).toHaveBeenCalledTimes(2);
+    expect(document.getElementById("group-1")!.hidden).toBe(false);
   });
 
   it("跨组关闭取消或保存失败时保留全部标签、分屏和活动组", async () => {

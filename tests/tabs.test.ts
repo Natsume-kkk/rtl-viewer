@@ -133,6 +133,49 @@ async function setup() {
 }
 
 describe("TabManager", () => {
+  it("未命名文档克隆共享修改，首次保存让两侧接管同一磁盘模型", async () => {
+    const { make, mocks } = await setup(); const a = make(), b = make();
+    a.newFile("sv", "D:/p");
+    const original = a.activeTab!;
+    original.model.setValue("module edited; endmodule");
+    await a.transfer(original, b, true);
+    expect(b.activeTab!.model).toBe(original.model);
+    expect(b.activeTab!.dirty).toBe(true);
+    expect(b.activeTab!.suggestedPath).toBe(original.suggestedPath);
+    mocks.saveFileDialog.mockResolvedValue("D:/p/saved.sv"); mocks.writeFile.mockResolvedValue(20);
+    expect(await b.save()).toBe(true);
+    expect(a.activeTab!.path).toBe("D:/p/saved.sv");
+    expect(a.activeTab!.model).toBe(b.activeTab!.model);
+    expect(a.activeTab!.dirty).toBe(false); expect(b.activeTab!.dirty).toBe(false);
+  });
+
+  it("移动等待正在进行的保存，保存失败则保留原侧", async () => {
+    const { make, mocks } = await setup(); const a = make(), b = make();
+    a.openContent("D:/p/a.v", "a", "utf8", 10); const tab = a.activeTab!;
+    tab.model.setValue("changed"); mocks.fileStates.mockResolvedValue([10]);
+    let resolve!: (value: number) => void;
+    mocks.writeFile.mockImplementation(() => new Promise(done => { resolve = done; }));
+    const saving = a.save(); await vi.waitFor(() => expect(mocks.writeFile).toHaveBeenCalled());
+    const moving = a.transfer(tab, b, false);
+    expect(a.count).toBe(1); expect(b.count).toBe(0);
+    resolve(20); expect(await saving).toBe(true); expect(await moving).toBe(true);
+    expect(b.activeTab!.model).toBe(tab.model); expect(b.activeTab!.dirty).toBe(false);
+    mocks.fileStates.mockResolvedValue([20]); mocks.writeFile.mockRejectedValue(new Error("failed"));
+    b.activeTab!.model.setValue("more");
+    const failed = b.save(); const retry = b.transfer(b.activeTab!, a, false);
+    expect(await failed).toBe(false); expect(await retry).toBe(false);
+    expect(a.count).toBe(0); expect(b.count).toBe(1);
+  });
+
+  it("标签重排改变循环和关闭右侧的顺序", async () => {
+    const { make } = await setup(); const a = make();
+    for (const name of ["a", "b", "c"]) a.openContent(`D:/p/${name}.v`, name, "utf8", 10);
+    const first = a.findTab("D:/p/a.v")!, second = a.findTab("D:/p/b.v")!, third = a.findTab("D:/p/c.v")!;
+    a.reorder(third, first); a.cycleTab(1); expect(a.activeTab).toBe(first);
+    a.reorder(third); a.cycleTab(1); expect(a.activeTab).toBe(second);
+    expect(await a.closeRight(first)).toBe(true); expect(a.count).toBe(1);
+  });
+
   it("不保存关闭后预览仍引用模型，再打开采用本次读盘内容并保持正确脏状态", async () => {
     const { make, mocks } = await setup();
     const { monaco } = await import("../src/editor/monaco");

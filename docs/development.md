@@ -165,6 +165,8 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 
 ### Monaco 与主题
 
+双视图由 `src/app/editor-workspace.ts` 协调标签归属、独立导航、活动视图和同步滚动；`src/editor/tabs.ts` 负责标签重排与共享模型的移动／克隆，移动先取得目标引用再释放原引用，不经关闭确认或磁盘重读，等待正在进行的保存结束，失败则保留原侧。`src/ui/editor-layout.ts` 只处理排列、可见性与分隔条，`src/ui/tab-drag.ts` 只处理指针手势与落点反馈，最终调用工作区同一组操作。同步滚动跳过文档切换及标签迁移中的位置恢复，避免覆盖另一侧阅读位置。回归入口为 `tests/editor-workspace.test.ts` 和 `tests/tabs.test.ts`；拖动命中、Monaco 撤销与真实布局另在浏览器或桌面验证。
+
 [Monaco 入口](../src/editor/monaco.ts) 使用按需导入，保留编辑器贡献，排除无关语言服务与 LSP。升级版本时核对以下内容：
 
 - 导入清单与目标版本 `editor.main.js` 的编辑器贡献部分对应，不改为 `import "monaco-editor"` 整包入口。

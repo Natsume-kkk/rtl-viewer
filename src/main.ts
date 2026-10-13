@@ -100,13 +100,14 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   shortcut.className = "shortcut";
   shortcut.textContent = "Ctrl Shift F";
   searchBtn.append(shortcut);
-  const splitBtn = action("分屏", "split", () => {
-    if (workspace.splitVisible) collapseSplit();
-    else if (groups[1].tabs.count) ensureSplit();
-    else void openInOtherGroup();
+  const splitBtn = action("视图", "split", () => {
+    const rect = splitBtn.getBoundingClientRect();
+    workspace.showViewMenu(rect.left, rect.bottom);
   });
   splitBtn.id = "split-action";
-  splitBtn.title = "分屏 (Ctrl+Alt+V)；F8 切换编辑视图";
+  splitBtn.addEventListener("click", event => event.stopPropagation());
+  splitBtn.title = "双视图与布局；Ctrl+Alt+V 克隆，F8 切换焦点";
+  splitBtn.setAttribute("aria-haspopup", "menu");
   const flowBtn = action("信号链", "ports", toggleSignalFlow);
   flowBtn.id = "flow-action";
   flowBtn.title = "信号链分析";
@@ -441,19 +442,23 @@ function registerEditorActions(): void {
     },
   });
 
-  // 分屏：当前文件在另一侧视图打开（共享 model，编辑互通）。
+  registerEditorAction({
+    id: "rtl.move-other", label: "移动到另一视图", contextMenuGroupId: "view", contextMenuOrder: 0,
+    run: () => { const tab = activeGroup().tabs.activeTab; if (tab) return workspace.transferTab(workspace.activeIndex, tab, false); },
+  });
+  // 克隆共享 model，两个视图保留各自的阅读状态。
   registerEditorAction({
     id: "rtl.split-other",
-    label: "在另一侧视图打开",
+    label: "克隆到另一视图",
     keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyV],
     keybindingContext: "editorTextFocus",
     contextMenuGroupId: "view",
-    contextMenuOrder: 0,
+    contextMenuOrder: 1,
     run: () => void openInOtherGroup(),
   });
 }
 
-// ---------- 编辑组（分屏：最多左右两组，同文件共享 model） ----------
+// ---------- 编辑组（两个视图，同文件共享 model） ----------
 
 const workspace = createEditorWorkspace([editor, editor2], {
   cachedFile: file => state.contents.get(indexedFilePath(state.contents, file)),
@@ -477,11 +482,10 @@ const workspace = createEditorWorkspace([editor, editor2], {
     statusbar.setBreadcrumb(breadcrumbAt(currentOutline, line));
     outline.highlightLine(line);
   },
-  onSplit: () => setSignalFlowVisible(false),
   hint: message => statusbar.hint(message),
 });
 const { groups, activeGroup, focusGroup, navigateTo, navBack, navForward,
-  ensureSplit, collapseSplit, openInOtherGroup, openFile: openProjectFile } = workspace;
+  openInOtherGroup, openFile: openProjectFile } = workspace;
 registerEditorActions();
 window.addEventListener("pagehide", () => workspace.dispose(), { once: true });
 

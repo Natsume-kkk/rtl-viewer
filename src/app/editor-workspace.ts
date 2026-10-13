@@ -1,5 +1,8 @@
 import { monaco } from "../editor/monaco";
-import { TabManager, type TabEvents } from "../editor/tabs";
+import { TabManager, type Tab, type TabEvents } from "../editor/tabs";
+import { createEditorLayout } from "../ui/editor-layout";
+import { attachTabDrag } from "../ui/tab-drag";
+import { showCtxMenu, type MenuItem } from "../ui/menu";
 import { NavHistory, type NavEntry } from "../model/history";
 import { PathBreadcrumb } from "../ui/breadcrumb";
 import { setIcon } from "../ui/icons";
@@ -18,7 +21,6 @@ interface WorkspaceContext {
   onActiveChange(group: EditorGroup): void;
   onContentChange(active: boolean): void;
   onCursorChange(line: number): void;
-  onSplit(): void;
   hint(message: string): void;
 }
 
@@ -89,22 +91,36 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
   }
   updateNavButtons();
 
-  let splitVisible = false;
-  let splitFlex = "";
+  const layout = createEditorLayout();
+  let transferring = false;
+  let syncVertical = false, syncHorizontal = false, syncing = false;
+  let changingViews = 0, disposed = false;
+  let scrollOffset = { top: 0, left: 0 };
+
+  function anchorScroll(): void {
+    scrollOffset = { top: editor2.getScrollTop() - editor.getScrollTop(), left: editor2.getScrollLeft() - editor.getScrollLeft() };
+  }
+
+  function reconcileEmpty(): void {
+    if (transferring || groups.every(g => g.tabs.count > 0)) return;
+    if (!layout.splitVisible && groups.some(g => g.tabs.count > 0)) return;
+    const remaining = groups[0].tabs.count ? 0 : groups[1].tabs.count ? 1 : 0;
+    layout.show(remaining);
+    focusGroup(remaining);
+    updateSplitButton();
+  }
 
   function makeTabEvents(idx: number): TabEvents {
     return {
       onActiveChange: () => {
-        if (idx === 1 && groups[1].tabs.count === 0) collapseSplit();
+        reconcileEmpty();
+        if (syncVertical || syncHorizontal) anchorScroll();
         syncEditorChrome(idx);
-        if (idx === activeGroupIdx) ctx.onActiveChange(activeGroup());
+        if (idx === activeGroupIdx) syncChrome();
       },
       onFileReloaded: ctx.onFileChanged,
       onFileSaved: ctx.onFileChanged,
-      tabMenuExtra: tab => tab.path ? [{
-        label: splitVisible ? "在另一侧视图打开" : "向右拆分视图",
-        action: () => void openFile(tab.path, undefined, idx === 0 ? 1 : 0),
-      }] : [],
+      tabMenuExtra: tab => transferMenu(idx, tab),
     };
   }
 
@@ -122,8 +138,21 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
     path => void openDirectory(path).catch(error => ctx.hint(`打开文件夹失败：${String(error)}`)),
     path => void showInFolder(path).catch(error => ctx.hint(`定位文件失败：${String(error)}`)),
   ));
-  setIcon(document.getElementById("close-split")!, "close");
-  listen(document.getElementById("close-split")!, "click", collapseSplit);
+  disposables.push({ dispose: attachTabDrag(groups.map(g => g.tabs), () => layout.splitVisible, hit => {
+    if (hit.split) showCtxMenu(hit.x, hit.y, transferMenu(hit.source, hit.tab));
+    else if (hit.source === hit.target) groups[hit.source].tabs.reorder(hit.tab, hit.before);
+    else void transferTab(hit.source, hit.tab, false, hit.before);
+  }) });
+  listen(document.getElementById("group-splitter")!, "contextmenu", event => {
+    event.preventDefault(); const e = event as MouseEvent;
+    showViewMenu(e.clientX, e.clientY);
+  });
+  listen(document.getElementById("group-splitter")!, "keydown", event => {
+    const e = event as KeyboardEvent;
+    if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
+    e.preventDefault(); const rect = (e.target as HTMLElement).getBoundingClientRect();
+    showViewMenu(rect.left, rect.top);
+  });
 
   function syncEditorChrome(idx: number): void {
     const g = groups[idx];
@@ -146,78 +175,76 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
 
   /** 同步状态栏/大纲等外围 UI 到当前活动组。 */
   function syncChrome(): void {
+    groups.forEach((_, idx) => document.getElementById(`group-${idx + 1}`)!.classList.toggle("focused", idx === activeGroupIdx));
     updateNavButtons();
     ctx.onActiveChange(activeGroup());
   }
 
+  function updateSplitButton(): void {
+    document.getElementById("split-action")!.setAttribute("aria-expanded", String(layout.splitVisible));
+  }
+
   function ensureSplit(): void {
-    if (splitVisible) return;
-    splitVisible = true;
-    document.getElementById("split-action")!.setAttribute("aria-pressed", "true");
-    ctx.onSplit();
-    document.getElementById("group-2")!.hidden = false;
-    document.getElementById("group-splitter")!.hidden = false;
-    document.getElementById("group-1")!.style.flex = splitFlex;
+    if (layout.splitVisible) return;
+    layout.show(null);
+    if (syncVertical || syncHorizontal) anchorScroll();
+    updateSplitButton();
   }
 
   function collapseSplit(): void {
-    if (!splitVisible) return;
-    stopDrag();
-    splitVisible = false;
-    document.getElementById("split-action")!.setAttribute("aria-pressed", "false");
-    document.getElementById("group-2")!.hidden = true;
-    document.getElementById("group-splitter")!.hidden = true;
-    splitFlex = document.getElementById("group-1")!.style.flex;
-    document.getElementById("group-1")!.style.flex = "";
-    if (activeGroupIdx === 1) {
-      activeGroupIdx = 0;
-      syncChrome();
-    }
-    groups[0].editor.focus();
+    if (!layout.splitVisible) return;
+    layout.show(activeGroupIdx);
+    updateSplitButton();
+    activeGroup().editor.focus();
   }
 
-  /** 当前文件在另一侧视图打开（Ctrl+Alt+V / 编辑器右键）。 */
+  function transferMenu(idx: number, tab: Tab): MenuItem[] {
+    return [
+      { label: "移动到另一视图", action: () => void transferTab(idx, tab, false) },
+      { label: "克隆到另一视图", action: () => void transferTab(idx, tab, true) },
+    ];
+  }
+
+  async function transferTab(idx: number, tab: Tab, clone: boolean, before?: Tab): Promise<void> {
+    if (transferring) return;
+    transferring = true;
+    try {
+      if (!(await groups[idx].tabs.transfer(tab, groups[1 - idx].tabs, clone, before))) return;
+      ensureSplit();
+      focusGroup(1 - idx);
+      groups[1 - idx].editor.focus();
+    } finally {
+      transferring = false;
+      reconcileEmpty();
+      if (syncVertical || syncHorizontal) anchorScroll();
+    }
+  }
+
+  /** 克隆当前缓冲区，包含尚未命名的文件。 */
   async function openInOtherGroup(): Promise<void> {
-    const src = activeGroup();
-    const tab = src.tabs.activeTab;
-    if (!tab?.path) {
-      ctx.hint("当前没有已保存的文件");
-      return;
-    }
-    const line = src.editor.getPosition()?.lineNumber;
-    await openFile(tab.path, line, activeGroupIdx === 0 ? 1 : 0);
+    const tab = activeGroup().tabs.activeTab;
+    if (!tab) { ctx.hint("当前没有打开的文件"); return; }
+    await transferTab(activeGroupIdx, tab, true);
   }
 
-  /** 隐藏、失焦和销毁也结束拖动，避免 document 上残留监听。 */
-  let stopDrag = () => {};
-  listen(document.getElementById("group-splitter")!, "mousedown", event => {
-    if (!splitVisible) return;
-    const e = event as MouseEvent;
-    e.preventDefault();
-    stopDrag();
-    const g1 = document.getElementById("group-1")!;
-    const startX = e.clientX, startWidth = g1.getBoundingClientRect().width;
-    document.body.classList.add("resizing");
-    const onMove = (ev: MouseEvent) => {
-      const total = document.getElementById("main-area")!.getBoundingClientRect().width;
-      const width = Math.min(Math.max(startWidth + ev.clientX - startX, 200), Math.max(200, total - 200));
-      g1.style.flex = `0 0 ${width}px`;
-    };
-    stopDrag = () => {
-      document.body.classList.remove("resizing");
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", stopDrag);
-      window.removeEventListener("blur", stopDrag);
-      stopDrag = () => {};
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", stopDrag);
-    window.addEventListener("blur", stopDrag);
-  });
+  function showViewMenu(x: number, y: number): void {
+    const tab = activeGroup().tabs.activeTab;
+    const items = tab ? transferMenu(activeGroupIdx, tab) : [];
+    if (layout.splitVisible) items.push({ label: "收起另一视图（保留文件）", action: collapseSplit });
+    else if (groups[1 - activeGroupIdx].tabs.count) items.push({ label: "恢复双视图", action: ensureSplit });
+    items.push(
+      { label: "左右排列", checked: !layout.stacked, action: () => layout.orient(false) },
+      { label: "上下排列", checked: layout.stacked, action: () => layout.orient(true) },
+      { label: "交换两侧位置", action: () => layout.swap() },
+      { label: "同步纵向滚动", checked: syncVertical, action: () => { syncVertical = !syncVertical; anchorScroll(); } },
+      { label: "同步横向滚动", checked: syncHorizontal, action: () => { syncHorizontal = !syncHorizontal; anchorScroll(); } },
+    );
+    showCtxMenu(x, y, items, document.getElementById("split-action")!);
+  }
 
   async function openFile(file: string, line?: number, targetIdx?: number, column = 1, length = 0): Promise<void> {
     const idx = targetIdx ?? activeGroupIdx;
-    if (idx === 1) ensureSplit();
+    if (document.getElementById(`group-${idx + 1}`)!.hidden) ensureSplit();
     const g = groups[idx];
     const cached = ctx.cachedFile(file);
     if (cached) {
@@ -232,6 +259,24 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
   }
 
   function wireEditor(ed: monaco.editor.IStandaloneCodeEditor, idx: number): void {
+    disposables.push(ed.onDidChangeModel(() => {
+      changingViews++;
+      queueMicrotask(() => {
+        changingViews--;
+        if (!disposed && (syncVertical || syncHorizontal)) anchorScroll();
+      });
+    }));
+    disposables.push(ed.onDidScrollChange(event => {
+      if (syncing || transferring || changingViews || !layout.splitVisible) return;
+      const target = editors[1 - idx], sign = idx === 0 ? 1 : -1;
+      const position: monaco.editor.INewScrollPosition = {};
+      if (syncVertical && event.scrollTopChanged) position.scrollTop = event.scrollTop + sign * scrollOffset.top;
+      if (syncHorizontal && event.scrollLeftChanged) position.scrollLeft = event.scrollLeft + sign * scrollOffset.left;
+      if (position.scrollTop === undefined && position.scrollLeft === undefined) return;
+      syncing = true;
+      try { target.setScrollPosition(position, monaco.editor.ScrollType.Immediate); }
+      finally { syncing = false; }
+    }));
     disposables.push(ed.onDidFocusEditorText(() => focusGroup(idx)));
     // 共享 model 时两组编辑器都会收到内容事件，只让活动组触发大纲刷新
     disposables.push(ed.onDidChangeModelContent(() => ctx.onContentChange(idx === activeGroupIdx)));
@@ -253,7 +298,7 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
   }
 
   function switchView(): void {
-    if (!splitVisible) return;
+    if (!layout.splitVisible) return;
     const idx = activeGroupIdx === 0 ? 1 : 0;
     focusGroup(idx);
     groups[idx].editor.focus();
@@ -262,14 +307,15 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
   return {
     groups: groups as readonly EditorGroup[],
     get activeIndex() { return activeGroupIdx; },
-    get splitVisible() { return splitVisible; },
+    get splitVisible() { return layout.splitVisible; },
     activeGroup, focusGroup, openFile, navigateTo, navBack, navForward, jumpToLine,
-    ensureSplit, collapseSplit, openInOtherGroup, switchView,
+    ensureSplit, collapseSplit, openInOtherGroup, switchView, transferTab, showViewMenu,
     resetHistory() { histories.forEach(history => history.clear()); updateNavButtons(); },
     saveAll: () => TabManager.saveGroups(groups.map(group => group.tabs)),
     closeAll: () => TabManager.closeGroups(groups.map(group => group.tabs)),
     dispose() {
-      stopDrag();
+      disposed = true;
+      layout.dispose();
       disposables.splice(0).forEach(item => item.dispose());
       breadcrumbs.forEach(item => item.dispose());
       navButtons.forEach(({ back, forward }) => { back.remove(); forward.remove(); });

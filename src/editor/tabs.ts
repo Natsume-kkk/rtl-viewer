@@ -51,7 +51,7 @@ export interface TabEvents {
   /** 文件从磁盘读取/写回后回调（用于刷新解析缓存与层级树） */
   onFileReloaded(path: string, content: string, encoding: string, mtime: number): void;
   onFileSaved(path: string, content: string, encoding: string, mtime: number): void;
-  /** 标签右键菜单的附加项（如「在另一侧视图打开」），插在关闭项之后 */
+  /** 标签右键菜单的附加项（移动／克隆），插在关闭项之后。 */
   tabMenuExtra?(tab: Tab): MenuItem[];
 }
 
@@ -85,6 +85,40 @@ export class TabManager {
 
   get count(): number {
     return this.tabs.length;
+  }
+
+  tabAt(element: Element): Tab | undefined {
+    return this.tabs.find(tab => tab.element.contains(element));
+  }
+
+  /** 调整标签顺序；before 为空时放到末尾。 */
+  reorder(tab: Tab, before?: Tab): void {
+    if (!this.tabs.includes(tab) || tab === before) return;
+    this.tabs.splice(this.tabs.indexOf(tab), 1);
+    const index = before ? this.tabs.indexOf(before) : this.tabs.length;
+    this.tabs.splice(index < 0 ? this.tabs.length : index, 0, tab);
+    this.barEl.insertBefore(tab.element, before?.element ?? null);
+  }
+
+  /** 先取得目标模型引用再移除原标签，不读盘、不确认丢弃、不重建撤销栈。 */
+  async transfer(tab: Tab, target: TabManager, clone: boolean, before?: Tab): Promise<boolean> {
+    if (target === this) { this.reorder(tab, before); return true; }
+    let pending: Promise<boolean> | undefined;
+    while ((pending = TabManager.savingModels.get(tab.model))) if (!(await pending)) return false;
+    if (!this.tabs.includes(tab)) return false;
+    const state = this.active === tab ? this.editor.saveViewState() : this.viewStates.get(tab.model);
+    let peer = target.tabs.find(other => other.model === tab.model);
+    if (!peer) {
+      peer = target.createTab(tab.path, tab.title, tab.model.getValue(), tab.encoding, tab.mtime);
+      peer.suggestedPath = tab.suggestedPath;
+      if (state) target.editor.restoreViewState(state);
+    } else {
+      target.activate(peer);
+    }
+    if (before) target.reorder(peer, before);
+    if (!clone) this.removeTab(tab);
+    target.editor.focus();
+    return true;
   }
 
   /** 按标签栏顺序循环切换，沿用激活时的光标和滚动位置恢复。 */
@@ -250,6 +284,7 @@ export class TabManager {
     const tab = this.active;
     if (!tab) return;
     tab.encoding = encoding;
+    this.syncPeers(tab);
     this.events.onActiveChange();
   }
 
@@ -421,10 +456,9 @@ export class TabManager {
 
   /** 保存/重打开后同步其他组同路径标签的状态（共享 model，脏标记需一致）。 */
   private syncPeers(tab: Tab): void {
-    if (!tab.path) return;
     for (const m of TabManager.managers) {
       if (m === this) continue;
-      const peer = m.findTab(tab.path);
+      const peer = m.tabs.find(other => other.model === tab.model);
       if (!peer) continue;
       peer.dirty = tab.dirty;
       peer.encoding = tab.encoding;
@@ -520,9 +554,17 @@ export class TabManager {
     this.events.onFileSaved(path, content, encoding, mtime);
     // 另存为只保存新路径，仍查看旧路径的分屏缓冲区保留未保存状态。
     if (sameFilePath(path, tab.path)) this.syncPeers(tab);
-    else if (!tab.dirty) this.migrateModel(tab, path);
+    else if (!tab.dirty) {
+      // 未命名文档首次保存时，两侧仍是同一文档；普通另存为保留旧路径视图。
+      const peers = tab.path ? [] : [...TabManager.managers].flatMap(manager =>
+        manager.tabs.filter(other => other !== tab && other.model === model).map(other => ({ manager, tab: other })));
+      if (!tab.path) this.syncPeers(tab);
+      this.migrateModel(tab, path);
+      for (const peer of peers) peer.manager.migrateModel(peer.tab, path);
+    }
     return !tab.dirty;
   }
+
 
   /** 在 model 上挂脏标记监听（先清旧监听，共享 model 关闭/迁移时不得残留）。 */
   private watchContent(tab: Tab, model: monaco.editor.ITextModel): void {
@@ -535,11 +577,11 @@ export class TabManager {
     });
   }
 
-  private createTab(path: string, title: string, content: string, encoding: string, mtime: number, line?: number): void {
+  private createTab(path: string, title: string, content: string, encoding: string, mtime: number, line?: number): Tab {
     const uri = path ? monaco.Uri.file(path) : monaco.Uri.parse(`inmemory:///${title}`);
     const uriKey = uri.toString();
     const peer = [...TabManager.managers].flatMap(manager => manager.tabs).find(tab => filePathKey(tab.uriKey) === filePathKey(uriKey));
-    // 同路径跨组共享 model（分屏双视图编辑同步）；未命名文件 uri 唯一不共享
+    // 同一文档跨组共享 model；独立新建文件的 title 唯一，显式克隆沿用 title。
     const model = acquireModel(uri, content, langForFile(path || title));
     const tab: Tab = {
       path,
@@ -564,6 +606,7 @@ export class TabManager {
     TabManager.refreshNames();
     this.activate(tab);
     if (line !== undefined) this.reveal(line);
+    return tab;
   }
 
   private renderTab(tab: Tab): void {
@@ -636,7 +679,7 @@ export class TabManager {
 
   private activate(tab: Tab): void {
     this.openRequest++;
-    if (this.active === tab) return;
+    if (this.active === tab) { this.editor.focus(); return; }
     if (this.active) {
       this.viewStates.set(this.active.model, this.editor.saveViewState());
       this.active.element.classList.remove("active");

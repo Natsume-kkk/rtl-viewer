@@ -9,7 +9,7 @@ import { buildHierarchy, findInstancesOf } from "./model/hierarchy";
 import type { Hierarchy, TreeNode, InstanceSite } from "./model/hierarchy";
 import { extractOutline, breadcrumbAt, OUTLINE_KIND_LABELS } from "./model/outline";
 import type { OutlineItem } from "./model/outline";
-import { searchContents } from "./model/search";
+import { createProjectSearch } from "./app/project-search";
 import { scanStructure } from "./parser";
 import type { ModuleInfo, IpInfo } from "./parser";
 import { openFolderDialog, openFileDialog, pathExists, showInFolder, isDirectory, normalizePath } from "./ipc";
@@ -37,6 +37,8 @@ import { createModuleMetadataLoader } from "./app/module-metadata";
 import { createProjectScanner } from "./app/project-scanner";
 import { createExternalWatcher, type CachedFile } from "./app/watcher";
 import { attachSidebarWidth } from "./ui/sidebar-width";
+import { indexedFilePath } from "./file-path";
+import type { FileVersion } from "./app/module-metadata";
 
 /** 全局工程状态 */
 const state = {
@@ -225,15 +227,19 @@ function displayPath(file: string): string {
     : file;
 }
 
+const projectSearch = createProjectSearch();
+window.addEventListener("pagehide", projectSearch.cancel, { once: true });
 const searchPanel = new SearchPanel(searchRootEl, {
   onClose: () => { setSearchVisible(false); activeGroup().editor.focus(); },
   onFocus: () => setSearchVisible(true, false),
-  onSearch: (query, options) => searchContents(new Map([...state.contents].map(([path, cached]) => [path, { ...cached, content: fileContent(path) ?? cached.content }])), query, options),
+  onSearch: (query, options) => projectSearch.search([...state.contents].map(([path, cached]) => [path, { content: fileContent(path) ?? cached.content }]), query, options),
+  onCancel: projectSearch.cancel,
   onOpen: (file, line, column, length) => void navigateTo(file, line, column, length),
   displayPath,
 });
 
 function setSearchVisible(visible: boolean, focus = true): void {
+  if (!visible) searchPanel.cancel();
   searchRootEl.hidden = !visible;
   document.getElementById("search-action")!.setAttribute("aria-expanded", String(visible));
   if (visible && focus) searchPanel.focus();
@@ -255,16 +261,17 @@ function fileContent(file: string): string | undefined {
     const tab = g.tabs.findTab(file);
     if (tab) return tab.model.getValue();
   }
-  return state.contents.get(file)?.content;
+  return state.contents.get(indexedFilePath(state.contents, file))?.content;
 }
 
-/** 与 fileContent 同源的缓存令牌：标签页用 model 版本号，否则用扫描缓存内容引用。 */
-function fileToken(file: string): unknown {
+/** 与 fileContent 同源的缓存令牌；重建的 model 即使版本相同也必须失效。 */
+function fileToken(file: string): FileVersion {
   for (const g of groups) {
     const tab = g.tabs.findTab(file);
-    if (tab) return tab.model.getVersionId();
+    if (tab) return { identity: tab.model, version: tab.model.getVersionId() };
   }
-  return state.contents.get(file)?.content;
+  const path = indexedFilePath(state.contents, file);
+  return { identity: path, version: state.contents.get(path)?.content };
 }
 
 // 补全：当前文件信号、语法关键字、模块名（选中时懒解析端口出例化骨架）
@@ -449,8 +456,9 @@ function registerEditorActions(): void {
 // ---------- 编辑组（分屏：最多左右两组，同文件共享 model） ----------
 
 const workspace = createEditorWorkspace([editor, editor2], {
-  cachedFile: file => state.contents.get(file),
+  cachedFile: file => state.contents.get(indexedFilePath(state.contents, file)),
   onFileChanged: (path, content, encoding, mtime) => {
+    path = indexedFilePath(state.contents, path);
     // 独立打开、新建／另存为的文件由扫描接纳，不绕过 EDA 与 IP 边界。
     if (!state.contents.has(path)) return;
     if (state.contents.get(path)?.content !== content) markResultsStale();

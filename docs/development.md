@@ -137,6 +137,8 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 
 [层级模型](../src/model/hierarchy.ts) 对无定义的例化先匹配已识别的 UNISIM 家族原语，否则保留 unresolved。IP 只提供黑盒和端口信息，不展开生成目录；IP 生成目录内的约束同样排除。ISE 的 `ipcore_dir` 按用户源码扫描，以保留 CoreGen 包装的例化目标。
 
+冷扫描与目录增量检查共用 `src/app/project-files.ts` 的 IP 目录筛选；新出现的 XCI 会使该目录此前收录的生成 HDL／约束退出索引，已打开的编辑缓冲区保留。VHDL entity 与 architecture 分文件时，定义跳转保留 entity 文件，例化点使用实际 architecture 文件。
+
 自动顶层选择的处理顺序：
 
 1. 唯一候选直接采用；多候选时按 `tb_`／`_tb` 等命名和 `sim`／`tb`／`test` 等目录段识别仿真候选。
@@ -150,6 +152,12 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 参数声明保留类型，支持的标量／单维整数参数先按位宽与符号转换再参与静态选择；未知类型、多维 packed 参数和不能确定的宽度传播保留边界。子实例的参数覆盖使用所属生成块的常量环境。`signalCandidates` 在实际实例上下文返回源码对象候选，生成过程局部对象还须携带过程 `scope`，不能仅按原始名称或源码偏移选定。组合回归见 `tests/static-parameter-followup.test.ts`。
 
 `src/analysis/objects.ts` 收集类型、声明和初始化事实；`ProcessResult.updates` 仅保存可靠更新表达式，`assignments` 保存逐语句源码关系。同一目标已有可靠更新时不重复绘制逐语句驱动。初值不计持续驱动，地址与条件不计数据输入，未知调用参数不绘制确定方向。新增语法必须同时检查这两种表示、过程局部身份及原始源码定位。
+
+### 搜索与文件一致性
+
+`src/app/project-search.ts` 管理单次查询 Worker，`src/model/search-worker.ts` 执行匹配与高亮；`src/ui/search.ts` 仅渲染返回区间，不在主线程执行用户正则。查询替换、面板收起、超时和异常均终止 Worker；界面按请求序号丢弃旧结果。单次预算 2 秒，最多 500 行，每行预览 2000 字符、200 处高亮。回归入口为 `tests/project-search.test.ts`、`tests/search-ui.test.ts` 和 `tests/search-history.test.ts`。
+
+`src/file-path.ts` 统一 Windows 路径身份，标签、共享模型、索引查找与保存队列使用相同规则，展示保留原路径。保存按目标文件和共享模型串行，模型迁移属于保存操作；关闭等待保存完成，失败保留标签。watcher 回填前检查缓存基准和保存状态，显式重载另检查模型版本与保存修订，模块元数据缓存同时检查模型身份和版本。回归入口为 `tests/tabs.test.ts`、`tests/watcher.test.ts`、`tests/definition-models.test.ts` 和 `tests/module-metadata.test.ts`。
 
 ### 编码边界
 

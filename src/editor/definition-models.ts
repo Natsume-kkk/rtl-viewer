@@ -24,9 +24,9 @@ export class DefinitionModelService implements BaseModelService {
   async createModelReference(resource: monaco.Uri): Promise<ModelReference> {
     const content = this.existingModel(resource)?.getValue() ?? this.content(resource);
     if (content === undefined) throw new Error("Definition source unavailable");
-    this.store.acquire(resource, content, this.language(resource), "preview");
+    const model = this.store.acquire(resource, content, this.language(resource), "preview");
     try {
-      const reference = await this.base().createModelReference(resource);
+      const reference = await this.base().createModelReference(model.uri);
       let released = false;
       return {
         object: reference.object,

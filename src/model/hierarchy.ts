@@ -174,8 +174,8 @@ export function buildHierarchy(
         structByModule.set(key, m);
       } else if (existing.instances.length === 0 && m.instances.length > 0) {
         // VHDL entity 与 architecture 分文件：entity 结构先占位（无例化），
-        // 孤儿 architecture 结构的例化边按名归并进来，定义位置仍取 entity
-        structByModule.set(key, { ...existing, instances: m.instances });
+        // 例化来源采用 architecture 的文件，定义跳转仍由 index 保留 entity 位置。
+        structByModule.set(key, { ...m, name: existing.name });
       }
     }
   }

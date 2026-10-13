@@ -1,10 +1,11 @@
 import type { FileMatches, SearchOptions } from "../model/search";
-import { buildAllMatcher, countMatches } from "../model/search";
+import { countMatches, type MatchHit } from "../model/search";
 import { setIcon } from "./icons";
 
 export interface SearchPanelCallbacks {
   /** 查询变化（已去抖）；options 为 Aa/整词/正则开关状态 */
-  onSearch(query: string, options: SearchOptions): FileMatches[];
+  onSearch(query: string, options: SearchOptions): FileMatches[] | Promise<FileMatches[]>;
+  onCancel?(): void;
   /** 点击命中行：打开文件并跳转 */
   onOpen(file: string, line: number, column: number, length: number): void;
   /** 路径转显示用相对路径 */
@@ -27,6 +28,8 @@ export class SearchPanel {
   private debounceTimer: number | undefined;
   private stale: HTMLButtonElement;
   private hasRun = false;
+  private request = 0;
+  private pending = false;
 
   constructor(rootEl: HTMLElement, callbacks: SearchPanelCallbacks) {
     this.rootEl = rootEl;
@@ -77,7 +80,7 @@ export class SearchPanel {
     this.rootEl.append(resize, bar, this.stale, this.countEl, this.resultsEl);
 
     this.input.addEventListener("input", () => {
-      window.clearTimeout(this.debounceTimer);
+      this.cancel();
       this.debounceTimer = window.setTimeout(() => this.run(), 250);
     });
     this.input.addEventListener("keydown", (e) => {
@@ -126,15 +129,24 @@ export class SearchPanel {
   }
 
   clear(): void {
-    window.clearTimeout(this.debounceTimer);
+    this.cancel();
     this.hasRun = false; this.stale.hidden = true;
     this.input.value = "";
     this.resultsEl.textContent = "";
     this.countEl.textContent = "";
   }
 
-  run(): void {
+  cancel(): void {
     window.clearTimeout(this.debounceTimer);
+    ++this.request;
+    this.callbacks.onCancel?.();
+    if (this.pending) this.countEl.textContent = "搜索已取消";
+    this.pending = false;
+  }
+
+  async run(): Promise<void> {
+    this.cancel();
+    const request = this.request;
     this.hasRun = true; this.stale.hidden = true;
     const query = this.input.value;
     this.resultsEl.textContent = "";
@@ -142,21 +154,24 @@ export class SearchPanel {
       this.countEl.textContent = "";
       return;
     }
-    if (this.options.useRegex) {
-      try {
-        new RegExp(query);
-      } catch {
-        this.countEl.textContent = "正则表达式无效";
-        return;
+    this.pending = true;
+    this.countEl.textContent = "搜索中…";
+    let results: FileMatches[];
+    try { results = await this.callbacks.onSearch(query, { ...this.options }); }
+    catch (error) {
+      if (request === this.request) {
+        this.pending = false;
+        this.countEl.textContent = error instanceof Error ? error.message : String(error);
       }
+      return;
     }
-    const results = this.callbacks.onSearch(query, { ...this.options });
+    if (request !== this.request) return;
+    this.pending = false;
     const total = countMatches(results);
     this.countEl.textContent =
       total === 0 ? "无结果" : `${total} 个结果，${results.length} 个文件${total >= 500 ? "（已截断）" : ""}`;
-    const highlighter = buildAllMatcher(query, this.options);
     for (const group of results) {
-      this.resultsEl.appendChild(this.renderGroup(group, highlighter));
+      this.resultsEl.appendChild(this.renderGroup(group));
     }
   }
 
@@ -164,7 +179,7 @@ export class SearchPanel {
     if (this.hasRun && this.input.value) this.stale.hidden = false;
   }
 
-  private renderGroup(group: FileMatches, highlighter: (line: string) => { index: number; length: number }[]): HTMLElement {
+  private renderGroup(group: FileMatches): HTMLElement {
     const box = document.createElement("div");
     box.className = "search-group";
     const head = document.createElement("button");
@@ -182,7 +197,7 @@ export class SearchPanel {
       lineNo.className = "search-line-no";
       lineNo.textContent = String(m.line);
       row.appendChild(lineNo);
-      row.appendChild(this.highlight(m.text, highlighter));
+      row.appendChild(this.highlight(m.text, m.highlights ?? []));
       row.addEventListener("click", () => this.callbacks.onOpen(group.file, m.line, m.column, m.length));
       box.appendChild(row);
     }
@@ -192,12 +207,12 @@ export class SearchPanel {
   /** 命中高亮：按与搜索相同的语义标记全部命中（正则/整词/大小写一致）。 */
   private highlight(
     text: string,
-    highlighter: (line: string) => { index: number; length: number }[],
+    highlights: MatchHit[],
   ): HTMLElement {
     const span = document.createElement("span");
     span.className = "search-text";
     let pos = 0;
-    for (const hit of highlighter(text)) {
+    for (const hit of highlights) {
       if (hit.index < pos) continue;
       span.appendChild(document.createTextNode(text.slice(pos, hit.index)));
       const mark = document.createElement("mark");

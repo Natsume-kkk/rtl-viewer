@@ -1,6 +1,7 @@
 import { scanFolder, readFile } from "../ipc";
 import { scanStructure, parseXci, type ModuleInfo, type IpInfo } from "../parser";
 import type { CachedFile } from "./watcher";
+import { projectFiles } from "./project-files";
 
 export interface ProjectScanContext {
   contents: Map<string, CachedFile>;
@@ -24,11 +25,8 @@ export function createProjectScanner(ctx: ProjectScanContext) {
     try { files = await scanFolder(folder); }
     catch (error) { if (current()) await ctx.failed(error); return; }
     if (!current()) return;
-    const ipDirs = files.xci.map(f => f.slice(0, f.lastIndexOf("/")));
-    const userFile = (file: string) => !ipDirs.some(dir => file.startsWith(dir + "/"));
-    const constraints = files.con.filter(userFile);
+    const { hdl, con: constraints } = projectFiles(files);
     ctx.setConstraints(constraints);
-    const hdl = files.hdl.filter(userFile);
     let done = 0;
     for (const file of hdl) {
       if (!current()) return;

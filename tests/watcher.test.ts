@@ -23,6 +23,7 @@ function deferred<T>() {
 function makeTabManager(open: Record<string, { dirty: boolean }> = {}) {
   return {
     findTab: (path: string) => open[path],
+    isSaving: vi.fn(() => false),
     reloadFromDisk: vi.fn(),
     markExternalChanged: vi.fn(),
   } as unknown as TabManager & { markExternalChanged: ReturnType<typeof vi.fn> };
@@ -202,5 +203,34 @@ describe("createExternalWatcher", () => {
     expect(ctx.structures.has("D:/proj/a.v")).toBe(false);
     expect(vi.mocked(ctx.rebuildIndex)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(ctx.renderTree)).toHaveBeenCalledTimes(1);
+  });
+});
+describe("扫描与重载一致性", () => {
+  afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+  it("creating an XCI excludes its generated HDL consistently with cold scan", async () => {
+    const { createExternalWatcher, mocks } = await setup();
+    const { scanStructure } = await import("../src/parser");
+    const ctx=makeCtx(); const path="D:/proj/ip/core.v", xci="D:/proj/ip/core.xci";
+    ctx.contents.set(path,{content:"module core; endmodule",encoding:"utf8",mtime:1});
+    ctx.structures.set(path,scanStructure(ctx.contents.get(path)!.content,path));
+    mocks.fileStates.mockResolvedValue([1]);
+    mocks.scanFolder.mockResolvedValue({hdl:[path],xci:[xci],con:[]});
+    mocks.readFile.mockResolvedValue({content:XCI_CONTENT,encoding:"utf8",mtime:2});
+    const watcher=createExternalWatcher(ctx); watcher.start(); await vi.advanceTimersByTimeAsync(4000); watcher.stop();
+    expect(ctx.ips()).toHaveLength(1);
+    expect(ctx.structures.has(path)).toBe(false);
+  });
+  it("an older external read cannot overwrite a more recent completed local save", async () => {
+    const { createExternalWatcher,mocks }=await setup();
+    const path="D:/proj/a.v", tab={dirty:false}; const manager=makeTabManager({[path]:tab});
+    const ctx=makeCtx({tabs:[manager]});
+    ctx.contents.set(path,{content:"base",encoding:"utf8",mtime:100});
+    mocks.fileStates.mockResolvedValue([150]);
+    const gate=deferred<{content:string;encoding:string;mtime:number}>(); mocks.readFile.mockReturnValue(gate.promise);
+    const watcher=createExternalWatcher(ctx); watcher.start(); await vi.advanceTimersByTimeAsync(4000);
+    // The user's newer save completes while this read result is in flight.
+    ctx.contents.set(path,{content:"new local save",encoding:"utf8",mtime:200});
+    gate.resolve({content:"old external snapshot",encoding:"utf8",mtime:150}); await vi.advanceTimersByTimeAsync(0); watcher.stop();
+    expect(manager.reloadFromDisk).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@ import { PathBreadcrumb } from "../ui/breadcrumb";
 import { setIcon } from "../ui/icons";
 import { openDirectory, showInFolder } from "../ipc";
 import type { CachedFile } from "./watcher";
+import { sameFilePath } from "../file-path";
 
 export interface EditorGroup {
   editor: monaco.editor.IStandaloneCodeEditor;
@@ -224,7 +225,7 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
     } else {
       await g.tabs.openFile(file, line);
     }
-    if (line !== undefined && g.tabs.activeTab?.path === file) {
+    if (line !== undefined && g.tabs.activeTab && sameFilePath(g.tabs.activeTab.path, file)) {
       g.editor.setSelection(new monaco.Range(line, column, line, column + length));
       g.editor.revealRangeInCenterIfOutsideViewport(new monaco.Range(line, column, line, column + length));
     }

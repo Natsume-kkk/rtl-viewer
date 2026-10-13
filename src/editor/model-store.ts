@@ -1,4 +1,5 @@
 import type * as monaco from "monaco-editor/editor/editor.api";
+import { filePathKey } from "../file-path";
 
 interface ModelUri { toString(): string }
 interface ManagedModel { dispose(): void; isDisposed(): boolean; setValue(content: string): void }
@@ -14,7 +15,7 @@ export class ModelStore<U extends ModelUri, M extends ManagedModel> {
   }) {}
 
   acquire(uri: U, content: string, language: string, owner: ModelOwner = "tab"): M {
-    const key = uri.toString();
+    const key = filePathKey(uri.toString());
     const entry = this.entries.get(key);
     if (entry && !entry.model.isDisposed()) {
       const takingOver = owner === "tab" && entry.tabs === 0 && entry.owned;
@@ -39,6 +40,7 @@ export class ModelStore<U extends ModelUri, M extends ManagedModel> {
   }
 
   release(key: string, owner: ModelOwner = "tab"): void {
+    key = filePathKey(key);
     const entry = this.entries.get(key);
     if (!entry) return;
     if (owner === "tab") entry.tabs -= 1;

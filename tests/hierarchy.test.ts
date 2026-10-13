@@ -285,3 +285,14 @@ describe("层级树性能", () => {
     expect(node.children).toHaveLength(0);
   });
 });
+
+it("entity 先扫描时，定义仍在 entity，例化定位保留 architecture 来源", () => {
+  const h=buildFromFiles({
+    "a_entity.vhd":"entity split_top is port(clk: in bit); end entity;",
+    "b_arch.vhd":"architecture rtl of split_top is\nbegin\nu_leaf: entity work.leaf port map(clk=>clk);\nend architecture;",
+    "c_leaf.vhd":"entity leaf is port(clk: in bit); end entity;"
+  });
+  expect(h.tops[0].file).toBe("a_entity.vhd");
+  expect(h.tops[0].children[0].instFile).toBe("b_arch.vhd");
+  expect(h.tops[0].children[0].instLine).toBe(3);
+});

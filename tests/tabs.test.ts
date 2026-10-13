@@ -834,3 +834,85 @@ describe("TabManager", () => {
     }
   });
 });
+
+describe("保存顺序与文件身份", () => {
+  it.each(["reload", "reopenWithEncoding"] as const)("%s 不回填读取期间完成保存前的旧快照", async action => {
+    const { make, mocks } = await setup();
+    const tm = make();
+    tm.openContent("D:/p/a.v", "latest", "utf8", 100);
+    let finish!: (value: { content: string; encoding: string; mtime: number }) => void;
+    mocks.readFile.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const reading = action === "reload" ? tm.reload() : tm.reopenWithEncoding("gbk");
+    mocks.fileStates.mockResolvedValue([100]);
+    mocks.writeFile.mockResolvedValue(100); // 同毫秒完成也必须识别出保存操作。
+    expect(await tm.save()).toBe(true);
+    finish({ content: "stale", encoding: "utf8", mtime: 99 });
+    await reading;
+    expect(tm.activeTab!.model.getValue()).toBe("latest");
+    expect(tm.activeTab!.encoding).toBe("utf8");
+    expect(mocks.appAlert).toHaveBeenCalled();
+  });
+
+  it("另存为的模型迁移完成后才允许关闭", async () => {
+    const { make, mocks } = await setup();
+    const tm = make();
+    tm.newFile();
+    tm.activeTab!.model.setValue("new content");
+    mocks.saveFileDialog.mockResolvedValue("D:/p/new.v");
+    let finish!: (mtime: number) => void;
+    mocks.writeFile.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const saving = tm.saveAs();
+    await vi.waitFor(() => expect(mocks.writeFile).toHaveBeenCalledOnce());
+    const closing = tm.closeAll();
+    finish(100);
+    expect(await saving).toBe(true);
+    expect(await closing).toBe(true);
+    expect(tm.count).toBe(0);
+    expect(mocks.choiceDialog).not.toHaveBeenCalled();
+  });
+
+  it("跨组保存按文件串行，关闭等待最后一次写入完成", async () => {
+    const { make, mocks } = await setup(); const left=make(), right=make();
+    const { TabManager } = await import("../src/editor/tabs");
+    let disk="base", mtime=100;
+    const writes: {content:string; finish:()=>void}[]=[];
+    mocks.fileStates.mockImplementation(async () => [mtime]);
+    mocks.writeFile.mockImplementation((_path,content)=>new Promise(resolve=>writes.push({content,finish:()=>{disk=content;resolve(++mtime);}})));
+    left.openContent("D:/Project/Top.v",disk,"utf8",mtime);
+    right.openContent("d:/project/top.v",disk,"utf8",mtime);
+    expect(right.activeTab!.model).toBe(left.activeTab!.model);
+    left.activeTab!.model.setValue("first edit"); const first=left.save();
+    await vi.waitFor(()=>expect(writes).toHaveLength(1));
+    right.activeTab!.model.setValue("latest edit"); const second=right.save();
+    let closed=false; const closing=TabManager.closeGroups([left,right]).then(ok=>{closed=ok;return ok;});
+    await Promise.resolve(); expect(writes).toHaveLength(1); expect(closed).toBe(false);
+    writes[0].finish(); await first;
+    await vi.waitFor(()=>expect(writes).toHaveLength(2));
+    expect(closed).toBe(false); writes[1].finish();
+    expect(await second).toBe(true); expect(await closing).toBe(true);
+    expect(disk).toBe("latest edit"); expect(left.count+right.count).toBe(0);
+    expect(mocks.choiceDialog).not.toHaveBeenCalled();
+  });
+  it("保存失败阻止正在等待的关闭，队列释放后允许重试", async () => {
+    const {make,mocks}=await setup(); const tm=make();
+    tm.openContent("D:/p/a.v","base","utf8",100);tm.activeTab!.model.setValue("edit");
+    mocks.fileStates.mockResolvedValue([100]);
+    let fail!:(error:Error)=>void;
+    mocks.writeFile.mockImplementationOnce(()=>new Promise((_resolve,reject)=>{fail=reject;}));
+    const saving=tm.save(); await vi.waitFor(()=>expect(mocks.writeFile).toHaveBeenCalledOnce());
+    const closing=tm.closeAll(); fail(new Error("write denied"));
+    expect(await saving).toBe(false); expect(await closing).toBe(false); expect(tm.count).toBe(1);
+    mocks.writeFile.mockResolvedValue(200); expect(await tm.save()).toBe(true);
+    expect(await tm.closeAll()).toBe(true);
+  });
+  it("同组以大小写或分隔符别名再次打开保留未保存内容，另存为自身不迁移模型", async () => {
+    const {make,mocks}=await setup(); const tm=make();
+    tm.openContent("D:/Project/Top.v","base","utf8",100);const tab=tm.activeTab!;
+    tab.model.setValue("unsaved");tm.openContent("d:\\project\\top.v","disk","utf8",100);
+    expect(tm.count).toBe(1);expect(tm.activeTab).toBe(tab);expect(tab.model.getValue()).toBe("unsaved");
+    const model=tab.model;mocks.fileStates.mockResolvedValue([100]);mocks.writeFile.mockResolvedValue(200);
+    mocks.saveFileDialog.mockResolvedValue("d:\\PROJECT\\TOP.V");
+    expect(await tm.saveAs()).toBe(true);expect(tab.model).toBe(model);
+    expect(mocks.writeFile).toHaveBeenCalledWith("D:/Project/Top.v","unsaved","utf8");
+  });
+});

@@ -3,6 +3,18 @@ import { searchContents, countMatches, buildMatcher, buildAllMatcher } from "../
 import { NavHistory } from "../src/model/history";
 
 describe("全局搜索", () => {
+  it("长行预览与高亮有界，仍保留真实跳转列和正则锚点", () => {
+    const source = " ".repeat(5000) + "clk " + "x".repeat(5000);
+    const result = searchContents(new Map([["long.v", { content: source }]]), "^\\s+clk", { useRegex: true })[0].matches[0];
+    expect(result.column).toBe(1); expect(result.length).toBe(5003);
+    expect(result.text.length).toBeLessThanOrEqual(2000);
+    expect(result.text.startsWith("clk")).toBe(true);
+    expect(result.highlights).toEqual([{ index: 0, length: 3 }]);
+    const dots = searchContents(new Map([["long.v", { content: "x".repeat(10000) }]]), ".", { useRegex: true })[0].matches[0];
+    expect(dots.text.length).toBe(2000); expect(dots.highlights).toHaveLength(200);
+    const last = searchContents(new Map([["long.v", { content: " ".repeat(5000) + "clk" }]]), "clk")[0].matches[0];
+    expect(last.column).toBe(5001); expect(last.text).toBe("clk"); expect(last.highlights).toEqual([{ index: 0, length: 3 }]);
+  });
   it("正则与纯文本整词统一采用 HDL 标识符边界", () => {
     const line = "$clk clk$ clk clk2";
     for (const useRegex of [false, true]) {

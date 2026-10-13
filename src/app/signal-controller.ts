@@ -10,6 +10,7 @@ import { ComputationProject } from "../analysis/project";
 import { localLogic, loadPortSites, signalMode } from "../analysis/local";
 import { sourceEntry } from "../analysis/source-cache";
 import { lookupSourceObject } from "../analysis/objects";
+import { sameFilePath } from "../file-path";
 
 const IDENT_RE = /^[A-Za-z_]\w*$/;
 
@@ -70,7 +71,8 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
       flowPanel.hint(flowSelection ? "光标未落在信号上，保留当前链路。" : "在源码信号上右键，选择“追踪此信号”。");
       return;
     }
-    const file = previous?.file ?? pathFromUri(model!.uri);
+    const requestedFile = previous?.file ?? pathFromUri(model!.uri);
+    const file = [...ctx.files()].find(path => sameFilePath(path, requestedFile)) ?? requestedFile;
     const line = previous
       ? (previous.scope >= 0 || previous.identity !== previous.signal ? previous.line : findSignalDeclLine(ctx.fileContent(file) ?? "", file, word) ?? previous.line)
       : position!.lineNumber;

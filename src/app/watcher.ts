@@ -2,6 +2,8 @@ import { scanFolder, readFile, fileStates } from "../ipc";
 import { scanStructure, parseXci } from "../parser";
 import type { ModuleInfo, IpInfo } from "../parser";
 import type { TabManager } from "../editor/tabs";
+import { projectFiles } from "./project-files";
+import { indexedFilePath } from "../file-path";
 
 export interface CachedFile {
   content: string;
@@ -84,6 +86,8 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
         try {
           const fresh = await readFile(file);
           if (!current()) return;
+          // 保存或另一轮重载已替换基准时，当前读盘结果不再有回填权。
+          if (ctx.contents.get(file) !== cached || ctx.tabs.some(t => t.isSaving(file))) continue;
           if (fresh.content !== cached.content) ctx.markResultsStale();
           const openTabs = ctx.tabs.filter((t) => t.findTab(file));
           const anyDirty = openTabs.some((t) => t.findTab(file)!.dirty);
@@ -133,11 +137,16 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
       return;
     }
     if (!current()) return;
-    const xciDirs = scan.xci.map((f) => f.slice(0, f.lastIndexOf("/")));
-    const isIpGenerated = (file: string) => xciDirs.some((dir) => file.startsWith(dir + "/"));
+    const { hdl, con: userCon, isIpGenerated } = projectFiles(scan);
     let changed = false;
-    for (const file of scan.hdl) {
-      if (isIpGenerated(file) || ctx.structures.has(file)) continue;
+    for (const file of ctx.contents.keys()) {
+      if (!isIpGenerated(file)) continue;
+      ctx.contents.delete(file);
+      ctx.structures.delete(file);
+      changed = true;
+    }
+    for (const file of hdl) {
+      if (ctx.structures.has(indexedFilePath(ctx.structures, file))) continue;
       try {
         const { content, encoding, mtime } = await readFile(file);
         if (!current()) return;
@@ -167,7 +176,6 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
     ctx.setIps(ctx.ips().filter((i) => xciSet.has(i.file)));
     if (ctx.ips().length !== before) changed = true;
     // 约束文件增删：新增的读入缓存，删除的从缓存移除（IP 生成目录的约束不纳入）
-    const userCon = scan.con.filter((f) => !isIpGenerated(f));
     for (const file of userCon) {
       if (ctx.contents.has(file)) continue;
       try {

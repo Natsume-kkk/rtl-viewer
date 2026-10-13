@@ -4,8 +4,10 @@ export interface SearchMatch {
   column: number;
   /** 命中长度（正则模式下与查询串长度无关） */
   length: number;
-  /** 该行文本（去首尾空白） */
+  /** 命中附近的行文本预览（去首尾空白，最多 2000 字符） */
   text: string;
+  /** Worker 计算的预览内高亮位置，界面不再执行正则。 */
+  highlights?: MatchHit[];
 }
 
 export interface FileMatches {
@@ -88,6 +90,7 @@ export function buildMatcher(
 export function buildAllMatcher(
   query: string,
   options: SearchOptions = {},
+  limit = Infinity,
 ): (line: string) => MatchHit[] {
   const first = buildMatcher(query, options);
   if (!first) return () => [];
@@ -98,7 +101,7 @@ export function buildAllMatcher(
       re.lastIndex = 0;
       const hits: MatchHit[] = [];
       let hit: MatchHit | null;
-      while ((hit = nextRegexHit(re, line, options.wholeWord))) hits.push(hit);
+      while (hits.length < limit && (hit = nextRegexHit(re, line, options.wholeWord))) hits.push(hit);
       return hits;
     };
   }
@@ -108,7 +111,7 @@ export function buildAllMatcher(
     const hits: MatchHit[] = [];
     const hay = options.caseSensitive ? line : line.toLowerCase();
     let idx = hay.indexOf(needle);
-    while (idx >= 0) {
+    while (idx >= 0 && hits.length < limit) {
       if (options.wholeWord) {
         const before = idx > 0 ? hay[idx - 1] : "";
         const after = hay[idx + needle.length] ?? "";
@@ -136,6 +139,7 @@ export function searchContents(
   const matcher = buildMatcher(query, options);
   if (!matcher) return [];
   const max = options.maxMatches ?? 500;
+  const highlight = buildAllMatcher(query, options, 200);
   const results: FileMatches[] = [];
   let total = 0;
   for (const [file, { content }] of contents) {
@@ -144,7 +148,16 @@ export function searchContents(
     for (let i = 0; i < lines.length; i++) {
       const hit = matcher(lines[i]);
       if (hit) {
-        matches.push({ line: i + 1, column: hit.index + 1, length: hit.length, text: lines[i].trim() });
+        const raw = lines[i];
+        const firstVisible = raw.length - raw.trimStart().length;
+        const from = Math.max(firstVisible, hit.index - 80), to = Math.min(raw.length, from + 2000);
+        const preview = raw.slice(from, to), offset = from + preview.length - preview.trimStart().length;
+        const text = preview.trim();
+        const highlights = highlight(raw).flatMap(h => {
+          const start = Math.max(h.index, offset), end = Math.min(h.index + h.length, offset + text.length);
+          return end > start ? [{ index: start - offset, length: end - start }] : [];
+        });
+        matches.push({ line: i + 1, column: hit.index + 1, length: hit.length, text, highlights });
         total += 1;
         if (total >= max) {
           if (matches.length > 0) results.push({ file, matches });

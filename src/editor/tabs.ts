@@ -5,6 +5,7 @@ import { appAlert, appConfirm, choiceDialog } from "../ui/dialog";
 import { setIcon } from "../ui/icons";
 import { fileDirname, filePathMenuItems, showCtxMenu, type MenuItem } from "../ui/menu";
 import type { NewFileType } from "../ui/new-file";
+import { filePathKey, sameFilePath } from "../file-path";
 
 export interface Tab {
   /** 磁盘路径；未命名新文件为空字符串 */
@@ -57,6 +58,9 @@ export interface TabEvents {
 export class TabManager {
   /** 所有实例（分屏各编辑组一个），用于跨组同步同路径标签状态 */
   private static managers = new Set<TabManager>();
+  private static writes = new Map<string, Promise<boolean>>();
+  private static savingModels = new Map<monaco.editor.ITextModel, Promise<boolean>>();
+  private static saveRevisions = new WeakMap<monaco.editor.ITextModel, object>();
 
   private editor: monaco.editor.IStandaloneCodeEditor;
   private barEl: HTMLElement;
@@ -92,7 +96,11 @@ export class TabManager {
   }
 
   findTab(path: string): Tab | undefined {
-    return this.tabs.find((t) => t.path === path);
+    return this.tabs.find((t) => sameFilePath(t.path, path));
+  }
+
+  isSaving(path: string): boolean {
+    return TabManager.writes.has(filePathKey(path));
   }
 
   /** 打开磁盘文件（已打开则聚焦）。dirty 标签不覆盖磁盘内容。 */
@@ -150,12 +158,14 @@ export class TabManager {
     if (!tab?.path) return false;
     const model = tab.model;
     const version = model.getVersionId();
+    const revision = TabManager.saveRevisions.get(model);
     if (tab.dirty && !(await appConfirm("当前修改未保存，重新加载将丢弃修改，继续？"))) return false;
     const views = [...TabManager.managers].filter(manager => manager.editor.getModel() === model)
       .map(manager => ({ manager, state: manager.editor.saveViewState() }));
     try {
       const { content, encoding, mtime } = await readFile(tab.path, tab.encoding);
-      if (!this.tabs.includes(tab) || tab.model !== model || model.isDisposed() || model.getVersionId() !== version) {
+      if (!this.tabs.includes(tab) || tab.model !== model || model.isDisposed() || model.getVersionId() !== version ||
+          TabManager.savingModels.has(model) || TabManager.saveRevisions.get(model) !== revision) {
         await appAlert("重新加载已停止：文件已关闭或缓冲区在读取期间发生变化，请重新操作。");
         return false;
       }
@@ -182,6 +192,7 @@ export class TabManager {
     if (!tab) return;
     const model = tab.model;
     const version = model.getVersionId();
+    const revision = TabManager.saveRevisions.get(model);
     if (tab.dirty && !(await appConfirm("当前修改未保存，重新打开将丢弃修改，继续？"))) {
       return;
     }
@@ -189,7 +200,7 @@ export class TabManager {
     try {
       const { content, mtime } = await readFile(tab.path, encoding);
       if (!this.tabs.includes(tab) || tab.model !== model || model.isDisposed()) return;
-      if (model.getVersionId() !== version) {
+      if (model.getVersionId() !== version || TabManager.savingModels.has(model) || TabManager.saveRevisions.get(model) !== revision) {
         await appAlert("重新打开已停止：缓冲区在读取期间发生变化，请重新操作。");
         return;
       }
@@ -210,7 +221,7 @@ export class TabManager {
   /** 磁盘内容静默重载（外部变更、标签无未保存修改时）。返回是否执行。 */
   reloadFromDisk(path: string, content: string, encoding: string, mtime: number): boolean {
     const tab = this.findTab(path);
-    if (!tab || tab.dirty) return false;
+    if (!tab || tab.dirty || this.isSaving(path)) return false;
     const viewing = this.editor.getModel() === tab.model;
     const pos = viewing ? this.editor.getPosition() : null;
     tab.model.setValue(content);
@@ -272,47 +283,56 @@ export class TabManager {
   private async saveTabAs(tab: Tab): Promise<boolean> {
     const selected = await saveFileDialog(tab.path || tab.suggestedPath || tab.title);
     if (!selected) return false;
-    const target = normalizePath(selected);
+    const target = sameFilePath(selected, tab.path) ? tab.path : normalizePath(selected);
     // 不允许另存为覆盖任何已打开的其他缓冲区（包括分屏和未保存修改）。
-    const targetKey = target.toLowerCase();
     const occupied = [...TabManager.managers].some(manager => manager.tabs.some(other =>
-      other !== tab && normalizePath(other.path).toLowerCase() === targetKey && other.model !== tab.model));
+      other !== tab && sameFilePath(other.path, target) && other.model !== tab.model));
     if (occupied) {
       await appAlert("另存为失败：目标文件已在编辑器中打开，请先关闭该文件或选择其他路径。");
       return false;
     }
-    const ok = await this.doWrite(tab, target);
-    if (ok && target !== tab.path) {
-      // Monaco 不允许改 model.uri：用新 uri 重建 model 并迁移内容。
-      // 否则 uriKey 停留在 inmemory:///，另一组按新路径打开会建第二个 model，两组内容分裂。
-      const oldKey = tab.uriKey;
-      const oldModel = tab.model;
-      const state = this.active === tab ? this.editor.saveViewState() : this.viewStates.get(oldModel) ?? null;
-      const uri = monaco.Uri.file(target);
-      const uriKey = uri.toString();
-      const newModel = acquireModel(uri, oldModel.getValue(), langForFile(target));
-      tab.path = target;
-      tab.title = basename(target);
-      tab.model = newModel;
-      tab.uriKey = uriKey;
-      this.watchContent(tab, newModel);
-      this.viewStates.set(newModel, state);
-      this.viewStates.delete(oldModel);
-      if (this.active === tab) {
-        this.editor.setModel(newModel);
-        if (state) this.editor.restoreViewState(state);
-      }
-      // 放在 editor 切走之后：refs 归零会 dispose 旧 model（撤销栈随之丢弃，可接受）
-      releaseModel(oldKey);
-      this.renderTab(tab);
-      TabManager.refreshNames();
-      this.events.onActiveChange();
+    return this.doWrite(tab, target);
+  }
+
+  private migrateModel(tab: Tab, target: string): void {
+    // Monaco 不允许改 model.uri：用新 uri 重建 model 并迁移内容。
+    // 否则 uriKey 停留在 inmemory:///，另一组按新路径打开会建第二个 model，两组内容分裂。
+    const oldKey = tab.uriKey;
+    const oldModel = tab.model;
+    const state = this.active === tab ? this.editor.saveViewState() : this.viewStates.get(oldModel) ?? null;
+    const uri = monaco.Uri.file(target);
+    const uriKey = uri.toString();
+    const newModel = acquireModel(uri, oldModel.getValue(), langForFile(target));
+    tab.path = target;
+    tab.title = basename(target);
+    tab.model = newModel;
+    tab.uriKey = uriKey;
+    this.watchContent(tab, newModel);
+    this.viewStates.set(newModel, state);
+    this.viewStates.delete(oldModel);
+    if (this.active === tab) {
+      this.editor.setModel(newModel);
+      if (state) this.editor.restoreViewState(state);
     }
-    return ok;
+    // 放在 editor 切走之后：refs 归零会 dispose 旧 model（撤销栈随之丢弃，可接受）
+    releaseModel(oldKey);
+    this.renderTab(tab);
+    TabManager.refreshNames();
+    this.events.onActiveChange();
   }
 
   /** 全部确认和保存成功后才关闭任何标签；共享缓冲区仍有其他视图时不提示丢弃。 */
   private static async confirmClose(selections: { manager: TabManager; tabs: Tab[] }[]): Promise<boolean> {
+    const models = new Set(selections.flatMap(s => s.tabs.map(tab => tab.model)));
+    for (const model of models) {
+      let pending: Promise<boolean> | undefined;
+      while ((pending = TabManager.savingModels.get(model))) {
+        if (!(await pending)) {
+          // 更晚的保存仍在队列中时，以最后一次保存的结果为准。
+          if (!TabManager.savingModels.has(model) || TabManager.savingModels.get(model) === pending) return false;
+        }
+      }
+    }
     const closing = new Set(selections.flatMap(s => s.tabs));
     const remainingModels = new Set([...TabManager.managers].flatMap(m => m.tabs.filter(t => !closing.has(t)).map(t => t.model)));
     const dirty = new Map<monaco.editor.ITextModel, { manager: TabManager; tab: Tab }>();
@@ -414,12 +434,30 @@ export class TabManager {
     }
   }
 
-  private async doWrite(tab: Tab, path: string, closing = false): Promise<boolean> {
+  private doWrite(tab: Tab, path: string, closing = false): Promise<boolean> {
+    const key = filePathKey(path), model = tab.model;
+    const previous = [TabManager.writes.get(key), TabManager.savingModels.get(model)].filter(p => p !== undefined);
+    TabManager.saveRevisions.set(model, {});
+    const pending = previous.length
+      ? Promise.allSettled(previous).then(() => this.writeNow(tab, path, closing))
+      : this.writeNow(tab, path, closing);
+    TabManager.writes.set(key, pending);
+    TabManager.savingModels.set(model, pending);
+    const release = () => {
+      if (TabManager.writes.get(key) === pending) TabManager.writes.delete(key);
+      if (TabManager.savingModels.get(model) === pending) TabManager.savingModels.delete(model);
+    };
+    void pending.then(release, release);
+    return pending;
+  }
+
+  private async writeNow(tab: Tab, path: string, closing: boolean): Promise<boolean> {
+    if (!this.tabs.includes(tab) || tab.model.isDisposed()) return false;
     const model = tab.model;
     const initialVersion = model.getVersionId();
     const alive = () => this.tabs.includes(tab) && tab.model === model && !model.isDisposed();
     // 保存前检测：磁盘 mtime 与载入时不一致说明外部已修改，禁止静默覆盖
-    if (path === tab.path && tab.mtime) {
+    if (sameFilePath(path, tab.path) && tab.mtime) {
       let current: number | null | undefined;
       try {
         [current] = await fileStates([tab.path]);
@@ -481,7 +519,8 @@ export class TabManager {
     this.renderTab(tab);
     this.events.onFileSaved(path, content, encoding, mtime);
     // 另存为只保存新路径，仍查看旧路径的分屏缓冲区保留未保存状态。
-    if (path === tab.path) this.syncPeers(tab);
+    if (sameFilePath(path, tab.path)) this.syncPeers(tab);
+    else if (!tab.dirty) this.migrateModel(tab, path);
     return !tab.dirty;
   }
 
@@ -499,7 +538,7 @@ export class TabManager {
   private createTab(path: string, title: string, content: string, encoding: string, mtime: number, line?: number): void {
     const uri = path ? monaco.Uri.file(path) : monaco.Uri.parse(`inmemory:///${title}`);
     const uriKey = uri.toString();
-    const peer = [...TabManager.managers].flatMap(manager => manager.tabs).find(tab => tab.uriKey === uriKey);
+    const peer = [...TabManager.managers].flatMap(manager => manager.tabs).find(tab => filePathKey(tab.uriKey) === filePathKey(uriKey));
     // 同路径跨组共享 model（分屏双视图编辑同步）；未命名文件 uri 唯一不共享
     const model = acquireModel(uri, content, langForFile(path || title));
     const tab: Tab = {

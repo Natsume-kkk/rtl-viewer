@@ -32,6 +32,20 @@ function setup() {
 }
 
 describe("definition target models", () => {
+  it("路径大小写别名预览引用实际共享模型 URI，释放后保留标签", async () => {
+    const { uri, contents, store, service, createModel } = setup();
+    const alias = URI.file(pathFromUri(uri).toUpperCase());
+    contents.set(pathFromUri(alias), "disk content");
+    const model = store.acquire(uri, "unsaved content", "verilog");
+    const reference = await service.createModelReference(alias);
+    expect(reference.object.textEditorModel).toBe(model);
+    expect(model.getValue()).toBe("unsaved content");
+    expect(createModel).toHaveBeenCalledTimes(1);
+    reference.dispose();
+    expect(model.isDisposed()).toBe(false);
+    store.release(alias.toString());
+    expect(model.isDisposed()).toBe(true);
+  });
   it("previews an unopened definition on demand and releases the model", async () => {
     const { uri, live, createModel, service } = setup();
     expect(live.size).toBe(0);

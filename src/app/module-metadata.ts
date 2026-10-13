@@ -3,13 +3,15 @@ import type { ModuleInfo, IpInfo, PortInfo, ParameterInfo } from "../parser";
 import { readFile } from "../ipc";
 import type { ModuleDef } from "../model";
 
+export interface FileVersion { identity: unknown; version: unknown }
+
 export interface ModuleMetadataContext {
   ips(): IpInfo[];
   resolveModule(name: string): ModuleDef | undefined;
   /** 打开中的标签页用当前缓冲区（含未保存修改），否则用扫描缓存。 */
   fileContent(file: string): string | undefined;
-  /** 与 fileContent 同源的变化令牌：打开的标签页用 model 版本号，否则用扫描缓存内容引用。 */
-  fileToken(file: string): unknown;
+  /** 与 fileContent 同源：标签页使用 model 身份与版本，否则使用索引路径与缓存内容。 */
+  fileToken(file: string): FileVersion;
 }
 
 export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
@@ -19,7 +21,7 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
 } {
   const ipPortsCache = new Map<string, { ports: PortInfo[]; source: string }>();
   /** 工程内模块文件解析缓存（按 fileToken 失效），modulePorts 与 moduleParameters 共享。 */
-  const moduleFileCache = new Map<string, { token: unknown; modules: ModuleInfo[] }>();
+  const moduleFileCache = new Map<string, { token: FileVersion; modules: ModuleInfo[] }>();
   let generation = 0;
 
   /** 从 IP stub（同名 .v / synth / sim 子目录）提取端口，.veo 兜底；结果缓存。 */
@@ -64,7 +66,7 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
     if (content === undefined) return undefined;
     const token = ctx.fileToken(def.file);
     const hit = moduleFileCache.get(def.file);
-    if (hit && hit.token === token) return hit.modules;
+    if (hit && hit.token.identity === token.identity && hit.token.version === token.version) return hit.modules;
     const modules = parseFile(content, def.file);
     moduleFileCache.set(def.file, { token, modules });
     return modules;

@@ -16,7 +16,7 @@ it("当前信号明确标记，赋值按方向命名且只突出完整标识符"
 it("端口来源、当前信号、去向用有向横向卡片连接",()=>{
  const{root,panel}=setup();panel.result("x",{label:"top.x",children:[leaf("top.a",1)]},{label:"top.x",children:[leaf("top.y",2)]},"");
  const a=card(root,"a"),x=card(root,"x"),y=card(root,"y");expect(parseFloat(a.style.left)).toBeLessThan(parseFloat(x.style.left));expect(parseFloat(x.style.left)).toBeLessThan(parseFloat(y.style.left));
- const edges=[...root.querySelectorAll<SVGPathElement>(".logic-wire")];expect(edges.some(e=>e.dataset.from===a.dataset.node&&e.dataset.to==="focus")).toBe(true);expect(edges.some(e=>e.dataset.from==="focus"&&e.dataset.to===y.dataset.node)).toBe(true);expect(edges.every(e=>e.hasAttribute("marker-end"))).toBe(true);expect(root.querySelector(".flow-body > section")).toBeNull();root.remove();
+ const edges=[...root.querySelectorAll<SVGPathElement>(".logic-wire")];expect(edges.some(e=>e.dataset.from===a.dataset.node&&e.dataset.to==="focus")).toBe(true);expect(edges.some(e=>e.dataset.from==="focus"&&e.dataset.to===y.dataset.node)).toBe(true);expect(root.querySelectorAll(".logic-arrow")).toHaveLength(edges.length);expect(root.querySelector(".flow-body > section")).toBeNull();root.remove();
 });
 it("inout 外部边界并入端口本身，不重复同名节点或虚构连线",()=>{
  const{root,panel}=setup();panel.result("dq",{label:"top.dq",children:[leaf("dq ← en ? value : 1'bz",4,"赋值位置"),leaf("dq",1,"顶层输入")]},{label:"top.dq",children:[leaf("sample ← dq",5,"赋值位置"),leaf("dq",1,"顶层输出")]},"");
@@ -50,7 +50,7 @@ it("单路直接延伸，到下一个扇出列候选，再按路继续",()=>{
  [...root.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent==='全部展开')!.click();expect(card(root,'b1').hidden).toBe(false);expect(card(root,'c1').hidden).toBe(false);root.remove();
 });
 it("未知方向只显示一次，用无方向虚线连接，不冒充双向",()=>{
- const{root,panel}=setup();const trace={label:"top.a",children:[leaf("top/ip.clk",3,"黑盒或缺失定义")]};panel.result("a",trace,trace,"");expect(root.querySelectorAll('[data-line="3"]')).toHaveLength(1);expect(root.textContent).toContain("方向待确认");const path=root.querySelector(".logic-wire")!;expect(path.hasAttribute("marker-end")).toBe(false);expect(path.hasAttribute("marker-start")).toBe(false);root.remove();
+ const{root,panel}=setup();const trace={label:"top.a",children:[leaf("top/ip.clk",3,"黑盒或缺失定义")]};panel.result("a",trace,trace,"");expect(root.querySelectorAll('[data-line="3"]')).toHaveLength(1);expect(root.textContent).toContain("方向待确认");expect(root.querySelector(".logic-wire")).not.toBeNull();expect(root.querySelector(".logic-arrow")).toBeNull();root.remove();
 });
 it("赋值卡片直接保留代码，不再切换到完整依赖图，停止原因不隐藏",()=>{
  const{root,panel}=setup();const target={context:{module:"top",path:"top"},signal:"q"};panel.result("a",{label:"top.a",children:[]},{label:"top.a",children:[{...leaf("q ← a + b",3,"赋值位置"),statement:"q = a + b;",target},leaf("unsupported",7,"未知语法边界")]},"");expect(root.querySelector(".logic-expression")?.textContent).toBe("q = a + b;");expect(root.querySelector(".flow-enter")).toBeNull();expect(root.textContent).toContain("未知语法边界");root.remove();

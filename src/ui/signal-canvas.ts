@@ -135,20 +135,16 @@ export function appendSource(parent: HTMLElement, source: {file?: string; statem
 }
 export interface CardPosition { x: number; y: number; h: number; w?: number; column?: number }
 export interface CardEdge { from: string; to: string; control?: boolean; current?: boolean; vertical?: boolean; both?: boolean; unknown?: boolean; role?: string }
-let canvasSerial = 0;
 export function makeWires(): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.classList.add("logic-wires"); svg.setAttribute("aria-hidden", "true"); svg.dataset.marker = `signal-arrow-${++canvasSerial}`; return svg;
+  svg.classList.add("logic-wires"); svg.setAttribute("aria-hidden", "true"); return svg;
 }
 export function drawWires(canvas: HTMLElement, svg: SVGSVGElement, positions: Map<string, CardPosition>, edges: CardEdge[]): void {
   const width = Math.max(100, ...[...positions.values()].map(p => p.x + (p.w ?? CARD_WIDTH) + CANVAS_PAD));
   const height = Math.max(180, ...[...positions.values()].map(p => p.y + p.h + 28));
   canvas.style.width = `${width}px`; canvas.style.height = `${height}px`;
   svg.setAttribute("width", String(width)); svg.setAttribute("height", String(height)); svg.replaceChildren();
-  const ns = "http://www.w3.org/2000/svg", defs = document.createElementNS(ns, "defs"), marker = document.createElementNS(ns, "marker");
-  marker.id = svg.dataset.marker!; marker.setAttribute("viewBox", "0 0 10 10"); marker.setAttribute("refX", "9"); marker.setAttribute("refY", "5");
-  marker.setAttribute("markerWidth", "6"); marker.setAttribute("markerHeight", "6"); marker.setAttribute("orient", "auto-start-reverse");
-  const tip = document.createElementNS(ns, "path"); tip.setAttribute("d", "M0 0 L10 5 L0 10 z"); marker.append(tip); defs.append(marker); svg.append(defs);
+  const ns = "http://www.w3.org/2000/svg";
   const visible=edges.filter(e=>positions.has(e.from)&&positions.has(e.to));
   const sourceY=new Map<CardEdge,number>(),targetY=new Map<CardEdge,number>();
   // 接点属于信号卡片的上部，不跟随可展开代码区的高度移动。
@@ -165,14 +161,24 @@ export function drawWires(canvas: HTMLElement, svg: SVGSVGElement, positions: Ma
     }
   }
   let bypassCount = 0;
+  // 箭头用显式三角形路径绘制，不用 SVG marker：大画布中 marker 会与描边错位渲染（Blink）。
+  const arrowhead = (edge: CardEdge, x: number, y: number, dx: number, dy: number): void => {
+    const head = document.createElementNS(ns, "path");
+    head.setAttribute("class", "logic-arrow"); head.dataset.from = edge.from; head.dataset.to = edge.to;
+    head.setAttribute("d", `M${x + dx},${y + dy} L${x - dx * 8 - dy * 3.6},${y - dy * 8 + dx * 3.6} L${x - dx * 8 + dy * 3.6},${y - dy * 8 - dx * 3.6} z`);
+    svg.append(head);
+  };
   for (const edge of visible) {
     const a = positions.get(edge.from), b = positions.get(edge.to); if (!a || !b) continue;
     const path = document.createElementNS(ns, "path");
     path.dataset.from = edge.from; path.dataset.to = edge.to;
     path.setAttribute("class", edge.control || edge.current || edge.unknown ? "logic-wire control" : "logic-wire");
+    let end: {x: number; y: number; dx: number; dy: number} | undefined, begin: typeof end;
     if (edge.vertical) {
-      const down = b.y > a.y, x = a.x + (a.w ?? CARD_WIDTH) / 2;
-      path.setAttribute("d", `M${x},${down ? a.y + a.h : a.y} L${b.x + (b.w ?? CARD_WIDTH) / 2},${down ? b.y : b.y + b.h}`);
+      const down = b.y > a.y, fx = a.x + (a.w ?? CARD_WIDTH) / 2, fy = down ? a.y + a.h : a.y, tx = b.x + (b.w ?? CARD_WIDTH) / 2, ty = down ? b.y : b.y + b.h;
+      path.setAttribute("d", `M${fx},${fy} L${tx},${ty}`);
+      const len = Math.hypot(tx - fx, ty - fy);
+      if (len) { const d = {dx: (tx - fx) / len, dy: (ty - fy) / len}; end = {x: tx, y: ty, ...d}; begin = {x: fx, y: fy, ...d}; }
     } else {
       const sx = a.x + (a.w ?? CARD_WIDTH), sy = sourceY.get(edge)!, ex = b.x, ey = targetY.get(edge)!;
       const skips = a.column !== undefined && b.column !== undefined ? b.column > a.column + 1 : b.x - a.x > (a.w ?? CARD_WIDTH) + CARD_STEP - CARD_WIDTH + 1;
@@ -181,10 +187,11 @@ export function drawWires(canvas: HTMLElement, svg: SVGSVGElement, positions: Ma
         const lane = height - 14 + bypassCount++ * 12;
         path.setAttribute("d", `M${sx},${sy} L${sx + 14},${sy} L${sx + 14},${lane} L${ex - 14},${lane} L${ex - 14},${ey} L${ex},${ey}`);
       } else path.setAttribute("d", sy === ey ? `M${sx},${sy} L${ex},${ey}` : `M${sx},${sy} C${sx + 20},${sy} ${ex - 20},${ey} ${ex},${ey}`);
+      end = {x: ex, y: ey, dx: 1, dy: 0}; begin = {x: sx, y: sy, dx: 1, dy: 0};
     }
-    if (!edge.unknown) path.setAttribute("marker-end", `url(#${marker.id})`);
-    if (edge.both) path.setAttribute("marker-start", `url(#${marker.id})`);
     const title = document.createElementNS(ns, "title"); title.textContent = edge.unknown ? edge.role==="调用参数"?"调用参数，内部语义未展开":"方向待确认" : edge.current ? "读取当前 Q" : edge.role??(edge.control ? "条件引用" : "信号连接"); path.append(title); svg.append(path);
+    if (!edge.unknown && end) arrowhead(edge, end.x, end.y, end.dx, end.dy);
+    if (edge.both && begin) arrowhead(edge, begin.x, begin.y, -begin.dx, -begin.dy);
   }
   if (bypassCount) { const routedHeight=height+bypassCount*12;canvas.style.height=`${routedHeight}px`;svg.setAttribute('height',String(routedHeight)); }
 }

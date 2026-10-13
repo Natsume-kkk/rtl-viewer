@@ -1439,7 +1439,7 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .logic-wires { position: absolute; inset: 0; pointer-events: none; }
 .logic-wire { fill: none; stroke: var(--accent); stroke-width: 1.4; }
 .logic-wire.control { stroke: var(--fg-faint); stroke-dasharray: 4 4; }
-.logic-wires marker path { fill: var(--fg-secondary); }
+.logic-wires .logic-arrow { fill: var(--fg-secondary); }
 .logic-card { position: absolute; width: 236px; min-height: 88px; padding: 10px 12px; background: var(--surface-editor); border: 1px solid var(--border-strong); border-top: 2px solid var(--accent); border-radius: var(--radius-control); }
 .logic-card[hidden] { display: none; }
 .card-resize { position: absolute; top: 0; right: -4px; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; user-select: none; z-index: 1; }

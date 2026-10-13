@@ -53,7 +53,9 @@ it("地址与未知调用参数有可见角色，调用参数不显示为确定�
   const { root } = render(graph);
   expect(root.textContent).toContain("地址：addr");
   expect(root.textContent).toContain("调用参数：arg");
-  expect(root.querySelector('.logic-wire[data-from="arg"]')?.hasAttribute("marker-end")).toBe(false);
+  expect(root.querySelector('.logic-wire[data-from="arg"]')).not.toBeNull();
+  expect(root.querySelector('.logic-arrow[data-from="arg"]')).toBeNull();
+  expect(root.querySelector('.logic-arrow[data-from="addr"]')).not.toBeNull();
 });
 
 it("已识别类型转换保留调用写法而非显示分析边界", () => {

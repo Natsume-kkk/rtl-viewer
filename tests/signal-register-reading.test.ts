@@ -67,7 +67,7 @@ it("跨列长连线避开中间卡片，箭头仍落在真实目标",()=>{
   if(d.includes('C'))for(let i=0;i<=40;i++){const t=i/40,u=1-t;points.push([u**3*n[0]+3*u*u*t*n[2]+3*u*t*t*n[4]+t**3*n[6],u**3*n[1]+3*u*u*t*n[3]+3*u*t*t*n[5]+t**3*n[7]]);}
   else for(let k=0;k<n.length-2;k+=2)for(let i=0;i<=40;i++){const t=i/40;points.push([n[k]*(1-t)+n[k+2]*t,n[k+1]*(1-t)+n[k+3]*t]);}
   expect(points.some(([x,y])=>x>300&&x<536&&y>28&&y<188)).toBe(false);
-  expect(n.slice(-2)).toEqual([576,72]);expect(path.hasAttribute('marker-end')).toBe(true);
+  expect(n.slice(-2)).toEqual([576,72]);expect(svg.querySelector('.logic-arrow')?.getAttribute('d')).toMatch(/^M577,72 /);
 });
 
 it("高赋值卡片与矮端口在同一行时水平连接，折叠代码不移动接点",()=>{

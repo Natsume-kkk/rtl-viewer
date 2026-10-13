@@ -79,7 +79,7 @@ it("未知方向不提供穿透入口，两个视图都显示原因",async()=>{
   const card=body.querySelector('[data-node="child:u:i"]');
   expect(card?.querySelector(".flow-reason")?.textContent).toContain("端口方向未知");expect(card?.querySelector(".logic-enter")).toBeNull();
   const edges=[...body.querySelectorAll<SVGElement>(".logic-wire")].filter(e=>e.dataset.from==="child:u:i"||e.dataset.to==="child:u:i");
-  expect(edges).toHaveLength(1);expect(edges[0].hasAttribute("marker-end")).toBe(false);
+  expect(edges).toHaveLength(1);expect(body.querySelector('.logic-arrow[data-from="child:u:i"],.logic-arrow[data-to="child:u:i"]')).toBeNull();
   expect(body.querySelector('[data-node="q"]')?.classList.contains("resolved")).toBe(false);
   const traced=await ports(source,"q");
   expect([...traced.body.querySelectorAll(".flow-reason")].some(c=>c.textContent?.includes("端口方向未知"))).toBe(true);

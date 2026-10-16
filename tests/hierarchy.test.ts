@@ -82,6 +82,7 @@ endmodule`,
     });
     expect(h.topCandidates.sort()).toEqual(["small", "tb_top"]);
     expect(h.tops[0].moduleName).toBe("big");
+    expect(h.autoTop).toBe("big");
   });
 
   it("仿真目录内的封装环境同样解包，孤立小模块不误选", () => {

@@ -139,8 +139,12 @@ export class HierarchyTree {
       sel.setAttribute("aria-label", "顶层模块");
       const current = h.tops[0]?.moduleName;
       const candidates = h.topCandidates;
-      const names =
-        current && !candidates.includes(current) ? [current, ...candidates] : candidates;
+      // 当前顶层与自动识别的顶层都可能不在候选中（如 tb 解包出的 DUT 已被例化），
+      // 固定并入选项，避免切换后自动识别的顶层从下拉中消失
+      const extras = [current, h.autoTop].filter(
+        (n): n is string => !!n && !candidates.includes(n),
+      );
+      const names = [...new Set([...extras, ...candidates])];
       for (const name of names) {
         const opt = document.createElement("option");
         opt.value = name;

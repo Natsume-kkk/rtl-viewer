@@ -61,6 +61,8 @@ export interface Hierarchy {
   tops: TreeNode[];
   /** 候选顶层模块名（未被任何模块例化） */
   topCandidates: string[];
+  /** 自动识别的顶层；仿真候选解包出的 DUT 可能已被例化而不在 topCandidates 中 */
+  autoTop?: string;
   /** 孤儿模块定义：无父（未被例化）且无子（不例化任何模块） */
   unused: { name: string; file: string; line: number }[];
 }
@@ -194,8 +196,8 @@ export function buildHierarchy(
     .filter((d) => !d.isIp && !instantiated.has(d.name.toLowerCase()))
     .map((d) => d.name);
 
-  const chosenTop =
-    topName ?? autoPickTop(topCandidates, structByModule, commonDirPrefix([...structures.keys()]));
+  const autoTop = autoPickTop(topCandidates, structByModule, commonDirPrefix([...structures.keys()]));
+  const chosenTop = topName ?? autoTop;
 
   const buildNode = (
     moduleName: string,
@@ -256,5 +258,5 @@ export function buildHierarchy(
     )
     .map((d) => ({ name: d.name, file: d.file, line: d.line }));
 
-  return { tops, topCandidates, unused };
+  return { tops, topCandidates, autoTop, unused };
 }

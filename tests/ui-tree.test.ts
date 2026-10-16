@@ -113,6 +113,21 @@ describe("HierarchyTree", () => {
     expect(onSelectTop).toHaveBeenCalledWith("mod_b");
   });
 
+  it("改选其他顶层后自动识别的顶层仍保留在下拉选项中", () => {
+    const { rootEl, tree } = makeTree({ onOpen: vi.fn() });
+    // 自动识别经 tb 解包出的 big 已被例化、不在候选中；用户改选 tb_top 后仍应可选回 big
+    const h: Hierarchy = {
+      tops: [node({ key: "tb_top", label: "tb_top", moduleName: "tb_top" })],
+      topCandidates: ["small", "tb_top"],
+      autoTop: "big",
+      unused: [],
+    };
+    tree.render(h);
+    const sel = rootEl.querySelector("select.top-select") as HTMLSelectElement;
+    expect([...sel.options].map((o) => o.value)).toEqual(["big", "small", "tb_top"]);
+    expect(sel.value).toBe("tb_top");
+  });
+
   it("渲染顶层与子节点，IP/原语/未解析类型可区分且保留循环标记", () => {
     const onOpen = vi.fn();
     const { rootEl, tree } = makeTree({ onOpen });

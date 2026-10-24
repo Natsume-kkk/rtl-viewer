@@ -94,6 +94,8 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 
 `src/` 与 `src-tauri/` 属于同一个桌面应用，通过 `src/ipc.ts` 通信；HDL 解析和信号分析在前端执行，磁盘访问与编码读写在本机 Rust 后端执行。
 
+[交互评审原型](interaction-review.html) 保留界面方案对比及评审依据，供设计参考；软件当前行为以[使用指南](usage.md)为准。
+
 信号链保持两类边界：端口由 `src/model/signal-flow.ts` 跨层追到赋值位置，`src/ui/signal-ports.ts` 直接显示已可见端口的赋值终点；内部信号由 `src/analysis/local.ts` 在当前模块内分析，子模块端口通过 `loadPortSites` 附带有界的第一层源码预览（`stopAtAssignments` + `descendOnly`），沿纯端口转接向下查找到第一处实际赋值／使用，保留预算和递归例化截止，不向父模块回溯，不合并子模块依赖图。入口分类、快照与取消由 `src/app/signal-controller.ts` 管理，两个视图均在原链路显示终点源码，不强制切换到模块内模式；对应回归见 `tests/signal-analysis.test.ts`、`tests/signal-endpoints.test.ts`、`tests/signal-flow-ui.test.ts` 和 `tests/signal-controller.test.ts`。
 
 卡片宽度与连线计算共用 `src/ui/signal-canvas.ts`：无手动覆盖的卡片按内容 max-content 自适应，夹在 236–560 px；手动拖宽（上限 1200 px）覆盖自适应，随当前追踪的视图状态保存，双击或 Home 恢复自适应。列位置按同列最大宽度累加，保留 40 px 列间距；连线和画布使用实际卡片宽度。两种视图以及懒创建的分支卡片均接入边缘拖动，销毁时释放指针捕获。控制器仅在文件、信号、实例与过程作用域相同的刷新中沿用宽度，不沿用旧分析的分支展开状态。回归入口为 `tests/signal-card-width.test.ts` 和 `tests/signal-controller.test.ts`；jsdom 无布局，自适应测量在测试中 mock `offsetWidth`，拖动命中、代码换行与滚动位置仍需浏览器／桌面实际交互检查。
@@ -154,6 +156,10 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 `src/analysis/objects.ts` 收集类型、声明和初始化事实；`ProcessResult.updates` 仅保存可靠更新表达式，`assignments` 保存逐语句源码关系。同一目标已有可靠更新时不重复绘制逐语句驱动。初值不计持续驱动，地址与条件不计数据输入，未知调用参数不绘制确定方向。新增语法必须同时检查这两种表示、过程局部身份及原始源码定位。
 
 ### 搜索与文件一致性
+
+`src/ui/bottom-panels.ts` 统一管理搜索与信号链的可见性、共存偏好和总高度，不销毁两块视图。默认切换；可用空间不足以同时保留编辑区和两块面板时临时退回切换，恢复高度后继续共存。隐藏搜索通过主入口取消未完成的 Worker，完成结果与输入仍保留；分隔条支持指针、方向键和 Home，销毁时释放观察器与拖动监听。回归见 `tests/bottom-panels.test.ts`；浏览器另检查窗口缩放、双视图和实际源码可见高度。
+
+“查找同名文本”沿用 `rtl.find-references` 动作 ID 和 `Shift+F12`，仅修改用户可见名称，仍使用字面整词搜索；匹配方式和扫描范围在结果面板中显式展示。`PathBreadcrumb` 接收当前工程根，以 Windows 路径身份显示工程相对路径，完整路径操作仍使用原始目标，工程外文件单独标记。回归见 `tests/search-ui.test.ts` 和 `tests/breadcrumb.test.ts`。
 
 `src/app/project-search.ts` 管理单次查询 Worker，`src/model/search-worker.ts` 执行匹配与高亮；`src/ui/search.ts` 仅渲染返回区间，不在主线程执行用户正则。查询替换、面板收起、超时和异常均终止 Worker；界面按请求序号丢弃旧结果。单次预算 2 秒，最多 500 行，每行预览 2000 字符、200 处高亮。回归入口为 `tests/project-search.test.ts`、`tests/search-ui.test.ts` 和 `tests/search-history.test.ts`。
 

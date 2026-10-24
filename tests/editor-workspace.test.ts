@@ -140,7 +140,7 @@ async function setup() {
   vi.resetModules(); vi.clearAllMocks();
   const disconnected = vi.fn();
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect = disconnected; });
-  document.body.innerHTML = '<div id="main-area"><div id="group-1"><ul id="tabbar"></ul><div id="breadcrumb-1"><span class="breadcrumb-path"></span></div><div id="editor-foot-1"></div></div><div id="group-splitter" hidden></div><div id="group-2" hidden><ul id="tabbar-2"></ul><div id="breadcrumb-2"><span class="breadcrumb-path"></span></div><div id="editor-foot-2"></div></div></div><button id="split-action"></button><button id="close-split"></button>';
+  document.body.innerHTML = '<div id="main-area"><div id="group-1"><ul id="tabbar"></ul><div id="breadcrumb-1"><span class="breadcrumb-path"></span></div></div><div id="group-splitter" hidden></div><div id="group-2" hidden><ul id="tabbar-2"></ul><div id="breadcrumb-2"><span class="breadcrumb-path"></span></div></div></div><button id="split-action"></button><button id="close-split"></button>';
   const { createEditorWorkspace } = await import("../src/app/editor-workspace");
   const { choiceDialog } = await import("../src/ui/dialog");
   const { readFile } = await import("../src/ipc");
@@ -149,7 +149,7 @@ async function setup() {
   const ctx = {
     cachedFile: vi.fn((path: string) => path.includes("slow") ? undefined : ({ content: "module top;\nwire a;\nwire b;\nendmodule", encoding: "utf8", mtime: 10 })),
     onFileChanged: vi.fn(), onActiveChange: vi.fn(), onContentChange: vi.fn(), onCursorChange: vi.fn(), hint: vi.fn(),
-    hasProject: vi.fn(() => true), openFolder: vi.fn(), openSearch: vi.fn(), newFile: vi.fn(),
+    projectFolder: vi.fn(() => "D:/p"), openFolder: vi.fn(), openSearch: vi.fn(), newFile: vi.fn(),
   };
   const workspace = createEditorWorkspace(editors as unknown as Parameters<typeof createEditorWorkspace>[0], ctx);
   cleanup.push(() => workspace.dispose());
@@ -194,7 +194,7 @@ describe("编辑工作区", () => {
     expect(document.getElementById("breadcrumb-1")!.hidden).toBe(false);
 
     await w.closeAll();
-    vi.mocked(ctx.hasProject).mockReturnValue(false);
+    vi.mocked(ctx.projectFolder).mockReturnValue("");
     w.refreshChrome();
     expect(empty.hidden).toBe(false);
     expect(empty.textContent).toContain("未打开工程");
@@ -252,7 +252,7 @@ describe("编辑工作区", () => {
     const { workspace: w } = await setup();
     await w.openFile("D:/p/a.v"); await w.openFile("D:/p/b.v");
     const tab = w.activeGroup().tabs.activeTab!;
-    let hit: Element = document.getElementById("editor-foot-1")!;
+    let hit: Element = document.getElementById("breadcrumb-1")!;
     Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => hit });
     const pointer = (target: EventTarget, type: string, x: number) => target.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: 100, button: 0 }));
     pointer(tab.element, "pointerdown", 10); pointer(document, "pointermove", 80);

@@ -30,32 +30,12 @@ export class SearchPanel {
   private hasRun = false;
   private request = 0;
   private pending = false;
+  private scope: HTMLElement;
 
   constructor(rootEl: HTMLElement, callbacks: SearchPanelCallbacks) {
     this.rootEl = rootEl;
     this.callbacks = callbacks;
     this.rootEl.className = "search-panel";
-    const resize = document.createElement("div"); resize.className = "search-resize";
-    resize.tabIndex = 0; resize.setAttribute("role", "separator"); resize.setAttribute("aria-label", "调整搜索面板高度"); resize.setAttribute("aria-orientation", "horizontal");
-    const height = (value: number) => {
-      const flow = this.rootEl.parentElement?.querySelector<HTMLElement>("#signal-flow:not([hidden])")?.clientHeight ?? 0;
-      const maximum = Math.max(140, (this.rootEl.parentElement?.clientHeight ?? 600) - flow - 180);
-      const next = Math.min(Math.max(value, 140), maximum);
-      this.rootEl.style.height = `${next}px`; resize.setAttribute("aria-valuenow", String(Math.round(next)));
-    };
-    resize.addEventListener("keydown", event => {
-      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-      event.preventDefault(); height(this.rootEl.clientHeight + (event.key === "ArrowUp" ? 24 : -24));
-    });
-    resize.addEventListener("pointerdown", event => {
-      if (event.button !== 0) return;
-      event.preventDefault(); resize.setPointerCapture(event.pointerId);
-      const y = event.clientY, initial = this.rootEl.clientHeight;
-      const move = (e: PointerEvent) => height(initial + y - e.clientY);
-      const finish = () => { resize.removeEventListener("pointermove", move); resize.removeEventListener("pointerup", finish); resize.removeEventListener("pointercancel", finish); };
-      resize.addEventListener("pointermove", move); resize.addEventListener("pointerup", finish); resize.addEventListener("pointercancel", finish);
-    });
-
     const bar = document.createElement("div");
     bar.className = "search-bar";
     this.input = document.createElement("input");
@@ -72,12 +52,16 @@ export class SearchPanel {
 
     this.countEl = document.createElement("div");
     this.countEl.className = "search-count";
+    this.countEl.setAttribute("role", "status");
+    this.scope = document.createElement("p");
+    this.scope.className = "search-scope";
+    this.updateScope();
     this.resultsEl = document.createElement("div");
     this.resultsEl.className = "search-results";
 
     this.stale = document.createElement("button"); this.stale.className = "text-button result-stale";
     this.stale.textContent = "源码已变化，刷新搜索结果"; this.stale.hidden = true; this.stale.onclick = () => this.run();
-    this.rootEl.append(resize, bar, this.stale, this.countEl, this.resultsEl);
+    this.rootEl.append(bar, this.scope, this.stale, this.countEl, this.resultsEl);
 
     this.input.addEventListener("input", () => {
       this.cancel();
@@ -102,9 +86,12 @@ export class SearchPanel {
     btn.className = "search-case";
     btn.textContent = text;
     btn.title = title;
+    btn.setAttribute("aria-label", title);
+    btn.setAttribute("aria-pressed", "false");
     btn.addEventListener("click", () => {
       this.options[key] = !this.options[key];
       btn.classList.toggle("on", !!this.options[key]);
+      btn.setAttribute("aria-pressed", String(!!this.options[key]));
       this.run();
     });
     return btn;
@@ -117,13 +104,16 @@ export class SearchPanel {
     this.input.select();
   }
 
-  /** 一键查引用：填入查询、强制整词匹配，立即执行并聚焦面板。 */
+  /** 查找同名文本：填入查询、强制整词匹配，立即执行并聚焦面板。 */
   searchAll(query: string, caseSensitive = true): void {
     this.input.value = query;
     this.options = { wholeWord: true, useRegex: false, caseSensitive };
     this.wordBtn.classList.add("on");
     this.regexBtn.classList.remove("on");
     this.caseBtn.classList.toggle("on", caseSensitive);
+    this.wordBtn.setAttribute("aria-pressed", "true");
+    this.regexBtn.setAttribute("aria-pressed", "false");
+    this.caseBtn.setAttribute("aria-pressed", String(caseSensitive));
     this.run();
     this.focus();
   }
@@ -146,6 +136,7 @@ export class SearchPanel {
 
   async run(): Promise<void> {
     this.cancel();
+    this.updateScope();
     const request = this.request;
     this.hasRun = true; this.stale.hidden = true;
     const query = this.input.value;
@@ -169,7 +160,7 @@ export class SearchPanel {
     this.pending = false;
     const total = countMatches(results);
     this.countEl.textContent =
-      total === 0 ? "无结果" : `${total} 个结果，${results.length} 个文件${total >= 500 ? "（已截断）" : ""}`;
+      total === 0 ? "无结果：请检查名称、大小写和文件是否已纳入工程；不包含工程外及被排除文件。" : `${total} 个命中行，${results.length} 个文件${total >= 500 ? "（已截断）" : ""}`;
     for (const group of results) {
       this.resultsEl.appendChild(this.renderGroup(group));
     }
@@ -177,6 +168,11 @@ export class SearchPanel {
 
   markStale(): void {
     if (this.hasRun && this.input.value) this.stale.hidden = false;
+  }
+
+  private updateScope(): void {
+    const matching = this.options.useRegex ? "正则文本匹配" : this.options.wholeWord ? "整词文本匹配" : "文本匹配";
+    this.scope.textContent = `${matching}，不代表语义引用 · 已纳入工程的文件 · 含未保存内容`;
   }
 
   private renderGroup(group: FileMatches): HTMLElement {

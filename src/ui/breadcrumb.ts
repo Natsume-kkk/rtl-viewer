@@ -1,4 +1,5 @@
 import { filePathMenuItems, showCtxMenu, type MenuItem } from "./menu";
+import { filePathKey } from "../file-path";
 
 export function pathSegments(path: string): { name: string; path: string }[] {
   const normalized = path.replace(/\\/g, "/");
@@ -16,6 +17,7 @@ export function pathSegments(path: string): { name: string; path: string }[] {
 export class PathBreadcrumb {
   private path = "";
   private title = "";
+  private projectRoot = "";
   private observer: ResizeObserver;
   private onContextMenu = (event: MouseEvent) => {
     if (!this.path) return;
@@ -33,11 +35,15 @@ export class PathBreadcrumb {
     this.root.removeEventListener("contextmenu", this.onContextMenu);
     window.removeEventListener("pagehide", this.onPageHide);
   }
-  setPath(path: string, title: string): void { this.path = path; this.title = title; this.render(); }
+  setPath(path: string, title: string, projectRoot = ""): void { this.path = path; this.title = title; this.projectRoot = projectRoot; this.render(); }
   private render(): void {
     this.root.replaceChildren(); this.root.title = this.path || this.title;
     if (!this.path) { this.root.textContent = this.title; return; }
-    const segments = pathSegments(this.path);
+    const allSegments = pathSegments(this.path);
+    const projectKey = filePathKey(this.projectRoot).replace(/\/$/, "");
+    const projectIndex = this.projectRoot ? allSegments.findIndex(part => filePathKey(part.path).replace(/\/$/, "") === projectKey) : -1;
+    const inProject = projectIndex >= 0 && projectIndex < allSegments.length - 1;
+    const segments = inProject ? allSegments.slice(projectIndex) : allSegments;
     const button = (part: { name: string; path: string }, file: boolean) => {
       const el = document.createElement("button"); el.type = "button"; el.className = "path-segment";
       el.textContent = part.name; el.title = `${file ? "在资源管理器中显示" : "打开文件夹"}：${part.path}`;
@@ -47,17 +53,39 @@ export class PathBreadcrumb {
     const separator = () => { const el = document.createElement("span"); el.className = "path-separator"; el.textContent = "›"; el.setAttribute("aria-hidden", "true"); return el; };
     const nodes = segments.map((part, i) => button(part, i === segments.length - 1));
     nodes.forEach((el, i) => { if (i) this.root.append(separator()); this.root.append(el); });
-    if (this.root.scrollWidth > this.root.clientWidth && segments.length > 2) {
-      const overflow = document.createElement("button"); overflow.className = "path-overflow"; overflow.textContent = "…";
-      overflow.title = "上级目录"; overflow.setAttribute("aria-label", "展开上级目录"); overflow.setAttribute("aria-haspopup", "menu");
-      overflow.onclick = event => {
-        event.stopPropagation(); const rect = overflow.getBoundingClientRect();
-        const items: MenuItem[] = segments.slice(0, -2).map(part => ({ label: part.path, action: () => this.openDirectory(part.path) }));
-        showCtxMenu(rect.left, rect.bottom, items, overflow);
-      };
-      this.root.replaceChildren(overflow, separator(), nodes[nodes.length - 2], separator(), nodes[nodes.length - 1]);
-    }
     nodes.at(-1)?.classList.add("path-file");
     nodes.at(-2)?.classList.add("path-parent");
+    let prefix: HTMLElement | undefined;
+    if (inProject && projectIndex > 0) {
+      const full = document.createElement("button");
+      full.className = "path-overflow"; full.textContent = "…";
+      full.setAttribute("aria-label", "查看完整路径"); full.setAttribute("aria-haspopup", "menu"); full.title = this.path;
+      full.onclick = event => {
+        event.stopPropagation(); const rect = full.getBoundingClientRect();
+        showCtxMenu(rect.left, rect.bottom, [
+          ...allSegments.slice(0, -1).map(part => ({ label: part.path, action: () => this.openDirectory(part.path) })),
+          ...filePathMenuItems(this.path, this.reveal),
+        ], full);
+      };
+      this.root.prepend(full, separator());
+      prefix = full;
+    } else if (this.projectRoot && !inProject) {
+      const outside = document.createElement("span"); outside.className = "path-outside"; outside.textContent = "工程外";
+      this.root.prepend(outside);
+      prefix = outside;
+    }
+    if (this.root.scrollWidth > this.root.clientWidth && segments.length > 2) {
+      const overflow = prefix instanceof HTMLButtonElement ? prefix : document.createElement("button");
+      if (overflow !== prefix) {
+        overflow.className = "path-overflow"; overflow.textContent = "…";
+        overflow.title = "上级目录"; overflow.setAttribute("aria-label", "展开上级目录"); overflow.setAttribute("aria-haspopup", "menu");
+        overflow.onclick = event => {
+          event.stopPropagation(); const rect = overflow.getBoundingClientRect();
+          const items: MenuItem[] = segments.slice(0, -2).map(part => ({ label: part.path, action: () => this.openDirectory(part.path) }));
+          showCtxMenu(rect.left, rect.bottom, items, overflow);
+        };
+      }
+      this.root.replaceChildren(...(prefix && prefix !== overflow ? [prefix] : []), overflow, separator(), nodes[nodes.length - 2], separator(), nodes[nodes.length - 1]);
+    }
   }
 }

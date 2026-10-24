@@ -37,6 +37,8 @@ import { createModuleMetadataLoader } from "./app/module-metadata";
 import { createProjectScanner } from "./app/project-scanner";
 import { createExternalWatcher, type CachedFile } from "./app/watcher";
 import { attachSidebarWidth } from "./ui/sidebar-width";
+import { BottomPanels } from "./ui/bottom-panels";
+import { showCtxMenu } from "./ui/menu";
 import { indexedFilePath } from "./file-path";
 import type { FileVersion } from "./app/module-metadata";
 
@@ -72,6 +74,7 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   };
   const openWrap = document.createElement("span");
   openWrap.className = "open-wrap";
+  openWrap.id = "open-project-control";
   const openBtn = action("打开文件夹", "folder", () => void openProject());
   openBtn.className = "btn btn-primary";
   const recentBtn = document.createElement("button");
@@ -88,8 +91,16 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   const newBtn = createNewFileControl(extension => activeGroup().tabs.newFile(extension, state.folder));
   const saveBtn = action("保存", "save", () => void activeGroup().tabs.save());
   saveBtn.title = "保存 (Ctrl+S)";
-  const columnBtn = action("列编辑", "split", () => void openColumnEditor(activeGroup().editor));
-  columnBtn.title = "列编辑 (Alt+C)；Alt+拖动或 Alt+Shift+方向键选择矩形区域";
+  const editBtn = action("编辑", "chevron-down", () => {
+    const rect = editBtn.getBoundingClientRect();
+    showCtxMenu(rect.left, rect.bottom, [
+      { label: "列编辑 (Alt+C)", action: () => void openColumnEditor(activeGroup().editor) },
+      { label: "另存为 (Ctrl+Alt+S)", action: () => void activeGroup().tabs.saveAs() },
+      { label: "全部保存 (Ctrl+Shift+S)", action: () => void workspace.saveAll() },
+    ], editBtn);
+  });
+  editBtn.setAttribute("aria-haspopup", "menu");
+  editBtn.addEventListener("click", event => event.stopPropagation());
   const end = document.createElement("div");
   end.className = "toolbar-end";
   const searchBtn = action("搜索", "search", () => setSearchVisible(searchRoot.hidden));
@@ -113,7 +124,7 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   flowBtn.title = "信号链分析";
   flowBtn.setAttribute("aria-expanded", "false");
   end.append(searchBtn, splitBtn, flowBtn);
-  bar.append(openWrap, newBtn, saveBtn, columnBtn, end);
+  bar.append(openWrap, newBtn, saveBtn, editBtn, end);
   const progress = document.createElement("div");
   progress.id = "progress";
   progress.className = "progress";
@@ -239,10 +250,20 @@ const searchPanel = new SearchPanel(searchRootEl, {
   displayPath,
 });
 
+let searchWasVisible = false;
+const bottomPanels = new BottomPanels(document.getElementById("bottom-panels")!, {
+  search: searchRootEl, flow: document.getElementById("signal-flow")!,
+}, () => {
+  const searchVisible = bottomPanels.isVisible("search");
+  if (searchWasVisible && !searchVisible) searchPanel.cancel();
+  searchWasVisible = searchVisible;
+  document.getElementById("search-action")!.setAttribute("aria-expanded", String(searchVisible));
+  document.getElementById("flow-action")!.setAttribute("aria-expanded", String(bottomPanels.isVisible("flow")));
+});
+
 function setSearchVisible(visible: boolean, focus = true): void {
-  if (!visible) searchPanel.cancel();
-  searchRootEl.hidden = !visible;
-  document.getElementById("search-action")!.setAttribute("aria-expanded", String(visible));
+  if (visible) bottomPanels.show("search");
+  else bottomPanels.hide("search");
   if (visible && focus) searchPanel.focus();
 }
 
@@ -343,8 +364,8 @@ const signalController = createSignalController(document.getElementById("signal-
 });
 
 function setSignalFlowVisible(visible: boolean): void {
-  document.getElementById("signal-flow")!.hidden = !visible;
-  document.getElementById("flow-action")!.setAttribute("aria-expanded", String(visible));
+  if (visible) bottomPanels.show("flow");
+  else bottomPanels.hide("flow");
 }
 
 function toggleSignalFlow(): void {
@@ -416,10 +437,10 @@ function registerEditorActions(): void {
     });
   }
 
-  // 查找引用：选中或光标下的标识符 → 全局搜索（整词），Shift+F12 / 右键菜单。
+  // 同名文本：选中或光标下的标识符 → 全局搜索（整词），Shift+F12 / 右键菜单。
   registerEditorAction({
     id: "rtl.find-references",
-    label: "查找引用",
+    label: "查找同名文本",
     keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.F12],
     contextMenuGroupId: "navigation",
     contextMenuOrder: 1,
@@ -483,7 +504,7 @@ const workspace = createEditorWorkspace([editor, editor2], {
     outline.highlightLine(line);
   },
   hint: message => statusbar.hint(message),
-  hasProject: () => !!state.folder,
+  projectFolder: () => state.folder,
   openFolder: () => void openProject(),
   openSearch: () => setSearchVisible(true),
   newFile: () => void activeGroup().tabs.newFile(preferredNewFileType(), state.folder),
@@ -639,6 +660,10 @@ async function openFolder(folder: string): Promise<void> {
 }
 
 function updateProjectChrome(): void {
+  document.querySelectorAll<HTMLButtonElement>("#open-project-control button").forEach(button => {
+    button.classList.toggle("btn-primary", !state.folder);
+    button.classList.toggle("btn-ghost", !!state.folder);
+  });
   const name = state.folder.split(/[\\/]/).filter(Boolean).pop() || "未打开工程";
   for (const id of ["project-name", "project-title"]) {
     const el = document.getElementById(id)!;

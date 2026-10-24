@@ -47,10 +47,24 @@ it("查引用重置手工匹配选项，源码变化提示可刷新且保留查�
   root.querySelector<HTMLButtonElement>('[title="区分大小写"]')!.click();
   panel.searchAll("CLK", false);
   expect(onSearch).toHaveBeenLastCalledWith("CLK", { wholeWord: true, useRegex: false, caseSensitive: false });
+  expect(root.querySelector(".search-scope")?.textContent).toContain("整词文本匹配，不代表语义引用");
+  expect(root.querySelector(".search-scope")?.textContent).toContain("已纳入工程的文件 · 含未保存内容");
+  expect(root.querySelector('[title="整词匹配"]')?.getAttribute("aria-pressed")).toBe("true");
+  expect(root.querySelector('[title="区分大小写"]')?.getAttribute("aria-pressed")).toBe("false");
   panel.markStale();
   const refresh = root.querySelector<HTMLButtonElement>(".result-stale")!;
   expect(refresh.hidden).toBe(false); refresh.click(); expect(refresh.hidden).toBe(true);
   expect(root.querySelector<HTMLInputElement>("input")!.value).toBe("CLK");
   panel.searchAll("clk", true);
   expect(onSearch).toHaveBeenLastCalledWith("clk", { wholeWord: true, useRegex: false, caseSensitive: true });
+});
+
+it("零结果说明搜索范围，切换正则同步匹配方式与可访问状态", async () => {
+  const root = document.createElement("section");
+  const panel = new SearchPanel(root, { onOpen: vi.fn(), displayPath: file => file, onSearch: () => [] });
+  panel.searchAll("missing");
+  await vi.waitFor(() => expect(root.querySelector(".search-count")?.textContent).toContain("不包含工程外及被排除文件"));
+  root.querySelector<HTMLButtonElement>('[title="正则表达式"]')!.click();
+  expect(root.querySelector(".search-scope")?.textContent).toContain("正则文本匹配");
+  expect(root.querySelector('[title="正则表达式"]')?.getAttribute("aria-pressed")).toBe("true");
 });

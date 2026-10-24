@@ -36,11 +36,7 @@ export class SignalFlowPanel {
     this.body = document.createElement("div"); this.body.className = "flow-body";
     this.stale = document.createElement("button"); this.stale.className = "text-button result-stale";
     this.stale.textContent = "源码已变化，刷新当前信号链"; this.stale.hidden = true; this.stale.onclick = () => actions.refresh?.();
-    const resize=document.createElement("div");resize.className="search-resize";resize.tabIndex=0;resize.setAttribute("role","separator");resize.setAttribute("aria-label","调整信号链高度");resize.setAttribute("aria-orientation","horizontal");
-    const height=(h:number)=>{const parent=root.parentElement;const other=parent?.querySelector<HTMLElement>("#search-root:not([hidden])")?.clientHeight??0;const maximum=Math.max(150,(parent?.clientHeight??600)-other-140);const next=Math.max(150,Math.min(h,maximum));root.style.height=`${next}px`;resize.setAttribute("aria-valuenow",String(Math.round(next)));};
-    resize.onkeydown=e=>{if(e.key==="ArrowUp"||e.key==="ArrowDown"){e.preventDefault();height(root.clientHeight+(e.key==="ArrowUp"?24:-24));}};
-    resize.onpointerdown=e=>{if(e.button!==0)return;e.preventDefault();resize.setPointerCapture(e.pointerId);const y=e.clientY,start=root.clientHeight;const move=(m:PointerEvent)=>height(start+y-m.clientY);const end=()=>{resize.removeEventListener("pointermove",move);resize.removeEventListener("pointerup",end);resize.removeEventListener("pointercancel",end);resize.removeEventListener("lostpointercapture",end);};resize.addEventListener("pointermove",move);resize.addEventListener("pointerup",end);resize.addEventListener("pointercancel",end);resize.addEventListener("lostpointercapture",end);};
-    root.append(resize, head, tools, this.stale, this.status, this.body);
+    root.append(head, tools, this.stale, this.status, this.body);
     root.addEventListener("click", event => {
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-file]");
       if (button?.dataset.file) {

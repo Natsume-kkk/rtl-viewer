@@ -22,7 +22,7 @@ interface WorkspaceContext {
   onContentChange(active: boolean): void;
   onCursorChange(line: number): void;
   hint(message: string): void;
-  hasProject(): boolean;
+  projectFolder(): string;
   openFolder(): void;
   openSearch(): void;
   newFile(): void;
@@ -185,7 +185,7 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
     hintEl.className = "editor-empty-hint";
     const actions = document.createElement("div");
     actions.className = "editor-empty-actions";
-    if (ctx.hasProject()) {
+    if (ctx.projectFolder()) {
       title.textContent = "未打开文件";
       hintEl.textContent = "从左侧层级树选择模块，或使用全工程搜索定位源码";
       actions.append(emptyAction("search", "全工程搜索", true, ctx.openSearch), emptyAction("plus", "新建 .v", false, ctx.newFile));
@@ -201,10 +201,7 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
   function syncEditorChrome(idx: number): void {
     const g = groups[idx];
     const tab = g.tabs.activeTab;
-    const foot = document.getElementById(`editor-foot-${idx + 1}`)!;
-    breadcrumbs[idx].setPath(tab?.path ?? "", tab?.title ?? "未打开文件");
-    foot.textContent = tab ? `${tab.title} · ${tab.model.getLanguageId()}` : "打开工程，开始阅读源码";
-    foot.title = foot.textContent;
+    breadcrumbs[idx].setPath(tab?.path ?? "", tab?.title ?? "未打开文件", ctx.projectFolder());
     const emptyEl = empties[idx];
     emptyEl.hidden = !!tab;
     if (!tab) renderEmpty(emptyEl);

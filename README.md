@@ -40,7 +40,7 @@
 | 打开工程文件夹／单文件 | `Ctrl+Alt+O`／`Ctrl+O` |
 | 保存／另存为 | `Ctrl+S`／`Ctrl+Alt+S` |
 | 跳转模块定义 | `F12`／`Ctrl+Click` |
-| 全工程搜索／查找引用 | `Ctrl+Shift+F`／`Shift+F12` |
+| 全工程搜索／查找同名文本 | `Ctrl+Shift+F`／`Shift+F12` |
 | 当前文件符号 | `Ctrl+Shift+O` |
 | 导航后退／前进 | `Alt+←`／`Alt+→` |
 | 克隆到另一视图／切换视图焦点 | `Ctrl+Alt+V`／`F8` |

@@ -1,6 +1,7 @@
 import { setIcon } from "./icons";
 
 export const CARD_WIDTH = 236, CARD_STEP = 276, CANVAS_PAD = 24;
+export const CANVAS_TOP = 12;
 const MAX_CARD_WIDTH = 1200, AUTO_MAX_WIDTH = 560;
 export type CardWidthState = Record<string, number>;
 /** Widths belong to a single trace; hidden and lazily created cards retain their entries. */

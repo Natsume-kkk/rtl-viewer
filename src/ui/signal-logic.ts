@@ -2,7 +2,7 @@ import type { Expr } from "../analysis/expression";
 import type { LogicGraph } from "../analysis/local";
 import type { Driver } from "../analysis/project";
 import type { TraceNode } from "../model/signal-flow";
-import { CardWidths, columnPositions, cardHeader, appendSource, makeWires, drawWires, type CardWidthState, type CardPosition, type CardEdge } from "./signal-canvas";
+import { CardWidths, columnPositions, cardHeader, appendSource, makeWires, drawWires, CANVAS_TOP, type CardWidthState, type CardPosition, type CardEdge } from "./signal-canvas";
 import { setIcon } from "./icons";
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag:K,cls="",text=""):HTMLElementTagNameMap[K]=>{const n=document.createElement(tag);n.className=cls;n.textContent=text;return n;};
@@ -220,7 +220,7 @@ export class SignalLogicView {
     const widths=new Map<number,number>();
     for(const[id,card]of this.cards)if(!card.hidden){const column=rank(id);widths.set(column,Math.max(widths.get(column)??0,this.widths.get(id)));}
     const offsets=columnPositions(widths),columns=new Map<number,number>(),positions=new Map<string,CardPosition>();
-    for(const[id,card]of this.cards){if(card.hidden)continue;const column=rank(id),x=offsets.get(column)!,y=columns.get(column)??28,h=card.offsetHeight||96,w=this.widths.get(id);card.style.left=`${x}px`;card.style.top=`${y}px`;positions.set(id,{x,y,h,w,column});columns.set(column,y+h+24);}
+    for(const[id,card]of this.cards){if(card.hidden)continue;const column=rank(id),x=offsets.get(column)!,y=columns.get(column)??CANVAS_TOP,h=card.offsetHeight||96,w=this.widths.get(id);card.style.left=`${x}px`;card.style.top=`${y}px`;positions.set(id,{x,y,h,w,column});columns.set(column,y+h+24);}
     drawWires(this.canvas,this.svg,positions,edges);
   }
 }

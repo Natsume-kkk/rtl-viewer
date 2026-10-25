@@ -39,7 +39,7 @@ it("端口卡片保持默认布局，独立加宽按列推开节点和连线，�
  expect(a.style.width).toBe("500px");expect(focus.style.width).toBe("236px");expect(focus.style.left).toBe("564px");expect(b.style.left).toBe("840px");
  expect(handle.getAttribute("aria-orientation")).toBe("vertical");expect(handle.getAttribute("aria-valuenow")).toBe("500");
  const wire=root.querySelector<SVGPathElement>(`.logic-wire[data-to="focus"]`)!;
- expect(wire.getAttribute("d")).toBe("M524,82 L564,82");
+ expect(wire.getAttribute("d")).toBe("M524,56 L564,56");
  expect(body.scrollLeft).toBe(100);expect(body.scrollTop).toBe(40);
  key(b,"ArrowRight");expect(b.style.width).toBe("260px");expect(c.style.width).toBe("236px");
  expect(root.querySelector<HTMLElement>(".logic-canvas")!.style.width).toBe("1124px");
@@ -89,7 +89,7 @@ it("宽度相同列取最大值，垂直未知边连接各卡片实际中心",()
  const {root,panel}=panelSetup(),trace=leaf("top.x",[leaf("top/ip.i")]);trace.children[0].reason="黑盒或缺失定义";panel.result("x",trace,trace,"");
  const focus=node(root,"focus"),unknown=[...root.querySelectorAll<HTMLElement>(".port-card")].find(c=>c!==focus)!;
  key(focus,"ArrowRight");const wire=root.querySelector<SVGPathElement>(".logic-wire")!;
- expect(wire.getAttribute("d")).toBe("M142,174 L154,134");
+ expect(wire.getAttribute("d")).toBe("M142,148 L154,108");
  expect(unknown.style.width).toBe("236px");expect(root.querySelector<HTMLElement>(".logic-canvas")!.style.width).toBe("308px");panel.message("");root.remove();
 });
 

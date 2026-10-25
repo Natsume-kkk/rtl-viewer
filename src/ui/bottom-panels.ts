@@ -1,11 +1,18 @@
+import { setIcon } from "./icons";
+
 type Panel = "search" | "flow";
+const DEFAULT_HEIGHT = 380;
 
 /** 只管理面板可见性和空间，不重建搜索或追踪视图。 */
 export class BottomPanels {
   private active: Panel | undefined;
   private opened = new Set<Panel>();
   private together = false;
-  private preferredHeight = 300;
+  private preferredHeight = DEFAULT_HEIGHT;
+  private expanded = false;
+  private expand: HTMLButtonElement;
+  private header: HTMLElement;
+  private flowHeader?: HTMLElement;
   private observer: ResizeObserver;
   private resize: HTMLElement;
   private buttons = new Map<Panel, HTMLButtonElement>();
@@ -25,7 +32,7 @@ export class BottomPanels {
     this.resize.onkeydown = event => {
       if (!["ArrowUp", "ArrowDown", "Home"].includes(event.key)) return;
       event.preventDefault();
-      this.preferredHeight = event.key === "Home" ? 300 : root.clientHeight + (event.key === "ArrowUp" ? 24 : -24);
+      this.preferredHeight = event.key === "Home" ? DEFAULT_HEIGHT : root.clientHeight + (event.key === "ArrowUp" ? 24 : -24);
       this.render();
     };
     this.resize.onpointerdown = event => {
@@ -59,6 +66,9 @@ export class BottomPanels {
       this.buttons.set(id, button);
       bar.append(button);
     }
+    this.header = document.createElement("div");
+    this.header.className = "bottom-panel-header";
+    bar.append(this.header);
     this.hint = document.createElement("span");
     this.hint.className = "bottom-panel-hint";
     this.hint.setAttribute("role", "status");
@@ -69,7 +79,13 @@ export class BottomPanels {
       if (this.together) { this.opened.add("search"); this.opened.add("flow"); }
       this.render();
     };
-    bar.append(this.hint, this.simultaneous);
+    this.expand = document.createElement("button");
+    this.expand.className = "icon-button";
+    this.expand.onclick = () => {
+      this.expanded = !this.expanded;
+      this.render();
+    };
+    bar.append(this.hint, this.simultaneous, this.expand);
     root.prepend(this.resize, bar);
     this.observer = new ResizeObserver(() => this.render());
     this.observer.observe(root.parentElement!);
@@ -90,30 +106,55 @@ export class BottomPanels {
 
   isVisible(panel: Panel): boolean { return !this.panels[panel].hidden; }
 
+  /** 沿用信号面板原有控件和事件，只把标题与操作放进共用栏。 */
+  attachFlowHeader(header: HTMLElement): void {
+    this.flowHeader = header;
+    this.header.append(header);
+    this.render();
+  }
+
+  restoreEditor(): void {
+    if (!this.expanded) return;
+    this.expanded = false;
+    this.render();
+  }
+
   private render(): void {
     const available = this.root.parentElement!.clientHeight;
     // 常规窗口保留 320 px 编辑区（标签／路径栏之外约 10 行源码），小窗口保留至少一半空间。
     const maximum = Math.max(0, available - Math.min(320, available * 0.55));
-    const canShare = maximum >= 364; // 共用工具栏 44 px + 每个面板至少 160 px。
+    const canShare = this.root.parentElement!.clientWidth >= 860 && (this.expanded ? available : maximum) >= 300;
     const shared = this.together && this.opened.size === 2 && canShare;
-    const minimum = Math.min(shared ? 364 : 180, maximum);
-    const height = Math.max(minimum, Math.min(this.preferredHeight, maximum));
+    const minimum = Math.min(shared ? 300 : 180, maximum);
+    if (!this.active) this.expanded = false;
+    const height = this.expanded ? available : Math.max(minimum, Math.min(this.preferredHeight, maximum));
     this.root.hidden = !this.active;
     this.root.style.height = `${height}px`;
     this.root.classList.toggle("panels-together", shared);
+    this.root.parentElement!.classList.toggle("panels-expanded", this.expanded);
+    this.resize.hidden = this.expanded;
+    const expandLabel = this.expanded ? "恢复源码与面板" : "展开底部面板";
+    this.expand.title = expandLabel;
+    this.expand.setAttribute("aria-label", expandLabel);
+    this.expand.setAttribute("aria-pressed", String(this.expanded));
+    setIcon(this.expand, this.expanded ? "restore" : "maximize");
     this.resize.setAttribute("aria-valuemin", String(Math.round(minimum)));
     this.resize.setAttribute("aria-valuemax", String(Math.round(maximum)));
     this.resize.setAttribute("aria-valuenow", String(Math.round(height)));
-    this.simultaneous.setAttribute("aria-pressed", String(this.together));
-    this.hint.textContent = this.together && this.opened.size === 2 && !canShare ? "高度不足，暂用切换" : "";
+    this.simultaneous.setAttribute("aria-pressed", String(shared));
+    this.simultaneous.disabled = !canShare && !this.together;
+    this.simultaneous.title = canShare ? "左右并列查看信号链与搜索" : "空间不足，暂用切换；放大窗口后可同时查看";
+    this.hint.textContent = this.together && this.opened.size === 2 && !canShare ? "空间不足，暂用切换" : "";
+    this.hint.hidden = !this.hint.textContent;
     for (const [id, button] of this.buttons) {
       const visible = !!this.active && (id === this.active || shared);
       const panel = this.panels[id];
-      const hadFocus = !visible && panel.contains(document.activeElement);
+      const hadFocus = !visible && (panel.contains(document.activeElement) || id === "flow" && this.header.contains(document.activeElement));
       panel.hidden = !visible;
       button.setAttribute("aria-pressed", String(visible));
       if (hadFocus && this.active) this.buttons.get(this.active)!.focus();
     }
+    this.header.hidden = this.panels.flow.hidden;
     this.changed();
   }
 
@@ -123,6 +164,9 @@ export class BottomPanels {
     this.resize.onkeydown = this.resize.onpointerdown = null;
     this.buttons.forEach(button => { button.onclick = null; });
     this.simultaneous.onclick = null;
+    this.expand.onclick = null;
+    this.root.parentElement!.classList.remove("panels-expanded");
+    if (this.flowHeader) this.panels.flow.prepend(this.flowHeader);
     window.removeEventListener("pagehide", this.onPageHide);
   }
 }

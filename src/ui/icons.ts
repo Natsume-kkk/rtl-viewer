@@ -13,7 +13,7 @@ export type IconName =
   | "warning"
   | "arrow-left"
   | "arrow-right"
-  | "module" | "folder" | "plus" | "save" | "search" | "split" | "ports"
+  | "module" | "folder" | "file" | "plus" | "save" | "search" | "split" | "ports"
   | "minimize" | "maximize" | "restore";
 
 const SW = `stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"`;
@@ -24,6 +24,7 @@ const ICONS: Record<IconName, string> = {
   "restore": `<path d="M6 3h7v7M3 6h7v7H3z" ${SW}/>`,
   "module": `<rect x="4" y="4" width="8" height="8" rx="2" ${SW}/><path d="M8 1.5V4M8 12v2.5M1.5 8H4M12 8h2.5" ${SW}/>`,
   "folder": `<path d="M2 5V4a1.5 1.5 0 0 1 1.5-1.5H6L8 5h4.5A1.5 1.5 0 0 1 14 6.5v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5Z" ${SW}/>`,
+  "file": `<path d="M4 2.5h5l3 3V13.5H4zM9 2.5v3h3" ${SW}/>`,
   "plus": `<path d="M8 3v10M3 8h10" ${SW}/>`,
   "save": `<path d="M4.5 2.5h6l3 3v6a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z" ${SW}/><path d="M5.5 2.5v4h5v-4M5.5 13.5v-4h5v4" ${SW}/>`,
   "search": `<circle cx="7" cy="7" r="4.5" ${SW}/><path d="m10.3 10.3 3.2 3.2" ${SW}/>`,

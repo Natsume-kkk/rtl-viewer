@@ -8,7 +8,7 @@ export interface RecentMenuCallbacks {
   onRemove(path: string): void;
 }
 
-/** 「打开文件夹」旁的最近工程下拉菜单。 */
+/** 「打开」菜单与快捷键共用的最近工程列表。 */
 export class RecentMenu {
   private menu: HTMLDivElement | null = null;
   private releaseKeyboard?: () => void;
@@ -44,7 +44,7 @@ export class RecentMenu {
     this.anchorEl.appendChild(menu);
     const anchor = document.querySelector(".open-wrap")?.getBoundingClientRect();
     if (anchor) { menu.style.top = `${anchor.bottom + 4}px`; menu.style.left = `${anchor.left}px`; }
-    this.releaseKeyboard = activateMenu(menu, () => this.close(), document.querySelector<HTMLElement>(".recent-btn") ?? undefined);
+    this.releaseKeyboard = activateMenu(menu, () => this.close(), document.querySelector<HTMLElement>(".open-menu-button") ?? undefined);
   }
 
   close(): void {

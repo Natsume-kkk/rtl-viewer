@@ -149,7 +149,7 @@ async function setup() {
   const ctx = {
     cachedFile: vi.fn((path: string) => path.includes("slow") ? undefined : ({ content: "module top;\nwire a;\nwire b;\nendmodule", encoding: "utf8", mtime: 10 })),
     onFileChanged: vi.fn(), onActiveChange: vi.fn(), onContentChange: vi.fn(), onCursorChange: vi.fn(), hint: vi.fn(),
-    projectFolder: vi.fn(() => "D:/p"), openFolder: vi.fn(), openSearch: vi.fn(), newFile: vi.fn(),
+    projectFolder: vi.fn(() => "D:/p"), openFolder: vi.fn(), openSourceFile: vi.fn(), openSearch: vi.fn(), newFile: vi.fn(),
   };
   const workspace = createEditorWorkspace(editors as unknown as Parameters<typeof createEditorWorkspace>[0], ctx);
   cleanup.push(() => workspace.dispose());
@@ -188,6 +188,8 @@ describe("编辑工作区", () => {
     expect(ctx.openSearch).toHaveBeenCalled();
     button("新建").click();
     expect(ctx.newFile).toHaveBeenCalled();
+    button("打开文件 (Ctrl+O)").click();
+    expect(ctx.openSourceFile).toHaveBeenCalledOnce();
 
     await w.openFile("D:/p/a.v");
     expect(empty.hidden).toBe(true);
@@ -200,6 +202,8 @@ describe("编辑工作区", () => {
     expect(empty.textContent).toContain("未打开工程");
     button("打开文件夹").click();
     expect(ctx.openFolder).toHaveBeenCalled();
+    button("打开文件 (Ctrl+O)").click();
+    expect(ctx.openSourceFile).toHaveBeenCalledTimes(2);
   });
 
   it("移走左侧最后一个标签时保留右侧，重复克隆不增加标签或改变对侧阅读位置", async () => {

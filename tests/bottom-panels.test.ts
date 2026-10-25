@@ -5,7 +5,7 @@ import { BottomPanels } from "../src/ui/bottom-panels";
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(fn => fn()); vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
-function setup(height = 710) {
+function setup(height = 710, width = 1000) {
   let resized = () => {};
   const disconnect = vi.fn();
   vi.stubGlobal("ResizeObserver", class {
@@ -15,13 +15,14 @@ function setup(height = 710) {
   document.body.innerHTML = '<div id="workspace"><section id="panels" hidden><div><section id="search" hidden><input value="clk"><p>已完成结果</p></section><aside id="flow" hidden><p>top/u0.clk</p></aside></div></section></div>';
   const workspace = document.getElementById("workspace")!, root = document.getElementById("panels")!;
   Object.defineProperty(workspace, "clientHeight", { get: () => height });
+  Object.defineProperty(workspace, "clientWidth", { get: () => width });
   Object.defineProperty(root, "clientHeight", { get: () => Number.parseFloat(root.style.height) || 0 });
   const search = document.getElementById("search")!, flow = document.getElementById("flow")!;
   const changed = vi.fn();
   const panels = new BottomPanels(root, { search, flow }, changed);
   cleanup.push(() => panels.dispose());
   const share = [...root.querySelectorAll("button")].find(button => button.textContent === "同时查看")!;
-  return { panels, root, search, flow, share, changed, disconnect, resize: (next: number) => { height = next; resized(); } };
+  return { panels, root, search, flow, share, changed, disconnect, resize: (next: number, nextWidth = width) => { height = next; width = nextWidth; resized(); } };
 }
 
 it("默认切换保留查询、追踪节点与滚动状态，收起后可重新打开", () => {
@@ -48,9 +49,9 @@ it("显式共存保护编辑区，缩窗退回切换并在放大后恢复偏好"
   expect(710 - root.clientHeight).toBeGreaterThanOrEqual(320);
   resize(500);
   expect(search.hidden).toBe(true); expect(flow.hidden).toBe(false);
-  expect(root.textContent).toContain("高度不足，暂用切换");
+  expect(root.textContent).toContain("空间不足，暂用切换");
   expect(500 - root.clientHeight).toBeGreaterThanOrEqual(275);
-  expect(share.getAttribute("aria-pressed")).toBe("true");
+  expect(share.getAttribute("aria-pressed")).toBe("false");
   resize(710);
   expect(search.hidden || flow.hidden).toBe(false);
   share.click(); expect(search.hidden).toBe(true);
@@ -61,7 +62,51 @@ it("键盘调整受空间上限约束，Home 恢复，销毁解除观察与键�
   const resize = root.querySelector<HTMLElement>('[role="separator"]')!;
   for (let i = 0; i < 20; i++) resize.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp" }));
   expect(root.clientHeight).toBe(390);
-  resize.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" })); expect(root.clientHeight).toBe(300);
+  resize.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" })); expect(root.clientHeight).toBe(380);
   panels.dispose(); expect(disconnect).toHaveBeenCalledOnce();
-  resize.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp" })); expect(root.clientHeight).toBe(300);
+  resize.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp" })); expect(root.clientHeight).toBe(380);
+});
+
+it("共存同时考虑宽度，退回时保留查询和偏好，不把未显示的面板标为按下", () => {
+  const { panels, root, search, flow, share, resize } = setup();
+  panels.show("flow"); share.click();
+  const input = search.querySelector("input")!;
+  input.focus();
+  resize(710, 650);
+  expect(root.classList.contains("panels-together")).toBe(false);
+  expect(search.hidden).toBe(true); expect(flow.hidden).toBe(false);
+  expect(search.contains(document.activeElement)).toBe(false);
+  expect(input.value).toBe("clk");
+  resize(710, 1000);
+  expect(root.classList.contains("panels-together")).toBe(true);
+  expect(search.querySelector("input")).toBe(input);
+});
+
+it("展开、恢复和关闭保留面板内容与原高度，并在全部收起后恢复编辑区", () => {
+  const { panels, root, flow } = setup(); panels.show("flow");
+  const expand = root.querySelector<HTMLButtonElement>('[aria-label="展开底部面板"]')!;
+  const original = flow.firstChild;
+  flow.scrollTop = 90;
+  expand.click();
+  expect(root.clientHeight).toBe(710);
+  expect(root.parentElement!.classList.contains("panels-expanded")).toBe(true);
+  expect(root.querySelector<HTMLElement>('[role="separator"]')!.hidden).toBe(true);
+  panels.restoreEditor();
+  expect(root.clientHeight).toBe(380); expect(flow.firstChild).toBe(original); expect(flow.scrollTop).toBe(90);
+  expand.click(); panels.hide("flow");
+  expect(root.parentElement!.classList.contains("panels-expanded")).toBe(false);
+  panels.show("flow"); expect(root.clientHeight).toBe(380);
+});
+
+it("合并标题沿用原按钮事件，切换后焦点不留在隐藏标题，销毁归还标题", () => {
+  const { panels, root, flow } = setup();
+  const header = document.createElement("div"), action = document.createElement("button"), clicked = vi.fn();
+  action.onclick = clicked; header.append(action); flow.prepend(header);
+  panels.attachFlowHeader(header); panels.show("flow");
+  expect(root.querySelector(".bottom-panel-header")!.contains(header)).toBe(true);
+  action.click(); expect(clicked).toHaveBeenCalledOnce(); action.focus(); panels.show("search");
+  expect(root.querySelector<HTMLElement>(".bottom-panel-header")!.hidden).toBe(true);
+  expect(document.activeElement).not.toBe(action);
+  panels.show("flow"); expect(root.querySelector<HTMLElement>(".bottom-panel-header")!.hidden).toBe(false);
+  panels.dispose(); expect(flow.firstChild).toBe(header);
 });

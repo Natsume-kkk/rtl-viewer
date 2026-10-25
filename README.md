@@ -28,7 +28,7 @@
 
 在 [Windows CI](https://github.com/Natsume-kkk/rtl-viewer/actions/workflows/ci.yml) 中选择最近一次成功的 `main` 运行，从页面底部 Artifacts 下载 `rtl-viewer-windows-x64`。GitHub 要求下载 Artifacts 必须登录账号；构建产物保留 7 天，过期后可手动运行工作流重新生成。
 
-1. 点击“打开文件夹”或将源码文件夹拖入窗口；也可先打开仓库中的 `tests/samples/basic/` 熟悉界面。
+1. 从“打开 → 打开文件夹”进入或将源码文件夹拖入窗口；也可先打开仓库中的 `tests/samples/basic/` 熟悉界面。只阅读单文件时，使用“打开 → 打开文件”或 `Ctrl+O`。
 2. 展开左侧层级树，点击模块查看定义；通过节点跳转按钮查看父模块中的例化位置。
 3. 在源码信号上右键选择“追踪此信号”，查看来源、去向或模块内逻辑；点击卡片中的定位图标返回对应源码。
 4. 按 `Ctrl+Alt+V` 将当前文档克隆到另一视图，通过顶部“视图”菜单切换排列和同步滚动；详细操作见 [双视图与标签拖动](docs/usage.md#双视图与标签拖动)。

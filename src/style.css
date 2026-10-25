@@ -293,17 +293,7 @@ body.resizing {
   position: relative;
 }
 
-.open-wrap .btn-primary:first-child {
-  border-radius: var(--radius-control) 0 0 var(--radius-control);
-}
-
-.open-wrap .recent-btn {
-  padding: 0 6px;
-  border-radius: 0 var(--radius-control) var(--radius-control) 0;
-  border-left: 0;
-}
-
-.recent-btn svg {
+.open-menu-button > .icon:last-child svg {
   width: 12px;
   height: 12px;
 }
@@ -1008,14 +998,24 @@ body.resizing {
 .panel-resize:hover { background: var(--accent); }
 #bottom-panels { display: flex; flex-direction: column; flex: none; min-height: 0; border-top: 1px solid var(--border-strong); }
 #bottom-panels[hidden] { display: none; }
-.bottom-panel-bar { display: flex; align-items: center; gap: 6px; padding: 3px 10px; height: 38px; flex: none; background: var(--surface-app); border-bottom: 1px solid var(--border-subtle); }
-.bottom-panel-bar button { padding: 4px 8px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--fg-secondary); font: var(--fs-body) var(--font-ui); cursor: pointer; white-space: nowrap; }
+.bottom-panel-bar { display: flex; align-items: center; gap: 6px; padding: 0 10px; height: 40px; flex: none; background: var(--surface-app); border-bottom: 1px solid var(--border-subtle); }
+.bottom-panel-bar > button { padding: 4px 8px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--fg-secondary); font: var(--fs-body) var(--font-ui); cursor: pointer; white-space: nowrap; flex: none; }
 .bottom-panel-bar button:hover { background: var(--surface-hover); }
 .bottom-panel-bar button[aria-pressed="true"] { background: var(--surface-active); color: var(--accent); }
-.bottom-panel-hint { flex: 1; color: var(--fg-secondary); font-size: var(--fs-caption); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bottom-panel-bar > button:disabled { color: var(--fg-faint); cursor: default; }
+.bottom-panel-header { flex: 1; min-width: 0; }
+.bottom-panel-header[hidden] { display: none; }
+.bottom-panel-header[hidden] + .bottom-panel-hint { margin-left: auto; }
+.bottom-panel-bar > button[aria-controls] { height: 40px; border-radius: 0; border-bottom: 2px solid transparent; }
+.bottom-panel-bar > button[aria-controls][aria-pressed="true"] { background: transparent; color: var(--fg); border-bottom-color: var(--accent); }
+.bottom-panel-hint { margin-left: auto; color: var(--fg-secondary); font-size: var(--fs-caption); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bottom-panel-bar > .icon-button { padding: 5px; }
+.panels-expanded > #main-area { display: none; }
+.panel-resize[hidden] { display: none; }
 .bottom-panel-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.panels-together .bottom-panel-content { display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
-.panels-together #search-root { border-top: 1px solid var(--border-strong); }
+.panels-together .bottom-panel-content { display: grid; grid-template-columns: minmax(0, 1fr) 280px; }
+.panels-together #search-root { border-left: 1px solid var(--border-strong); }
+.panels-together .search-heading { display: none; }
 .search-scope { margin: 0; padding: 3px 8px; color: var(--fg-secondary); font-size: var(--fs-caption); line-height: 1.6; }
 .search-bar, .search-scope, .search-count { flex: none; }
 .search-heading { font-size: var(--fs-caption); font-weight: 600; margin-right: 8px; }
@@ -1451,13 +1451,15 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 }
 
 /* 信号链共用已确认预览的横向卡片、源码入口与分支代码区。 */
-#signal-flow .panel-head { height: 42px; padding: 0 16px; gap: 12px; letter-spacing: normal; text-transform: none; font-weight: 500; }
-#signal-flow .panel-head .text-button { margin: 0; padding: 3px 0; font-size: var(--fs-caption); white-space: nowrap; }
-#signal-flow .panel-head .text-button:disabled { color: var(--fg-faint); cursor: default; text-decoration: none; }
+.flow-head { height: 42px; padding: 0 16px; gap: 12px; letter-spacing: normal; text-transform: none; font-weight: 500; }
+.flow-head .text-button { margin: 0; padding: 3px 0; font-size: var(--fs-caption); white-space: nowrap; }
+.flow-head .text-button:disabled { color: var(--fg-faint); cursor: default; text-decoration: none; }
+.bottom-panel-header .flow-head { height: 40px; padding: 0; gap: 8px; border: 0; }
+.bottom-panel-header .flow-title { display: none; }
 .flow-identity { display: flex; flex: 1; min-width: 0; margin-right: auto; color: var(--accent); font: var(--fs-body) var(--font-mono); }
-#signal-flow .flow-path { display: inline; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#signal-flow .flow-path::after { content: "."; }
-#signal-flow .flow-selected { display: inline; min-width: 0; color: inherit; font: inherit; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-path { display: inline; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-path::after { content: "."; }
+.flow-selected { display: inline; min-width: 0; color: inherit; font: inherit; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .flow-mode { color: var(--fg-secondary); font-size: var(--fs-caption); font-weight: 400; white-space: nowrap; }
 #signal-flow .flow-tools { display: contents; }
 #signal-flow .flow-following { padding: 4px 16px; font-size: var(--fs-caption); }
@@ -1482,8 +1484,8 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .signal-match { color: var(--mark-fg); background: var(--mark-bg); font-weight: 600; }
 .logic-card-head { display: flex; align-items: center; gap: 6px; }
 .operation-name { font: 13px/1.5 var(--font-mono); overflow-wrap: anywhere; }
-.source-jump { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--fg-secondary); cursor: pointer; flex: none; }
-.source-jump:hover { color: var(--accent); }
+.source-jump { margin-left: auto; width: 28px; height: 28px; padding: 6px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--fg-secondary); cursor: pointer; flex: none; }
+.source-jump:hover { color: var(--accent); background: var(--surface-active); }
 .source-jump:focus-visible { outline: 1px solid var(--accent); }
 .logic-detail { display: block; font: var(--fs-caption)/1.6 var(--font-mono); color: var(--fg-secondary); overflow-wrap: anywhere; margin: 4px 0 0; }
 .logic-clock { display: block; font: var(--fs-caption)/1.6 var(--font-mono); color: var(--sem-module); margin-top: 4px; }
@@ -1492,7 +1494,7 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .assignment-block { margin-top: 10px; font: var(--fs-body)/1.65 var(--font-mono); }
 .assignment-header { cursor: pointer; color: var(--accent); overflow-wrap: anywhere; }
 .assignment-body { max-height: 260px; overflow: auto; padding-top: 6px; }
-.assignment-row { display: flex; align-items: flex-start; gap: 4px; }
+.assignment-row { display: flex; align-items: flex-start; gap: 4px; min-height: 28px; }
 .assignment-row .logic-expression { flex: 1; min-width: 0; margin: 0; }
 .assignment-source { margin-top: 2px; }
 .logic-driver + .logic-driver { border-top: 1px solid var(--border-subtle); margin-top: 8px; padding-top: 5px; }
@@ -1516,7 +1518,7 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .port-card .flow-reason { margin: 7px 0 0; font-size: var(--fs-caption); }
 .port-pin { color: var(--sem-port-dir); }
 .port-boundary { display: block; margin-top: 9px; color: var(--fg-secondary); font: var(--fs-caption)/1.5 var(--font-ui); }
-@media(max-width:1100px) { #signal-flow .panel-head { gap: 8px; padding: 0 12px; } }
+@media(max-width:1100px) { .flow-head { gap: 8px; padding: 0 12px; } .bottom-panel-header .flow-head { gap: 5px; } .bottom-panel-bar { gap: 4px; padding: 0 6px; } }
 
 .path-continue { display: block; margin-top: 10px; }
 .path-continue[hidden] { display: none; }

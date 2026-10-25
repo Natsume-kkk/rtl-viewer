@@ -24,6 +24,7 @@ interface WorkspaceContext {
   hint(message: string): void;
   projectFolder(): string;
   openFolder(): void;
+  openSourceFile(): void;
   openSearch(): void;
   newFile(): void;
 }
@@ -188,11 +189,11 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
     if (ctx.projectFolder()) {
       title.textContent = "未打开文件";
       hintEl.textContent = "从左侧层级树选择模块，或使用全工程搜索定位源码";
-      actions.append(emptyAction("search", "全工程搜索", true, ctx.openSearch), emptyAction("plus", "新建 .v", false, ctx.newFile));
+      actions.append(emptyAction("search", "全工程搜索", true, ctx.openSearch), emptyAction("file", "打开文件 (Ctrl+O)", false, ctx.openSourceFile), emptyAction("plus", "新建 .v", false, ctx.newFile));
     } else {
       title.textContent = "未打开工程";
-      hintEl.textContent = "打开源码文件夹后，从层级树选择模块开始阅读";
-      actions.append(emptyAction("folder", "打开文件夹 (Ctrl+Alt+O)", true, ctx.openFolder), emptyAction("plus", "新建 .v", false, ctx.newFile));
+      hintEl.textContent = "打开源码文件夹浏览层级，或单独打开一个文件开始阅读";
+      actions.append(emptyAction("folder", "打开文件夹 (Ctrl+Alt+O)", true, ctx.openFolder), emptyAction("file", "打开文件 (Ctrl+O)", false, ctx.openSourceFile), emptyAction("plus", "新建 .v", false, ctx.newFile));
     }
     panel.append(title, hintEl, actions);
     el.append(panel);

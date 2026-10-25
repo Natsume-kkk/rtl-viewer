@@ -76,19 +76,21 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   const openWrap = document.createElement("span");
   openWrap.className = "open-wrap";
   openWrap.id = "open-project-control";
-  const openBtn = action("打开文件夹", "folder", () => void openProject());
-  openBtn.className = "btn btn-primary";
-  const recentBtn = document.createElement("button");
-  recentBtn.className = "btn btn-primary recent-btn";
-  setIcon(recentBtn, "chevron-down");
-  openBtn.title = "打开源码文件夹 (Ctrl+Alt+O)";
-  recentBtn.title = "最近打开的工程 (Ctrl+Alt+R)";
-  recentBtn.setAttribute("aria-label", "最近打开的工程");
-  recentBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    recentMenu.toggle();
+  const openBtn = action("打开", "folder", () => {
+    recentMenu.close();
+    const rect = openBtn.getBoundingClientRect();
+    showCtxMenu(rect.left, rect.bottom, [
+      { label: "打开文件… (Ctrl+O)", action: () => void openSourceFile() },
+      { label: "打开文件夹… (Ctrl+Alt+O)", action: () => void openProject() },
+      { label: "最近工程… (Ctrl+Alt+R)", action: () => window.setTimeout(() => recentMenu.toggle(), 0) },
+    ], openBtn);
   });
-  openWrap.append(openBtn, recentBtn);
+  openBtn.className = "btn btn-primary open-menu-button";
+  openBtn.title = "打开文件、文件夹或最近工程";
+  openBtn.setAttribute("aria-haspopup", "menu");
+  openBtn.addEventListener("click", event => event.stopPropagation());
+  const openArrow = document.createElement("span"); setIcon(openArrow, "chevron-down"); openBtn.append(openArrow);
+  openWrap.append(openBtn);
   const newBtn = createNewFileControl(extension => activeGroup().tabs.newFile(extension, state.folder));
   const saveBtn = action("保存", "save", () => void activeGroup().tabs.save());
   saveBtn.title = "保存 (Ctrl+S)";
@@ -247,7 +249,7 @@ const searchPanel = new SearchPanel(searchRootEl, {
   onFocus: () => setSearchVisible(true, false),
   onSearch: (query, options) => projectSearch.search([...state.contents].map(([path, cached]) => [path, { content: fileContent(path) ?? cached.content }]), query, options),
   onCancel: projectSearch.cancel,
-  onOpen: (file, line, column, length) => void navigateTo(file, line, column, length),
+  onOpen: (file, line, column, length) => { bottomPanels.restoreEditor(); void navigateTo(file, line, column, length); },
   displayPath,
 });
 
@@ -360,9 +362,10 @@ const signalController = createSignalController(document.getElementById("signal-
   fileContent,
   isOpen: file => groups.some(group => !!group.tabs.findTab(file)),
   close: () => { setSignalFlowVisible(false); document.getElementById("flow-action")!.focus(); },
-  navigate: (file, line) => navigateTo(file, line),
+  navigate: (file, line) => { bottomPanels.restoreEditor(); return navigateTo(file, line); },
   hint: message => statusbar.hint(message),
 });
+bottomPanels.attachFlowHeader(document.querySelector<HTMLElement>("#signal-flow .flow-head")!);
 
 function setSignalFlowVisible(visible: boolean): void {
   if (visible) bottomPanels.show("flow");
@@ -493,6 +496,7 @@ const workspace = createEditorWorkspace([editor, editor2], {
     updateStructure(path, content);
   },
   onActiveChange: group => {
+    bottomPanels.restoreEditor();
     const tab = group.tabs.activeTab;
     statusbar.update(tab?.model.getLanguageId() ?? null, tab?.encoding ?? null);
     const pos = tab && group.editor.getPosition();
@@ -507,6 +511,7 @@ const workspace = createEditorWorkspace([editor, editor2], {
   hint: message => statusbar.hint(message),
   projectFolder: () => state.folder,
   openFolder: () => void openProject(),
+  openSourceFile: () => void openSourceFile(),
   openSearch: () => setSearchVisible(true),
   newFile: () => void activeGroup().tabs.newFile(preferredNewFileType(), state.folder),
 });
@@ -750,13 +755,19 @@ async function openTreeNode(node: TreeNode): Promise<void> {
 
 // ---------- 全局快捷键与编辑联动 ----------
 
+async function openSourceFile(): Promise<void> {
+  const idx = workspace.activeIndex;
+  try {
+    const file = await openFileDialog(activeGroup().tabs.activeTab?.path || state.folder || undefined);
+    if (file) { bottomPanels.restoreEditor(); await openProjectFile(file, undefined, idx); }
+  } catch (error) {
+    statusbar.hint(`打开文件失败：${String(error)}`);
+  }
+}
+
 registerAppShortcuts({
   newFile: () => activeGroup().tabs.newFile(preferredNewFileType(), state.folder),
-  openFile: async () => {
-    const idx = workspace.activeIndex;
-    const file = await openFileDialog(activeGroup().tabs.activeTab?.path || state.folder || undefined);
-    if (file) await openProjectFile(file, undefined, idx);
-  },
+  openFile: openSourceFile,
   openProject,
   save: () => activeGroup().tabs.save(),
   saveAs: () => activeGroup().tabs.saveAs(),

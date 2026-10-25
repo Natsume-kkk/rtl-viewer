@@ -17,7 +17,8 @@ export class SignalFlowPanel {
   private stale: HTMLButtonElement;
   private following: HTMLElement;
   constructor(root: HTMLElement, actions: { close(): void; refresh?(): void; context(index: number): void; navigate(file: string, line: number): void }) {
-    const head = document.createElement("div"); head.className = "panel-head"; head.textContent = "信号链";
+    const head = document.createElement("div"); head.className = "panel-head flow-head";
+    const title = document.createElement("span"); title.className = "flow-title"; title.textContent = "信号链"; head.append(title);
     this.identity = document.createElement("span"); this.identity.className="flow-identity"; head.append(this.identity);
     this.mode = document.createElement("span"); this.mode.className = "flow-mode"; head.append(this.mode);
     const all = document.createElement("button"); all.className="text-button"; all.textContent="全部展开";

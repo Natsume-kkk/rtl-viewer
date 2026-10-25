@@ -1,5 +1,5 @@
 import type { TraceNode } from "../model/signal-flow";
-import { CardWidths, columnPositions, element as el, cardHeader, appendSource, signalCode, makeWires, drawWires, type CardWidthState, type CardEdge, type CardPosition } from "./signal-canvas";
+import { CardWidths, columnPositions, element as el, cardHeader, appendSource, signalCode, makeWires, drawWires, CANVAS_TOP, type CardWidthState, type CardEdge, type CardPosition } from "./signal-canvas";
 
 type Side = "up" | "down";
 interface PortCard { id: string; trace: TraceNode; column: number; children: string[]; card: HTMLElement; external?: boolean }
@@ -126,7 +126,7 @@ export class SignalPortsView {
     const rows = new Map<number, number>(), positions = new Map<string, CardPosition>();
     // Reserve slots so choosing another route retains the preceding layout.
     for (const node of [...this.nodes.values()].sort((a, b) => Number(!!a.external) - Number(!!b.external))) {
-      const x = offsets.get(node.column)!, y = rows.get(node.column) ?? 38;
+      const x = offsets.get(node.column)!, y = rows.get(node.column) ?? CANVAS_TOP;
       const h = node.card.offsetHeight || Number(node.card.dataset.height) || 96;
       if (!node.card.hidden) node.card.dataset.height = String(h);
       node.card.style.left = `${x}px`; node.card.style.top = `${y}px`; rows.set(node.column, y + h + 40);

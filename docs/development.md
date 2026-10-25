@@ -75,11 +75,13 @@ New-Item -ItemType Directory -Path $previewRoot -Force | Out-Null
 Copy-Item -Path 'tests/samples/basic/*' -Destination $previewRoot -Recurse
 $env:RTL_VIEWER_E2E_ROOT = (Resolve-Path $previewRoot).Path
 npm run dev
-# 打开 http://localhost:1420/?e2e ，点击“打开文件夹”。
+# 打开 http://localhost:1420/?e2e ，从“打开 → 打开文件夹”或空态按钮进入。
 # 停止服务后，可移除当前终端变量：Remove-Item Env:RTL_VIEWER_E2E_ROOT
 ```
 
-文件访问限制在指定目录内；E2E mock 和文件服务不进入生产构建。真实工程编辑验收同样只使用隔离副本。
+文件访问限制在指定目录内；E2E mock 和文件服务不进入生产构建。单文件选择在当前 mock 中固定返回取消，不能据此验收原生文件选择成功路径。真实工程编辑验收同样只使用隔离副本。
+
+底部布局由 `src/ui/bottom-panels.ts` 管理，信号面板标题在组件创建后挂到共用栏，销毁时归还原面板；隐藏标题时同步转移焦点。共存按可用宽高退回切换，展开仅隐藏编辑区域，不销毁模型；源码定位先恢复布局再导航。相关回归入口为 `tests/bottom-panels.test.ts`，实际滚动、命中范围与窄窗口布局仍须浏览器检查。
 
 ## 架构与目录
 

@@ -35,6 +35,7 @@ import { pathFromUri } from "./editor/file-path";
 import { createSignalController } from "./app/signal-controller";
 import { createModuleMetadataLoader } from "./app/module-metadata";
 import { createProjectScanner } from "./app/project-scanner";
+import { isGeneratedNetlist } from "./app/project-files";
 import { createExternalWatcher, type CachedFile } from "./app/watcher";
 import { attachSidebarWidth } from "./ui/sidebar-width";
 import { BottomPanels } from "./ui/bottom-panels";
@@ -530,7 +531,9 @@ function updateStructure(path: string, content: string): void {
   if (!state.folder) return;
   // 只索引当前工程内的文件：换工程后残留旧标签的保存/重载不得写入新索引（Windows 路径大小写不敏感）
   if (!path.toLowerCase().startsWith(state.folder.toLowerCase() + "/") || !state.structures.has(path)) return;
-  state.structures.set(path, scanStructure(content, path));
+  if (isGeneratedNetlist(path, content)) {
+    state.structures.delete(path); state.contents.delete(path);
+  } else state.structures.set(path, scanStructure(content, path));
   rebuildIndex();
   renderTree();
 }
@@ -698,7 +701,14 @@ const projectScanner = createProjectScanner({
   setIps: ips => { state.ips = ips; },
   setConstraints: files => { state.constraints = files; },
   progress: setProgress,
-  complete: () => { rebuildIndex(); setProgress(""); renderTree(); watcher.start(); },
+  complete: issues => {
+    rebuildIndex(); renderTree(); watcher.start();
+    setProgress(issues.length ? `部分载入：${issues.length} 项失败` : "");
+    if (issues.length) {
+      const details = issues.slice(0, 20).map(issue => `${issue.file}\n${issue.reason}`).join("\n\n");
+      void appAlert(`工程已部分载入，${issues.length} 个文件或目录未能读取。已载入的文件仍可使用。\n\n${details}${issues.length > 20 ? `\n\n另有 ${issues.length - 20} 项失败。` : ""}`);
+    }
+  },
   failed: async error => {
     state.folder = "";
     updateProjectChrome(); workspace.refreshChrome(); setProgress(""); rebuildIndex(); renderTree();

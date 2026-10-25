@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { parseFile, parseFileDetail, parseXci } from "../src/parser";
 import { parseVerilogProcess, parseVhdlProcess } from "../src/parser/procedural";
 
+it.each(["x,,y", ",x,y", "x,y,", ",,", ""])("位置端口保留空槽：%s", connections => {
+  const source = `module top; leaf u(${connections}); endmodule`;
+  const ports = parseFileDetail(source, "top.v")[0].instances[0].connections!;
+  expect(ports.map(port => port.expr)).toEqual(connections ? connections.split(",") : []);
+});
+
 it("checker 关键字不被当作模块例化", () => {
   const source = "module top; checker check_clk(input clk); endchecker endmodule";
   expect(parseFile(source, "check.sv")[0].instances).toEqual([]);

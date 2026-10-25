@@ -2,7 +2,7 @@ import { scanFolder, readFile, fileStates } from "../ipc";
 import { scanStructure, parseXci } from "../parser";
 import type { ModuleInfo, IpInfo } from "../parser";
 import type { TabManager } from "../editor/tabs";
-import { projectFiles } from "./project-files";
+import { projectFiles, isGeneratedNetlist } from "./project-files";
 import { indexedFilePath } from "../file-path";
 
 export interface CachedFile {
@@ -34,12 +34,14 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
   let watchPollCount = 0;
   let generation = 0;
   let polling: number | undefined;
+  const excludedNetlists = new Map<string, number>();
 
   function stop(): void {
     window.clearInterval(watchTimer);
     watchTimer = undefined;
     generation++;
     watchPollCount = 0;
+    excludedNetlists.clear();
   }
 
   function start(): void {
@@ -88,6 +90,13 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
           if (!current()) return;
           // 保存或另一轮重载已替换基准时，当前读盘结果不再有回填权。
           if (ctx.contents.get(file) !== cached || ctx.tabs.some(t => t.isSaving(file))) continue;
+          if (ctx.structures.has(file) && isGeneratedNetlist(file, fresh.content)) {
+            excludedNetlists.set(file, fresh.mtime);
+            ctx.contents.delete(file); ctx.structures.delete(file);
+            for (const tabs of ctx.tabs) tabs.markExternalChanged(file, true);
+            ctx.markResultsStale(); ctx.rebuildIndex(); ctx.renderTree();
+            continue;
+          }
           if (fresh.content !== cached.content) ctx.markResultsStale();
           const openTabs = ctx.tabs.filter((t) => t.findTab(file));
           const anyDirty = openTabs.some((t) => t.findTab(file)!.dirty);
@@ -107,6 +116,7 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
         } catch (e) {
           if (!current()) return;
           console.error("reload failed:", file, e);
+          ctx.hint(`未能更新 ${file}：${String(e)}`);
         }
       }
     }
@@ -137,25 +147,37 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
       return;
     }
     if (!current()) return;
+    if (scan.issues?.length) ctx.hint(`部分目录未扫描：${scan.issues[0].file}（${scan.issues[0].reason}）`);
     const { hdl, con: userCon, isIpGenerated } = projectFiles(scan);
     let changed = false;
     for (const file of ctx.contents.keys()) {
-      if (!isIpGenerated(file)) continue;
+      if (!isIpGenerated(file) && !isGeneratedNetlist(file)) continue;
       ctx.contents.delete(file);
       ctx.structures.delete(file);
       changed = true;
     }
+    const hdlSet = new Set(hdl);
+    for (const file of excludedNetlists.keys()) if (!hdlSet.has(file)) excludedNetlists.delete(file);
+    const excluded = [...excludedNetlists.keys()];
+    if (excluded.length) {
+      let states: (number | null)[] = [];
+      try { states = await fileStates(excluded); } catch { /* 无法确认版本时重新读取 */ }
+      if (!current()) return;
+      excluded.forEach((file, i) => { if (states[i] !== excludedNetlists.get(file)) excludedNetlists.delete(file); });
+    }
     for (const file of hdl) {
-      if (ctx.structures.has(indexedFilePath(ctx.structures, file))) continue;
+      if (ctx.structures.has(indexedFilePath(ctx.structures, file)) || excludedNetlists.has(file)) continue;
       try {
         const { content, encoding, mtime } = await readFile(file);
         if (!current()) return;
+        if (isGeneratedNetlist(file, content)) { excludedNetlists.set(file, mtime); continue; }
         ctx.contents.set(file, { content, encoding, mtime });
         ctx.structures.set(file, scanStructure(content, file));
         changed = true;
       } catch (e) {
         if (!current()) return;
         console.error("read failed:", file, e);
+        ctx.hint(`文件未载入 ${file}：${String(e)}`);
       }
     }
     const knownXci = new Set(ctx.ips().map((i) => i.file));

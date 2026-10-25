@@ -20,6 +20,27 @@ function buildFromFiles(
 }
 
 describe("层级树构建", () => {
+  it("重复 Verilog 定义标记冲突，不混合定义和例化，也不污染其他顶层候选", () => {
+    const files={"backup/core.v":"module core; endmodule", "rtl/core.v":"module core; leaf u(); endmodule module leaf; endmodule"};
+    const hierarchy=buildFromFiles(files, [], "core");
+    expect(hierarchy.tops[0].file).toBeUndefined();
+    expect(hierarchy.tops[0].children).toEqual([]);
+    expect(hierarchy.tops[0].problem).toContain("同名");
+    expect(hierarchy.topCandidates).toContain("leaf");
+  });
+
+  it("多 architecture 不猜测选择实现，空端口 entity 仍是定义来源", () => {
+    const files={"a.vhd":"architecture a of core is begin end a;", "b.vhd":"architecture b of core is begin end b;", "z.vhd":"entity core is end core;"};
+    const hierarchy=buildFromFiles(files, [], "core");
+    expect(hierarchy.tops[0].problem).toContain("architecture");
+    expect(hierarchy.tops[0].children).toEqual([]);
+  });
+
+  it("空端口 entity 的定义不被先扫描的 architecture 抢占", () => {
+    const hierarchy=buildFromFiles({"a.vhd":"architecture rtl of core is begin u: entity work.leaf; end rtl;", "z.vhd":"entity core is end core;", "leaf.v":"module leaf; endmodule"},[],"core");
+    expect(hierarchy.tops[0].file).toBe("z.vhd");
+    expect(hierarchy.tops[0].children[0].instFile).toBe("a.vhd");
+  });
   it("单顶层自动选择，例化逐层展开", () => {
     const h = buildFromFiles({
       "top.v": `module top;

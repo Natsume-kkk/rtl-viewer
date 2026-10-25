@@ -7,6 +7,7 @@ import { sourceEntry } from "../analysis/source-cache";
 import { cloneConstants, expandStaticGenerate, setConstant, specializeText, type ConstantValues, type SourceView } from "../parser/static-generate";
 import { parseParameters } from "../parser/parameters";
 import { mappingAccess } from "../parser/port-mapping";
+import { bindModuleParts } from "./index";
 
 interface Assignment {
   /** 连续赋值 RHS 在原文件中的精确偏移。 */
@@ -259,7 +260,10 @@ export class SignalProject {
     }
     if (!parts.length) { this.modules.set(key, undefined); return undefined; }
     const binding = this.binding && same(this.binding.name,name,this.binding.file) ? this.binding : undefined;
-    const definition = (binding && parts.find(p=>p.file===binding.file&&p.ports.length)) || parts.find(p => p.ports.length) || parts[0];
+    const resolved = bindModuleParts(parts);
+    const selected = binding && parts.find(part => part.file === binding.file &&
+      part.line === sourceEntry(binding.file, this.files.get(binding.file)!).lineAt(binding.start));
+    const definition = parts.find(part => part.vhdl?.entity) || selected || resolved.definition || parts[0];
     const result: SignalModule = {
       ...definition,
       instances: parts.flatMap(p => p.instances.map(inst => ({ ...inst, file: p.file }))),
@@ -364,6 +368,7 @@ export class SignalProject {
     }
     if (architectureCount > 1) result.problem = "存在多个 architecture，尚未确定绑定";
     if (moduleCount > 1) result.problem = "存在多个同名 module，尚未确定绑定";
+    if (!binding && resolved.problem) { result.problem = resolved.problem; result.instances = []; }
     if (binding) result.instances = result.instances.filter(inst=>result.regions.some(r=>{if(r.file!==inst.file)return false;const e=sourceEntry(r.file,this.files.get(r.file)!);return inst.line>=e.lineAt(r.start)&&inst.line<=e.lineAt(r.end);}));
     this.modules.set(key, result);
     return result;

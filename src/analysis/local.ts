@@ -117,6 +117,10 @@ export function localLogic(comp: ComputationProject, project: SignalProject, ctx
       if(d.relation&&d.process?.locals.includes(r.name)){
         edge(add(`local:${d.source.start}:${r.name}`,{label:`${r.name.replace(/^@local:\d+:/,"")}（过程局部）`,path:ctx.path,kind:"boundary",detail:"过程局部对象的源码引用；不连接同名模块信号",drivers:[],source:d.source}),n,!!r.control,false,r.role,!!r.unknown);continue;
       }
+      if(d.relation&&d.process?.operators.has(r.name)){
+        const key=`process-ref:${d.process.assignments?.[0]?.start ?? d.source.start}:${r.name}`;
+        edge(add(key,{label:`${display(r.name)}（过程内引用）`,path:ctx.path,kind:"boundary",detail:"过程内更新值未确定，仅展示源码引用",drivers:[],source:d.source}),n,!!r.control,false,r.role,true);continue;
+      }
       // 外部表达式没有过程内的 current 标记；确定的寄存器读取也必须停在 Q。
       // 更新来源另行展开，不能沿 Q→组合逻辑→更新值把时序回路当作组合反馈。
       if(isRegister(r.name)){

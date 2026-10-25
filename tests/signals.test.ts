@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { findSignalDeclLine } from "../src/model/signals";
+import { findSignalDeclLine, findModuleSignalPosition } from "../src/model/signals";
+
+it("刷新定位区分 Verilog 大小写，支持同一行多个模块及 VHDL 声明与实现", () => {
+  const source="module a; wire mid; endmodule module b; wire mid; endmodule";
+  expect(findModuleSignalPosition(source,"inline.v","b","mid")).toEqual({line:1,column:source.lastIndexOf("mid")+1});
+  expect(findModuleSignalPosition(source,"inline.v","B","mid")).toBeUndefined();
+  expect(findModuleSignalPosition(source,"inline.v","b","gone")).toBeUndefined();
+  const vhdl="entity A is port(mid:in bit); end A; entity B is port(mid:in bit); end B; architecture rtl of B is signal w:bit; begin w<=mid; end rtl;";
+  expect(findModuleSignalPosition(vhdl,"inline.vhd","b","MID")?.column).toBe(vhdl.indexOf("mid",vhdl.indexOf("entity B"))+1);
+  expect(findModuleSignalPosition(vhdl,"inline.vhd","b","w")?.column).toBe(vhdl.indexOf("w:bit")+1);
+});
 
 describe("文件内信号声明定位", () => {
   it("verilog：ANSI 端口、体内 wire、多声明行均可定位", () => {

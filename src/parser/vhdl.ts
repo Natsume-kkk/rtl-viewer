@@ -189,6 +189,7 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
       ports,
       ...(parameters ? { parameters } : {}),
       instances: [],
+      vhdl: { entity: true, architectures: [] },
     });
     entRe.lastIndex = bodyEnd;
   }
@@ -211,9 +212,11 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
         line: lineAt(lineStarts, m.index),
         ports: [],
         instances: [],
+        vhdl: { entity: false, architectures: [] },
       };
       byName.set(m[2].toLowerCase(), owner);
     }
+    owner.vhdl!.architectures.push(m[1]);
     let im: RegExpExecArray | null;
     instRe.lastIndex = 0;
     while ((im = instRe.exec(body))) {

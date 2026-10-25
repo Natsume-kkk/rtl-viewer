@@ -3,6 +3,18 @@ import { SignalProject, traceSignal, type TraceNode } from "../src/model/signal-
 import { parseVhdlProcess } from "../src/parser/procedural";
 
 const flatten = (n: TraceNode): string => [n.label, n.reason ?? "", ...n.children.map(flatten)].join("\n");
+it("显式分析分文件 architecture 仍使用 entity 的端口元数据", () => {
+  const files=new Map([["a_arch.vhd","architecture rtl of leaf is begin q<=a; end rtl;"],["z_entity.vhd","entity leaf is port(a:in bit;q:out bit); end leaf;"]]);
+  const project=new SignalProject(files).forSource("leaf",{file:"a_arch.vhd",line:1,column:1});
+  expect(project.module("leaf")?.ports.map(port=>port.name)).toEqual(["a","q"]);
+});
+it("跳过的中间位置端口不改变后续端口绑定", async () => {
+  const source = `module top(input x, output y); leaf u(x,,y); endmodule
+module leaf(input a, output unused, output c); assign c=a; endmodule`;
+  const project = new SignalProject(new Map([["ports.v", source]]));
+  const trace = await traceSignal(project, project.root("top")!, "y", "upstream", { stopAtAssignments: true });
+  expect(trace.children[0].port?.name).toBe("c");
+});
 it("当前信号定位保留追踪入口行，跨层节点保留实例与端口身份", async () => {
   const files=new Map([["top.vhd",`entity top is
 port (

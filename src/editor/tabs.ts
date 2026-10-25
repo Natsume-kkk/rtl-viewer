@@ -156,18 +156,31 @@ export class TabManager {
       return;
     }
     if (generation !== this.openGeneration || request !== this.openRequest) return;
+    const pending = TabManager.writes.get(filePathKey(path));
+    if (pending) {
+      await pending;
+      if (generation === this.openGeneration && request === this.openRequest) await this.openFile(path, line);
+      return;
+    }
     const { content, encoding, mtime } = file;
     // 读取期间另一请求或扫描缓存可能已打开此路径，保留现有共享缓冲区。
     if (this.findTab(path)) {
-      this.openContent(path, content, encoding, mtime, line);
+      await this.openContent(path, content, encoding, mtime, line);
       return;
     }
     this.createTab(path, basename(path), content, encoding, mtime, line);
     this.events.onFileReloaded(path, content, encoding, mtime);
   }
 
-  /** 已缓存内容的文件直接打开，不再读盘（扫描阶段已读过的场景）。 */
-  openContent(path: string, content: string, encoding: string, mtime: number, line?: number): void {
+  /** 缓存可直接打开；目标正在保存时等待迁移，再读取落盘结果。 */
+  async openContent(path: string, content: string, encoding: string, mtime: number, line?: number): Promise<void> {
+    const generation = this.openGeneration, request = ++this.openRequest;
+    const pending = TabManager.writes.get(filePathKey(path));
+    if (pending) {
+      await pending;
+      if (generation === this.openGeneration && request === this.openRequest) await this.openFile(path, line);
+      return;
+    }
     const existing = this.findTab(path);
     if (existing) {
       this.activate(existing);
@@ -282,8 +295,11 @@ export class TabManager {
   /** 修改当前标签的保存编码（不动磁盘）。 */
   setSaveEncoding(encoding: string): void {
     const tab = this.active;
-    if (!tab) return;
+    if (!tab || tab.encoding === encoding) return;
     tab.encoding = encoding;
+    tab.dirty = true;
+    TabManager.saveRevisions.set(tab.model, {});
+    this.renderTab(tab);
     this.syncPeers(tab);
     this.events.onActiveChange();
   }
@@ -487,6 +503,12 @@ export class TabManager {
 
   private async writeNow(tab: Tab, path: string, closing: boolean): Promise<boolean> {
     if (!this.tabs.includes(tab) || tab.model.isDisposed()) return false;
+    // 排队期间目标可能已被另一文档占用，写入前重新核对。
+    if (!sameFilePath(path, tab.path) && [...TabManager.managers].some(manager =>
+      manager.tabs.some(other => sameFilePath(other.path, path) && other.model !== tab.model))) {
+      await appAlert("另存为失败：目标文件已在编辑器中打开，请先关闭该文件或选择其他路径。");
+      return false;
+    }
     const model = tab.model;
     const initialVersion = model.getVersionId();
     const alive = () => this.tabs.includes(tab) && tab.model === model && !model.isDisposed();
@@ -547,7 +569,7 @@ export class TabManager {
       return false;
     }
     if (!alive()) return false;
-    tab.dirty = model.getVersionId() !== version;
+    tab.dirty = model.getVersionId() !== version || tab.encoding !== encoding;
     tab.externalChanged = false;
     tab.mtime = mtime;
     this.renderTab(tab);

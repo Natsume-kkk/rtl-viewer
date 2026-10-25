@@ -133,6 +133,59 @@ async function setup() {
 }
 
 describe("TabManager", () => {
+  it("只改变编码也参与保存全部和关闭保护，保存期间再次改编码仍保持脏状态", async () => {
+    const { make, mocks } = await setup(); const a = make(), b = make();
+    a.openContent("D:/p/a.v", "base", "utf8", 1);
+    await a.transfer(a.activeTab!, b, true);
+    a.setSaveEncoding("utf8-bom");
+    expect(a.activeTab!.dirty).toBe(true); expect(b.activeTab!.dirty).toBe(true);
+    const { TabManager } = await import("../src/editor/tabs");
+    mocks.choiceDialog.mockResolvedValue(2);
+    expect(await TabManager.closeGroups([a,b])).toBe(false);
+    mocks.fileStates.mockResolvedValue([1]);
+    let finish!: (mtime: number) => void;
+    mocks.writeFile.mockImplementation(() => new Promise(resolve => { finish=resolve; }));
+    const saving = TabManager.saveGroups([a,b]);
+    await vi.waitFor(() => expect(mocks.writeFile).toHaveBeenCalled());
+    a.setSaveEncoding("utf16le"); finish(2);
+    expect(await saving).toBe(false);
+    expect(a.activeTab!.dirty).toBe(true); expect(b.activeTab!.encoding).toBe("utf16le");
+    mocks.fileStates.mockResolvedValue([2]); mocks.writeFile.mockResolvedValue(3);
+    expect(await TabManager.saveGroups([a,b])).toBe(true);
+    expect(mocks.writeFile).toHaveBeenLastCalledWith("D:/p/a.v", "base", "utf16le");
+    expect(b.activeTab!.dirty).toBe(false);
+  });
+
+  it.each([[false,true],[false,false],[true,true],[true,false]])("另存为期间打开目标等待迁移（写入失败=%s，缓存打开=%s）", async (failed, cached) => {
+    const { make, mocks } = await setup(); const a=make(), b=make();
+    a.openContent("D:/p/a.v", "old source", "utf8", 1);
+    a.activeTab!.model.setValue("new source");
+    mocks.saveFileDialog.mockResolvedValue("D:/p/target.v");
+    let finish!: (mtime: number) => void, reject!: (reason: Error) => void;
+    mocks.writeFile.mockImplementation(() => new Promise((resolve, fail) => { finish=resolve; reject=fail; }));
+    mocks.readFile.mockResolvedValue({content: failed ? "old target" : "new source",encoding:"utf8",mtime:failed ? 1 : 2});
+    const saving=a.saveAs(); await vi.waitFor(() => expect(mocks.writeFile).toHaveBeenCalled());
+    const opening=cached ? b.openContent("D:/p/target.v", "old target", "utf8", 1) : b.openFile("D:/p/target.v");
+    expect(b.count).toBe(0);
+    if(failed) reject(new Error("disk full")); else finish(2);
+    expect(await saving).toBe(!failed); await opening;
+    expect(a.activeTab!.model.getValue()).toBe("new source");
+    expect(b.activeTab!.model.getValue()).toBe(failed ? "old target" : "new source");
+    expect(a.activeTab!.dirty).toBe(failed);
+    if(!failed) expect(b.activeTab!.model).toBe(a.activeTab!.model);
+  });
+
+  it("等待保存的打开请求在关闭工作区后失效", async () => {
+    const {make,mocks}=await setup(); const a=make(),b=make();
+    a.openContent("D:/p/a.v","source","utf8",1);
+    mocks.saveFileDialog.mockResolvedValue("D:/p/target.v");
+    let finish!: (mtime:number)=>void;
+    mocks.writeFile.mockImplementation(()=>new Promise(resolve=>{finish=resolve;}));
+    const saving=a.saveAs(); await vi.waitFor(()=>expect(mocks.writeFile).toHaveBeenCalled());
+    const opening=b.openContent("D:/p/target.v","old","utf8",1);
+    await b.closeAll(); finish(2); await saving; await opening;
+    expect(b.count).toBe(0); expect(mocks.readFile).not.toHaveBeenCalled();
+  });
   it("未命名文档克隆共享修改，首次保存让两侧接管同一磁盘模型", async () => {
     const { make, mocks } = await setup(); const a = make(), b = make();
     a.newFile("sv", "D:/p");

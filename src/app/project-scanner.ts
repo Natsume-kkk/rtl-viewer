@@ -1,7 +1,7 @@
-import { scanFolder, readFile } from "../ipc";
+import { scanFolder, readFile, type ScanIssue } from "../ipc";
 import { scanStructure, parseXci, type ModuleInfo, type IpInfo } from "../parser";
 import type { CachedFile } from "./watcher";
-import { projectFiles } from "./project-files";
+import { projectFiles, isGeneratedNetlist } from "./project-files";
 
 export interface ProjectScanContext {
   contents: Map<string, CachedFile>;
@@ -9,7 +9,7 @@ export interface ProjectScanContext {
   setIps(ips: IpInfo[]): void;
   setConstraints(files: string[]): void;
   progress(message: string): void;
-  complete(): void;
+  complete(issues: ScanIssue[]): void;
   failed(error: unknown): Promise<void>;
 }
 
@@ -25,6 +25,7 @@ export function createProjectScanner(ctx: ProjectScanContext) {
     try { files = await scanFolder(folder); }
     catch (error) { if (current()) await ctx.failed(error); return; }
     if (!current()) return;
+    const issues = [...(files.issues ?? [])];
     const { hdl, con: constraints } = projectFiles(files);
     ctx.setConstraints(constraints);
     let done = 0;
@@ -33,9 +34,11 @@ export function createProjectScanner(ctx: ProjectScanContext) {
       try {
         const content = await readFile(file);
         if (!current()) return;
-        ctx.contents.set(file, content);
-        ctx.structures.set(file, scanStructure(content.content, file));
-      } catch (error) { if (!current()) return; console.error("read failed:", file, error); }
+        if (!isGeneratedNetlist(file, content.content)) {
+          ctx.contents.set(file, content);
+          ctx.structures.set(file, scanStructure(content.content, file));
+        }
+      } catch (error) { if (!current()) return; issues.push({ file, reason: String(error) }); }
       if (++done % 8 === 0 || done === hdl.length) {
         ctx.progress(`解析结构 ${done}/${hdl.length}`);
         await new Promise(resolve => setTimeout(resolve, 0));
@@ -48,7 +51,7 @@ export function createProjectScanner(ctx: ProjectScanContext) {
         const { content } = await readFile(file);
         if (!current()) return;
         ips.push(parseXci(content, file));
-      } catch (error) { if (!current()) return; console.error("xci parse failed:", file, error); }
+      } catch (error) { if (!current()) return; issues.push({ file, reason: String(error) }); }
     }
     if (!current()) return;
     ctx.setIps(ips);
@@ -58,9 +61,9 @@ export function createProjectScanner(ctx: ProjectScanContext) {
         const content = await readFile(file);
         if (!current()) return;
         ctx.contents.set(file, content);
-      } catch (error) { if (!current()) return; console.error("read failed:", file, error); }
+      } catch (error) { if (!current()) return; issues.push({ file, reason: String(error) }); }
     }
-    if (current()) ctx.complete();
+    if (current()) ctx.complete(issues);
   }
 
   return { scan, cancel: () => { ++generation; } };

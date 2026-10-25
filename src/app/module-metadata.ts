@@ -76,9 +76,10 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
   async function modulePorts(moduleName: string): Promise<PortInfo[]> {
     const def = ctx.resolveModule(moduleName);
     const key = moduleName.toLowerCase();
-    if (def && !def.isIp) {
+    if (!def) return [];
+    if (!def.isIp) {
       const mod = moduleFileModules(def)?.find((m) => m.name.toLowerCase() === key);
-      if (mod) return mod.ports;
+      return mod?.ports ?? [];
     }
     return (await loadIpPorts(moduleName)).ports;
   }

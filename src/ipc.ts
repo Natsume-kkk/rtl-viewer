@@ -1,11 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
+export interface ScanIssue { file: string; reason: string }
+
 export interface ScanResult {
   hdl: string[];
   xci: string[];
   /** 约束文件（.xdc/.sdc），只读查看不参与索引 */
   con: string[];
+  issues?: ScanIssue[];
 }
 
 export interface FileContent {

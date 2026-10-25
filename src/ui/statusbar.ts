@@ -144,7 +144,7 @@ export class StatusBar {
 
     const saveTitle = document.createElement("div");
     saveTitle.className = "menu-title";
-    saveTitle.textContent = "以指定编码保存";
+    saveTitle.textContent = "设置保存编码（下次保存生效）";
     menu.appendChild(saveTitle);
     for (const enc of SAVE_ENCODINGS) {
       menu.appendChild(this.menuItem(ENCODING_LABELS[enc], () => this.callbacks.onSetSaveEncoding(enc)));

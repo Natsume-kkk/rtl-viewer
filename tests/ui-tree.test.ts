@@ -18,6 +18,13 @@ function makeTree(callbacks: ConstructorParameters<typeof HierarchyTree>[1]) {
 }
 
 describe("HierarchyTree", () => {
+  it("定义冲突作为可见边界显示，提示包含冲突文件", () => {
+    const {rootEl,tree}=makeTree({onOpen:vi.fn()});
+    tree.render({tops:[node({key:"core",label:"core",moduleName:"core",kind:"unresolved",problem:"存在多个同名定义\na/core.v:1\nb/core.v:1"})],topCandidates:["core"],unused:[]});
+    expect(rootEl.querySelector(".tree-badge")?.textContent).toBe("定义冲突");
+    expect(rootEl.querySelector(".tree-row")?.getAttribute("aria-label")).toContain("b/core.v");
+    expect(rootEl.querySelector(".tree-inst")).toBeNull();
+  });
   it("同时显示实例、模块与定义文件，复用实例及同名实例不丢失身份", () => {
     const onOpen = vi.fn(), onOpenInst = vi.fn();
     const { rootEl, tree } = makeTree({ onOpen, onOpenInst });

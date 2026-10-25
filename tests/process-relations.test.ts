@@ -6,6 +6,20 @@ import { ComputationProject } from "../src/analysis/project";
 import { localLogic } from "../src/analysis/local";
 
 describe("过程逐语句源码关系", () => {
+  it("重复替换的指数表达式按预算降级，独立赋值仍可推导", () => {
+    const source = `always @* begin q=a; ${"q=q+q;".repeat(16)} z=b; end`;
+    const result = analyzeProcess(source, "verilog");
+    expect(result.updates.has("q")).toBe(false);
+    expect(result.updates.get("z")?.args[0].value).toBe("b");
+    expect(result.assignments).toHaveLength(18);
+    expect(result.issues.join(" ")).toContain("预算");
+    const files = new Map([["budget.v", `module budget(input a,b,output reg q,z); ${source} endmodule`]]);
+    const project = new SignalProject(files);
+    const graph = localLogic(new ComputationProject(files, project), project, project.root("budget")!, "q");
+    expect(graph.nodes.some(node => node.drivers?.some(driver => driver.reason?.includes("预算")))).toBe(true);
+    expect(graph.nodes.some(node => node.id.startsWith("feedback:"))).toBe(false);
+    expect(graph.nodes.some(node => node.detail.includes("过程内更新值未确定"))).toBe(true);
+  });
   it("部分目标保留下标、控制与原文，独立目标继续推导", () => {
     const source = "always @* begin if(en) q[addr] = a; y = b; end";
     const p = analyzeProcess(source, "verilog");

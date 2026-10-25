@@ -113,6 +113,7 @@ export class SignalLogicView {
     card.append(section);
     const boundaries=(drivers[0].process?.boundaries??[]).filter(b=>!drivers.some(d=>d.source.start>=b.start&&d.source.end<=b.end));
     const entries=[...drivers.map(driver=>({start:driver.source.start,driver,boundary:undefined})),...boundaries.map(boundary=>({start:boundary.start,driver:undefined,boundary}))].sort((a,b)=>a.start-b.start);
+    const shownReasons=new Set<string>();
     for(const {driver,boundary} of entries){
       if(boundary){
         const file=drivers[0].source.file,first=this.location(file,boundary.start).line;
@@ -127,7 +128,7 @@ export class SignalLogicView {
       const statement=(driver.initialization&&raw)||/(?:<=|:=|=(?!=))[\s\S]*;\s*$/.test(raw)?raw:`${driver.targetText??target} ${driver.operator??"←"} ${code(driver.expression)};`;
       const first=this.location(driver.source.file,driver.source.start).line;
       statement.split("\n").forEach((text,i)=>rows.push({text,line:first+i}));
-      if(driver.reason)rows.push({text:driver.reason});
+      if(driver.reason&&!shownReasons.has(driver.reason)){rows.push({text:driver.reason});shownReasons.add(driver.reason);}
     }
     appendSource(section,{file:drivers[0].source.file,sourceRows:rows},target,()=>this.reveal());
   }

@@ -134,12 +134,16 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 | VHDL 裸名无 map 例化 `u1: foo;` | 为避免误匹配 signal／constant 声明，不支持；与 entity／component 形式区分 |
 | VHDL configuration 指定例化 | 不支持 |
 | VHDL `clk'event and clk='1'` | 不识别为时钟，按组合逻辑降级处理 |
-| 模块索引和端口匹配 | 按小写归并；Verilog 中仅大小写不同的同名定义会被合并 |
+| 模块索引和端口匹配 | 索引仍按小写归并；Verilog 中仅大小写不同的定义视为冲突，不猜测选择 |
 | 声明定位与大纲 | 要求声明单行闭合，跨行续写的名称可能无法定位 |
 
 [层级模型](../src/model/hierarchy.ts) 对无定义的例化先匹配已识别的 UNISIM 家族原语，否则保留 unresolved。IP 只提供黑盒和端口信息，不展开生成目录；IP 生成目录内的约束同样排除。ISE 的 `ipcore_dir` 按用户源码扫描，以保留 CoreGen 包装的例化目标。
 
-冷扫描与目录增量检查共用 `src/app/project-files.ts` 的 IP 目录筛选；新出现的 XCI 会使该目录此前收录的生成 HDL／约束退出索引，已打开的编辑缓冲区保留。VHDL entity 与 architecture 分文件时，定义跳转保留 entity 文件，例化点使用实际 architecture 文件。
+冷扫描与目录增量检查共用 `src/app/project-files.ts` 的 IP 目录及明确网表筛选；文件名规则在读取前应用，导出命令头只检查前 16 KiB 的设计单元前缀，不按原语数量推断。新增 XCI 或已索引文件变成明确网表时退出索引，已打开的编辑缓冲区保留；增量检查按 mtime 记忆被排除的文件头，版本变化后重新判定，换工程时清空。回归见 `tests/project-scanner.test.ts`、`tests/watcher.test.ts`。
+
+VHDL 结构元数据显式保留 entity 和 architecture 身份。`src/model/index.ts` 的 `bindModuleParts` 由索引、层级和信号模型共同使用：唯一 entity 提供定义与端口，唯一 architecture 提供例化；重复定义或多个实现保留冲突边界。层级的被例化集合只来自有效绑定，冲突实现不能影响其他模块的顶层判断；详细信号解析仍保持按需。回归见 `tests/hierarchy.test.ts`、`tests/module-metadata.test.ts`、`tests/signal-flow.test.ts`。
+
+Rust 扫描结果可携带 `issues`，目录读取失败和深度上限都显式报告。前端扫描合并逐文件读取／解析错误，通过完成回调交给界面显示部分载入摘要，不中断其他文件；旧请求的错误与结果同样受代际检查约束。
 
 自动顶层选择的处理顺序：
 
@@ -155,6 +159,8 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 
 `src/analysis/objects.ts` 收集类型、声明和初始化事实；`ProcessResult.updates` 仅保存可靠更新表达式，`assignments` 保存逐语句源码关系。同一目标已有可靠更新时不重复绘制逐语句驱动。初值不计持续驱动，地址与条件不计数据输入，未知调用参数不绘制确定方向。新增语法必须同时检查这两种表示、过程局部身份及原始源码定位。
 
+过程表达式检查按共享节点记忆结果，同时按展开后最多 4096 个节点、128 层限制更新值，避免替换 DAG 在后续源码映射、格式化或绘图时指数展开。超预算仅降级受影响的更新，保留逐语句关系和独立赋值；降级过程中的内部更新引用保留不确定边界。刷新定位限定原模块，丢失或歧义目标要求重新选择。回归见 `tests/process-relations.test.ts`、`tests/signal-controller.test.ts`、`tests/signals.test.ts`。
+
 ### 搜索与文件一致性
 
 `src/ui/bottom-panels.ts` 统一管理搜索与信号链的可见性、共存偏好和总高度，不销毁两块视图。默认切换；可用空间不足以同时保留编辑区和两块面板时临时退回切换，恢复高度后继续共存。隐藏搜索通过主入口取消未完成的 Worker，完成结果与输入仍保留；分隔条支持指针、方向键和 Home，销毁时释放观察器与拖动监听。回归见 `tests/bottom-panels.test.ts`；浏览器另检查窗口缩放、双视图和实际源码可见高度。
@@ -164,6 +170,8 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 `src/app/project-search.ts` 管理单次查询 Worker，`src/model/search-worker.ts` 执行匹配与高亮；`src/ui/search.ts` 仅渲染返回区间，不在主线程执行用户正则。查询替换、面板收起、超时和异常均终止 Worker；界面按请求序号丢弃旧结果。单次预算 2 秒，最多 500 行，每行预览 2000 字符、200 处高亮。回归入口为 `tests/project-search.test.ts`、`tests/search-ui.test.ts` 和 `tests/search-history.test.ts`。
 
 `src/file-path.ts` 统一 Windows 路径身份，标签、共享模型、索引查找与保存队列使用相同规则，展示保留原路径。保存按目标文件和共享模型串行，模型迁移属于保存操作；关闭等待保存完成，失败保留标签。watcher 回填前检查缓存基准和保存状态，显式重载另检查模型版本与保存修订，模块元数据缓存同时检查模型身份和版本。回归入口为 `tests/tabs.test.ts`、`tests/watcher.test.ts`、`tests/definition-models.test.ts` 和 `tests/module-metadata.test.ts`。
+
+`TabManager.openContent` 返回 Promise，目标正在写入时等待保存队列并重新读取；工作区必须等待它完成后再定位，关闭代际使等待中的打开失效。排队的另存为在实际写入前再次核对目标占用。编码选择是待保存的文档状态，影响脏标记和重载修订；写入后的清洁状态同时比较模型版本与编码，不能清除保存期间发生的新修改。
 
 ### 编码边界
 

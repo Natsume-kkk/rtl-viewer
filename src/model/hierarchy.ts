@@ -1,5 +1,5 @@
 import type { ModuleInfo } from "../parser";
-import { ModuleIndex } from "./index";
+import { ModuleIndex, bindModuleParts } from "./index";
 
 export type NodeKind = "module" | "ip" | "unresolved" | "primitive";
 
@@ -54,6 +54,7 @@ export interface TreeNode {
   instFile?: string;
   instLine?: number;
   recursive: boolean;
+  problem?: string;
   children: TreeNode[];
 }
 
@@ -168,33 +169,29 @@ export function buildHierarchy(
   topName?: string,
 ): Hierarchy {
   const structByModule = new Map<string, ModuleInfo>();
+  const partsByModule = new Map<string, ModuleInfo[]>();
   for (const modules of structures.values()) {
     for (const m of modules) {
       const key = m.name.toLowerCase();
-      const existing = structByModule.get(key);
-      if (!existing) {
-        structByModule.set(key, m);
-      } else if (existing.instances.length === 0 && m.instances.length > 0) {
-        // VHDL entity 与 architecture 分文件：entity 结构先占位（无例化），
-        // 例化来源采用 architecture 的文件，定义跳转仍由 index 保留 entity 位置。
-        structByModule.set(key, { ...m, name: existing.name });
-      }
+      const parts = partsByModule.get(key) ?? [];
+      parts.push(m); partsByModule.set(key, parts);
     }
+  }
+  for (const [key, parts] of partsByModule) {
+    const { implementation } = bindModuleParts(parts);
+    if (implementation) structByModule.set(key, implementation);
   }
 
   const instantiated = new Set<string>();
-  for (const modules of structures.values()) {
-    for (const m of modules) {
-      for (const inst of m.instances) {
-        instantiated.add(inst.module.toLowerCase());
-      }
+  for (const m of structByModule.values()) {
+    for (const inst of m.instances) {
+      instantiated.add(inst.module.toLowerCase());
     }
   }
 
   const topCandidates = index
-    .allDefs()
-    .filter((d) => !d.isIp && !instantiated.has(d.name.toLowerCase()))
-    .map((d) => d.name);
+    .allNames()
+    .filter(name => !index.resolve(name)?.isIp && !instantiated.has(name.toLowerCase()));
 
   const autoTop = autoPickTop(topCandidates, structByModule, commonDirPrefix([...structures.keys()]));
   const chosenTop = topName ?? autoTop;
@@ -206,6 +203,7 @@ export function buildHierarchy(
     ancestors: Set<string>,
   ): TreeNode => {
     const def = index.resolve(moduleName);
+    const problem = index.problem(moduleName);
     const lower = moduleName.toLowerCase();
     const node: TreeNode = {
       key,
@@ -216,8 +214,9 @@ export function buildHierarchy(
       line: def?.line,
       recursive: ancestors.has(lower),
       children: [],
+      ...(problem ? { problem } : {}),
     };
-    if (node.recursive) return node;
+    if (node.recursive || problem) return node;
     const struct = structByModule.get(lower);
     if (!struct || struct.instances.length === 0) return node;
     // children 懒构建：getter 首次访问时才物化直接子节点（子节点的 children 同样懒）。

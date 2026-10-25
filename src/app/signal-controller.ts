@@ -1,7 +1,7 @@
 import type { ModuleIndex } from "../model";
 import { buildHierarchy } from "../model/hierarchy";
 import { scanStructure, type ModuleInfo } from "../parser";
-import { findSignalDeclLine } from "../model/signals";
+import { findModuleSignalPosition } from "../model/signals";
 import { monaco } from "../editor/monaco";
 import { pathFromUri } from "../editor/file-path";
 import { SignalProject, traceSignal, type SignalContext } from "../model/signal-flow";
@@ -73,10 +73,14 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
     }
     const requestedFile = previous?.file ?? pathFromUri(model!.uri);
     const file = [...ctx.files()].find(path => sameFilePath(path, requestedFile)) ?? requestedFile;
-    const line = previous
-      ? (previous.scope >= 0 || previous.identity !== previous.signal ? previous.line : findSignalDeclLine(ctx.fileContent(file) ?? "", file, word) ?? previous.line)
-      : position!.lineNumber;
-    const column = previous?.column ?? position!.column;
+    let line = previous?.line ?? position!.lineNumber;
+    let column = previous?.column ?? position!.column;
+    const previousModule = previous?.contexts.find(context => context.path === flowContextPath)?.module;
+    if (previous && previous.scope < 0 && previous.identity === previous.signal) {
+      const target = previousModule && findModuleSignalPosition(ctx.fileContent(file) ?? "", file, previousModule, word);
+      if (!target) { flowPanel.hint("原模块或信号已变化，请重新右键追踪。"); return; }
+      ({ line, column } = target);
+    }
     if (!flowProject || !flowProject.files.has(file)) {
       const files = new Map([...ctx.files()].map(path => [path, ctx.fileContent(path) ?? ""]));
       const structures = new Map(ctx.structures());
@@ -99,6 +103,7 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
     }
     const { project } = flowProject;
     const owner = project.owner(file, line, column);
+    if (previous && owner !== previousModule) { flowPanel.hint("原模块或信号已变化，请重新右键追踪。"); return; }
     if (!owner) { flowPanel.hint("当前位置不在可识别的 HDL 模块内。"); return; }
     const mod = project.module(owner);
     if (!mod) { flowPanel.hint("在源码信号上右键，选择“追踪此信号”。"); return; }

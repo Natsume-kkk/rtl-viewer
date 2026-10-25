@@ -12,10 +12,18 @@ const HDL_EXTS: &[&str] = &["v", "sv", "vh", "svh", "vhd", "vhdl"];
 const CONSTRAINT_EXTS: &[&str] = &["xdc", "sdc"];
 
 #[derive(Serialize)]
+struct ScanIssue {
+    file: String,
+    reason: String,
+}
+
+#[derive(Default, Serialize)]
 struct ScanResult {
     hdl: Vec<String>,
     xci: Vec<String>,
     con: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    issues: Vec<ScanIssue>,
 }
 
 /** 目录递归深度上限：junction/硬链接环等异常结构的兜底，避免栈溢出崩进程。 */
@@ -28,14 +36,32 @@ fn walk(dir: &Path, out: &mut ScanResult) {
 
 fn walk_depth(dir: &Path, out: &mut ScanResult, depth: usize) {
     if depth >= MAX_WALK_DEPTH {
+        out.issues.push(ScanIssue { file: normalize(dir), reason: "目录超过扫描深度上限".into() });
         return;
     }
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            out.issues.push(ScanIssue { file: normalize(dir), reason: error.to_string() });
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                out.issues.push(ScanIssue { file: normalize(dir), reason: error.to_string() });
+                continue;
+            }
+        };
         let path = entry.path();
         // 不跟随符号链接/junction：环状链接会导致无限递归，一律跳过
-        let Ok(meta) = fs::symlink_metadata(&path) else {
-            continue;
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(error) => {
+                out.issues.push(ScanIssue { file: normalize(&path), reason: error.to_string() });
+                continue;
+            }
         };
         if meta.file_type().is_symlink() {
             continue;
@@ -86,7 +112,7 @@ fn scan_folder_sync(path: String) -> Result<ScanResult, String> {
         return Err(format!("not a directory: {path}"));
     }
     fs::read_dir(&root).map_err(|e| format!("scan {path} failed: {e}"))?;
-    let mut out = ScanResult { hdl: vec![], xci: vec![], con: vec![] };
+    let mut out = ScanResult::default();
     walk(&root, &mut out);
     out.hdl.sort();
     out.xci.sort();
@@ -369,6 +395,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn missing_nested_directory_is_reported_without_aborting_other_sources() {
+        let anchor = temp_file("scan_issues.v", b"module source; endmodule");
+        let mut out = ScanResult::default();
+        out.hdl.push(anchor.clone());
+        let missing = Path::new(&anchor).parent().unwrap().join("missing_subdirectory");
+        walk(&missing, &mut out);
+        assert_eq!(out.hdl, vec![anchor]);
+        assert_eq!(out.issues.len(), 1);
+        assert_eq!(out.issues[0].file, normalize(&missing));
+        assert!(!out.issues[0].reason.is_empty());
+    }
+
+    #[test]
     fn size_limit_and_stat_errors_are_explicit() {
         let path = temp_file("oversize.v", b"");
         fs::File::options().write(true).open(&path).unwrap().set_len(MAX_FILE_BYTES + 1).unwrap();
@@ -647,7 +686,7 @@ mod tests {
         fs::create_dir_all(&deep).unwrap();
         fs::write(shallow.join("shallow.v"), b"module s;\n").unwrap();
         fs::write(deep.join("deep.v"), b"module d;\n").unwrap();
-        let mut out = ScanResult { hdl: vec![], xci: vec![], con: vec![] };
+        let mut out = ScanResult::default();
         walk(&root, &mut out);
         assert_eq!(out.hdl.len(), 1);
         assert!(out.hdl[0].ends_with("shallow.v"));
@@ -667,7 +706,7 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
             return;
         }
-        let mut out = ScanResult { hdl: vec![], xci: vec![], con: vec![] };
+        let mut out = ScanResult::default();
         walk(&root, &mut out);
         assert_eq!(out.hdl.len(), 1);
         assert!(out.hdl[0].ends_with("real.v"));

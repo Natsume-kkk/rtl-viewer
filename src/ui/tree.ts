@@ -174,6 +174,10 @@ export class HierarchyTree {
     const displayName = `${depth > 0 ? `${node.label} : ` : ""}${node.moduleName}${fileName ? ` (${fileName})` : ""}`;
     row.setAttribute("aria-label", `${node.label}，${kindLabel} ${node.moduleName}${fileName ? `，文件 ${fileName}` : ""}${node.recursive ? "，循环例化" : ""}`);
     row.title = `${node.label}\n${kindLabel} · ${node.moduleName}${node.file ? `\n${node.file}:${node.line ?? 1}` : ""}`;
+    if (node.problem) {
+      row.title += `\n${node.problem}`;
+      row.setAttribute("aria-label", `${row.getAttribute("aria-label")}，${node.problem}`);
+    }
     row.style.paddingLeft = `${8 + depth * 14}px`;
     row.style.minWidth = `${160 + depth * 14}px`;
 
@@ -216,10 +220,10 @@ export class HierarchyTree {
     row.appendChild(label);
     // 深层行可能宽于侧栏；聚焦时把名称而非行的空白缩进滚入视口。
     row.addEventListener("focus", () => label.scrollIntoView?.({ block: "nearest", inline: "nearest" }));
-    if (node.kind === "ip") {
+    if (node.kind === "ip" || node.problem) {
       const badge = document.createElement("span");
       badge.className = "tree-badge";
-      badge.textContent = "IP";
+      badge.textContent = node.problem ? "定义冲突" : "IP";
       row.appendChild(badge);
     }
 

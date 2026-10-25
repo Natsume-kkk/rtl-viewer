@@ -164,6 +164,7 @@ function parseConnections(
   lineStarts: number[],
   expressions: string,
 ): InstanceInfo["connections"] {
+  if (!src.trim()) return [];
   const entries: { text: string; start: number }[] = [];
   let depth = 0, cur = "", curStart = 0;
   for (let i = 0; i < src.length; i++) {
@@ -190,7 +191,7 @@ function parseConnections(
       out.push({ port: named[1], expr: named[2], line });
     } else {
       const expr = text.trim();
-      if (expr) out.push({ expr, line });
+      out.push({ expr, line });
     }
   }
   return out;

@@ -299,8 +299,34 @@ export function analyzeProcess(source: string, lang: HdlLang, offset = 0, vector
     for (const [name, ops] of operators) result.operators.set(name, [...ops][0]);
     const old = (name: string): Expr => ({ ...reference(name), current: true });
     const uncertain=(name:string):Expr=>({...reference(name),kind:"unknown",value:"更新值未确定",args:[]});
-    const unknownCall=(e:Expr):boolean=>e.kind==="call" && !e.conversion && !/^(rising_edge|falling_edge)$/.test(e.value) || e.args.some(unknownCall);
-    const unreliable=(e:Expr):boolean=>e.kind==="unknown" || unknownCall(e) || e.args.some(unreliable);
+    // 替换后的表达式是共享 DAG；按节点记忆检查，预算按展开后的规模计算，
+    // 同时限制下游格式化、源码映射和绘图的工作量。
+    const expressionBudget = 4096, depthBudget = 128;
+    type Summary = { size: number; depth: number; unknown: boolean; call: boolean };
+    const summaries = new WeakMap<Expr, Summary>();
+    function summary(e: Expr): Summary {
+      const cached = summaries.get(e);
+      if (cached) return cached;
+      const children = e.args.map(summary);
+      const value = {
+        size: Math.min(expressionBudget + 1, 1 + children.reduce((n, child) => n + child.size, 0)),
+        depth: 1 + children.reduce((n, child) => Math.max(n, child.depth), 0),
+        unknown: e.kind === "unknown" || children.some(child => child.unknown),
+        call: e.kind === "call" && !e.conversion && !/^(rising_edge|falling_edge)$/.test(e.value) || children.some(child => child.call),
+      };
+      summaries.set(e, value);
+      return value;
+    }
+    const unknownCall = (e: Expr) => summary(e).call;
+    const unreliable = (e: Expr) => summary(e).unknown || summary(e).call;
+    const budgetReason = "更新表达式超过预算，只展示源码关系";
+    function bounded(e: Expr, target: string): Expr {
+      const cost = summary(e);
+      if (cost.size <= expressionBudget && cost.depth <= depthBudget) return e;
+      if (!result.issues.includes(budgetReason)) result.issues.push(budgetReason);
+      for (const assignment of result.assignments!) if (assignment.target === target) assignment.reason ??= budgetReason;
+      return uncertain(target);
+    }
     const invalidate=(affected:Iterable<string>,immediate:Map<string,Expr>,deferred:Map<string,Expr>)=>{
       for(const name of affected) { immediate.set(name,uncertain(name)); if(operators.get(name)?.has("<=")) deferred.set(name,uncertain(name)); }
     };
@@ -315,11 +341,11 @@ export function analyzeProcess(source: string, lang: HdlLang, offset = 0, vector
         }
         if (s.kind === "assign") {
           if(unknownCall(s.expr)) { invalidate([...names,...targets],immediate,deferred); result.issues.push("未知函数调用的副作用未确定"); }
-          const rhs = substitute(s.expr, immediate);
+          const rhs = bounded(substitute(s.expr, immediate), s.target);
           const e = s.selectors.length || mixed.has(s.target) || unreliable(rhs) ? uncertain(s.target) : { ...rhs, assignment: {start:s.start,end:s.end} };
           if(unreliable(e)) { const assignment=result.assignments!.find(a=>a.start===s.start); if(assignment && !assignment.reason) assignment.reason="更新值未确定，只展示源码关系"; }
           // 立即写入必须保留赋值转换，不能把窄目标当成原 RHS 直接代入后续表达式。
-          if (s.op === "=" || s.op === ":=") immediate.set(s.target, { kind: "cast", value: s.target, text: "", args: [e], start: s.start, end: s.end, assignment:e.assignment });
+          if (s.op === "=" || s.op === ":=") immediate.set(s.target, bounded({ kind: "cast", value: s.target, text: "", args: [e], start: s.start, end: s.end, assignment:e.assignment }, s.target));
           else deferred.set(s.target, e);
         } else {
           if(unknownCall(s.condition)) {invalidate([...names,...targets],immediate,deferred);result.issues.push("未知条件调用的副作用未确定");}
@@ -337,8 +363,8 @@ export function analyzeProcess(source: string, lang: HdlLang, offset = 0, vector
           execute(s.yes, yesI, yesD); execute(s.no, noI, noD);
           for (const name of new Set([...targets,...yesI.keys(),...noI.keys()])) {
             const before=immediate.get(name) ?? old(name);
-            immediate.set(name, choose(cond, yesI.get(name) ?? before, noI.get(name) ?? before, s.display));
-            if (yesD.has(name) || noD.has(name)) deferred.set(name, choose(cond, yesD.get(name) ?? old(name), noD.get(name) ?? old(name), s.display));
+            immediate.set(name, bounded(choose(cond, yesI.get(name) ?? before, noI.get(name) ?? before, s.display), name));
+            if (yesD.has(name) || noD.has(name)) deferred.set(name, bounded(choose(cond, yesD.get(name) ?? old(name), noD.get(name) ?? old(name), s.display), name));
           }
         }
       }

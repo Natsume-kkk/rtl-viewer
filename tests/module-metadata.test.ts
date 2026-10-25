@@ -1,6 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { createModuleMetadataLoader } from "../src/app/module-metadata";
 import type { ModuleDef } from "../src/model";
+import { ModuleIndex } from "../src/model";
+import { scanStructure } from "../src/parser";
+
+it.each([false,true])("分文件 entity 的定义、端口及参数不依赖扫描排序（反序=%s）", async reverse => {
+  const entries:[string,string][]=[
+    ["a_arch.vhd","architecture rtl of leaf is begin end rtl;"],
+    ["z_entity.vhd","entity leaf is generic(W:integer:=8); port(a:in bit;q:out bit); end leaf;"],
+  ];
+  const files=new Map(reverse ? entries.reverse() : entries), index=new ModuleIndex();
+  for(const[file,source]of files) index.addStructure(scanStructure(source,file));
+  const loader=createModuleMetadataLoader({ips:()=>[],resolveModule:name=>index.resolve(name),fileContent:file=>files.get(file),fileToken:file=>({identity:file,version:files.get(file)})});
+  expect(index.resolve("leaf")?.file).toBe("z_entity.vhd");
+  expect((await loader.modulePorts("leaf")).map(port=>port.name)).toEqual(["a","q"]);
+  expect(loader.moduleParameters("leaf").map(parameter=>parameter.name)).toEqual(["W"]);
+});
+
+it("重复定义不提供跳转或端口补全，也不回退到同名 IP", async () => {
+  const index=new ModuleIndex();
+  index.addStructure(scanStructure("module core(input a); endmodule", "a.v"));
+  index.addStructure(scanStructure("module core(output b); endmodule", "b.v"));
+  index.addIp("core", "ip/core.xci");
+  const loader=createModuleMetadataLoader({ips:()=>[{name:"core",file:"ip/core.xci"}],resolveModule:name=>index.resolve(name),fileContent:()=>undefined,fileToken:file=>({identity:file,version:1})});
+  expect(index.resolve("core")).toBeUndefined(); expect(index.allDefs()).toEqual([]);
+  expect(await loader.modulePorts("core")).toEqual([]);
+});
 
 describe("模块文件解析缓存", () => {
   const def: ModuleDef = { name: "m", file: "rtl/m.v", line: 1, isIp: false };

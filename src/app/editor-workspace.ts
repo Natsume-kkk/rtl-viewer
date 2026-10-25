@@ -293,7 +293,7 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
     const g = groups[idx];
     const cached = ctx.cachedFile(file);
     if (cached) {
-      g.tabs.openContent(file, cached.content, cached.encoding, cached.mtime, line);
+      await g.tabs.openContent(file, cached.content, cached.encoding, cached.mtime, line);
     } else {
       await g.tabs.openFile(file, line);
     }

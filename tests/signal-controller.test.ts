@@ -16,6 +16,29 @@ import { createSignalController } from "../src/app/signal-controller";
 
 beforeEach(() => { fake.panels.length = 0; });
 
+it("刷新同名信号限定原模块，插入行后仍保留目标，删除模块后停止刷新", async () => {
+  let source = `module alpha(input a, output y);
+wire mid;
+assign mid=a; assign y=mid;
+endmodule
+module beta(input b, output z);
+wire mid;
+assign mid=b; assign z=mid;
+endmodule`;
+  const file="D:/test/two.v", files=new Map([[file,source]]), structures=new Map([[file,scanStructure(source,file)]]), index=new ModuleIndex();
+  index.addStructure([...structures.values()].flat());
+  const model={uri:{path:`/${file}`,authority:""},getWordAtPosition:()=>({word:"mid"}),getLanguageId:()=>"verilog",getVersionId:()=>1,getValue:()=>source};
+  const controller=createSignalController(document.createElement("div"),{editor:()=>({getModel:()=>model,getPosition:()=>({lineNumber:7,column:8})}) as any,files:()=>files.keys(),structures:()=>structures,index:()=>index,topName:()=>"beta",instancePath:()=>"beta",fileContent:()=>source,isOpen:()=>true,close:vi.fn(),navigate:vi.fn(),hint:vi.fn()});
+  const panel=fake.panels[0]; await controller.analyze();
+  expect(panel.logicResult.mock.lastCall[1].module).toBe("beta");
+  source="\n\n"+source; controller.invalidate(); panel.actions.refresh();
+  await vi.waitFor(()=>expect(panel.logicResult).toHaveBeenCalledTimes(2));
+  expect(panel.logicResult.mock.lastCall[1].module).toBe("beta");
+  source=source.slice(0,source.indexOf("module beta")); controller.invalidate(); panel.actions.refresh();
+  await vi.waitFor(()=>expect(panel.hint).toHaveBeenLastCalledWith("原模块或信号已变化，请重新右键追踪。"));
+  expect(panel.logicResult).toHaveBeenCalledTimes(2);
+});
+
 it("生成块同一源码的多个局部对象可区分选择，刷新保留所选身份",async()=>{
   let source="module top(input a,b,output [1:0] y); generate for(genvar i=0;i<2;i++) begin : lanes wire w; assign w=i?a:b; assign y[i]=w; end endgenerate endmodule";
   const file="D:/test/generate.v",files=new Map([[file,source]]),structures=new Map([[file,scanStructure(source,file)]]),index=new ModuleIndex();index.addStructure([...structures.values()].flat());

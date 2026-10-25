@@ -39,6 +39,8 @@ export interface ModuleInfo {
   ports: PortInfo[];
   parameters?: ParameterInfo[];
   instances: InstanceInfo[];
+  /** VHDL 声明与实现来源；结构扫描也保留，不能用端口或例化是否为空推断。 */
+  vhdl?: { entity: boolean; architectures: string[] };
 }
 
 export interface IpInfo {

@@ -207,6 +207,20 @@ describe("createExternalWatcher", () => {
 });
 describe("扫描与重载一致性", () => {
   afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+  it("增量排除网表头，未变化不反复读入；文件改回 RTL 后重新纳入", async () => {
+    const {createExternalWatcher,mocks}=await setup();
+    const ctx=makeCtx(), path="D:/proj/results/custom.v";
+    mocks.scanFolder.mockResolvedValue({hdl:[path,"D:/proj/post_synth_funcsim.v"],xci:[],con:[]});
+    mocks.readFile.mockResolvedValue({content:"// Command : write_verilog -mode funcsim custom.v\nmodule top; endmodule",encoding:"utf8",mtime:1});
+    mocks.fileStates.mockResolvedValue([1]);
+    const watcher=createExternalWatcher(ctx); watcher.start();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(ctx.structures.size).toBe(0); expect(mocks.readFile).toHaveBeenCalledTimes(1);
+    mocks.fileStates.mockResolvedValue([2]);
+    mocks.readFile.mockResolvedValue({content:"module rtl; endmodule",encoding:"utf8",mtime:2});
+    await vi.advanceTimersByTimeAsync(16000); watcher.stop();
+    expect(ctx.structures.get(path)?.[0].name).toBe("rtl");
+  });
   it("creating an XCI excludes its generated HDL consistently with cold scan", async () => {
     const { createExternalWatcher, mocks } = await setup();
     const { scanStructure } = await import("../src/parser");

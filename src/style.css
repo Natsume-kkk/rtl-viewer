@@ -1340,6 +1340,7 @@ button:focus-visible, [tabindex]:focus-visible, select:focus-visible, input:focu
 #window-close:hover { background: var(--sem-error); color: var(--surface-editor); }
 .brand { display: flex; align-items: center; gap: 9px; flex: none; }
 .brand img { width: 21px; height: 21px; }
+:root[data-theme="light"] .brand img { filter: brightness(0); }
 .brand strong { font-size: 13px; font-weight: 600; }
 .brand > span { color: var(--fg-secondary); font-size: var(--fs-caption); margin-left: 8px; }
 #project-title { margin: 0 auto; color: var(--fg-secondary); font: var(--fs-body) var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

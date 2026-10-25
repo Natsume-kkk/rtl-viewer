@@ -96,6 +96,8 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 
 [交互评审原型](interaction-review.html) 保留界面方案对比及评审依据，供设计参考；软件当前行为以[使用指南](usage.md)为准。
 
+[图标评审预览](icon-review.html) 保留透明线构图标的设计对照，默认选中已采用的紧凑交织及功能图标。页面包含参考截图、桌面场景、透明棋盘格、深浅底色和实际尺寸；旧版图标仅供对照。正式应用资源以 `src-tauri/icons/` 与 `src/ui/icons.ts` 为准。
+
 信号链保持两类边界：端口由 `src/model/signal-flow.ts` 跨层追到赋值位置，`src/ui/signal-ports.ts` 直接显示已可见端口的赋值终点；内部信号由 `src/analysis/local.ts` 在当前模块内分析，子模块端口通过 `loadPortSites` 附带有界的第一层源码预览（`stopAtAssignments` + `descendOnly`），沿纯端口转接向下查找到第一处实际赋值／使用，保留预算和递归例化截止，不向父模块回溯，不合并子模块依赖图。入口分类、快照与取消由 `src/app/signal-controller.ts` 管理，两个视图均在原链路显示终点源码，不强制切换到模块内模式；对应回归见 `tests/signal-analysis.test.ts`、`tests/signal-endpoints.test.ts`、`tests/signal-flow-ui.test.ts` 和 `tests/signal-controller.test.ts`。
 
 卡片宽度与连线计算共用 `src/ui/signal-canvas.ts`：无手动覆盖的卡片按内容 max-content 自适应，夹在 236–560 px；手动拖宽（上限 1200 px）覆盖自适应，随当前追踪的视图状态保存，双击或 Home 恢复自适应。列位置按同列最大宽度累加，保留 40 px 列间距；连线和画布使用实际卡片宽度。两种视图以及懒创建的分支卡片均接入边缘拖动，销毁时释放指针捕获。控制器仅在文件、信号、实例与过程作用域相同的刷新中沿用宽度，不沿用旧分析的分支展开状态。回归入口为 `tests/signal-card-width.test.ts` 和 `tests/signal-controller.test.ts`；jsdom 无布局，自适应测量在测试中 mock `offsetWidth`，拖动命中、代码换行与滚动位置仍需浏览器／桌面实际交互检查。
@@ -206,13 +208,15 @@ Rust 扫描结果可携带 `issues`，目录读取失败和深度上限都显式
 
 ### 品牌图标与桌面截图
 
-界面图标使用 [src/ui/icons.ts](../src/ui/icons.ts) 的 `setIcon`，以 `currentColor` 跟随主题；搜索开关 Aa、词、.* 保留文字。
+界面图标使用 [src/ui/icons.ts](../src/ui/icons.ts) 的 `setIcon`，保持 16 px 栅格、1.5 px 描边和圆角收口，以 `currentColor` 跟随主题；搜索开关 Aa、词、.* 保留文字。
 
-品牌图标的仓库源文件是 [brand.svg](../src-tauri/icons/brand.svg)。修改后的处理顺序：
+品牌采用透明背景的紧凑交织符号：[brand.svg](../src-tauri/icons/brand.svg) 为常规白色线构，[brand-small.svg](../src-tauri/icons/brand-small.svg) 为 16–24 px 光学校正版，线宽由 9 增至 12，构形微放大 8%。标题栏使用小尺寸源，浅色主题通过 CSS 转黑；Windows ICO 使用白色透明线条，不添加底板。修改后的处理顺序：
 
-1. 将 SVG 以透明背景重新渲染为 16、24、32、48、64、128、256 px 七档 PNG，更新 `src-tauri/icons/png/<size>.png`。
+1. 使用 SVG 渲染器以透明背景生成 16、24、32、48、64、128、256 px 七档 PNG，更新 `src-tauri/icons/png/<size>.png`；16、24 px 使用 `brand-small.svg`，其余使用 `brand.svg`。检查实际像素尺寸下的线条和 Alpha，不能添加背景色。
 2. 执行 `node scripts/make-icon.mjs`，由这些 PNG 重新封装 `src-tauri/icons/icon.ico`。
 3. 更新 `src-tauri/build.rs` 的修改时间，强制构建脚本重新执行，避免 exe 沿用旧图标；然后通过正式入口重建。
+
+README 横幅的品牌符号位于 `docs/assets/banner.svg`，品牌构形变化时同步该符号并按原尺寸重新渲染 `banner@2x.png`；字体回退、文字间距和完整布局需要实际查看。
 
 ```powershell
 node scripts/make-icon.mjs

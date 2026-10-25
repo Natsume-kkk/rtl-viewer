@@ -1,6 +1,6 @@
 // 将 src-tauri/icons/png/ 下的多尺寸 PNG 封装为多尺寸 ICO（Windows 资源需要），无第三方依赖。
-// PNG 由 src-tauri/icons/brand.svg（meridian 设计源：design-agent outputs/rtl-viewer-meridian/assets/brand/）
-// 经浏览器按 16/24/32/48/64/128/256 透明背景渲染产出；修改 brand.svg 后需重新渲染 PNG 再运行本脚本。
+// PNG 由 src-tauri/icons/brand.svg 透明背景渲染产出，16/24 px 使用 brand-small.svg。
+// 修改源 SVG 后，重新渲染 16/24/32/48/64/128/256 px PNG，再运行本脚本。
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

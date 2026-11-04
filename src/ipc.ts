@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 export interface ScanIssue { file: string; reason: string }
@@ -87,6 +87,57 @@ export async function saveFileDialog(defaultPath?: string): Promise<string | nul
       { name: "HDL 源码文件", extensions: ["v", "sv", "vh", "svh", "vhd", "vhdl"] },
       { name: "所有文件", extensions: ["*"] },
     ],
+  });
+  return selected ? normalizePath(selected) : null;
+}
+
+export interface SyntaxDiagnostic {
+  file: string;
+  line: number;
+  column: number;
+  severity: "error" | "warning" | "info" | string;
+  ruleId: string;
+  source: "verilator" | "ghdl" | "system" | string;
+  message: string;
+}
+
+export interface BackendSummary {
+  name: string;
+  version: string;
+  files: number;
+  status: string;
+}
+
+export interface SyntaxCheckResult {
+  requestId: number;
+  diagnostics: SyntaxDiagnostic[];
+  checkedFiles: number;
+  backends: BackendSummary[];
+  cancelled: boolean;
+}
+
+export interface SyntaxProgress {
+  stage: string;
+  file: string;
+  completed: number;
+  total: number;
+}
+
+export function runSyntaxCheck(root: string, files: string[], top: string | undefined, requestId: number, progress: (event: SyntaxProgress) => void): Promise<SyntaxCheckResult> {
+  const channel = new Channel<SyntaxProgress>();
+  channel.onmessage = progress;
+  return invoke<SyntaxCheckResult>("run_syntax_check", { request: { requestId, root, files, top: top ?? null }, channel });
+}
+
+export function cancelSyntaxCheck(requestId: number): Promise<void> {
+  return invoke<void>("cancel_syntax_check", { requestId });
+}
+
+export async function saveReportDialog(format: "html" | "csv", defaultPath: string): Promise<string | null> {
+  const selected = await save({
+    title: "导出语法检查报告",
+    defaultPath,
+    filters: [{ name: format === "html" ? "HTML 报告" : "CSV 报告", extensions: [format] }],
   });
   return selected ? normalizePath(selected) : null;
 }

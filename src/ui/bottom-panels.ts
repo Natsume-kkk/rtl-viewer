@@ -1,6 +1,6 @@
 import { setIcon } from "./icons";
 
-type Panel = "search" | "flow";
+type Panel = "search" | "flow" | "problems";
 const DEFAULT_HEIGHT = 380;
 
 /** 只管理面板可见性和空间，不重建搜索或追踪视图。 */
@@ -58,7 +58,7 @@ export class BottomPanels {
     };
     const bar = document.createElement("div");
     bar.className = "bottom-panel-bar";
-    for (const [id, label] of [["search", "搜索"], ["flow", "信号链"]] as const) {
+    for (const [id, label] of [["search", "搜索"], ["flow", "信号链"], ["problems", "问题"]] as const) {
       const button = document.createElement("button");
       button.textContent = label;
       button.setAttribute("aria-controls", panels[id].id);
@@ -124,7 +124,8 @@ export class BottomPanels {
     // 常规窗口保留 320 px 编辑区（标签／路径栏之外约 10 行源码），小窗口保留至少一半空间。
     const maximum = Math.max(0, available - Math.min(320, available * 0.55));
     const canShare = this.root.parentElement!.clientWidth >= 860 && (this.expanded ? available : maximum) >= 300;
-    const shared = this.together && this.opened.size === 2 && canShare;
+    const sharingActive = this.active === "search" || this.active === "flow";
+    const shared = this.together && sharingActive && this.opened.has("search") && this.opened.has("flow") && canShare;
     const minimum = Math.min(shared ? 300 : 180, maximum);
     if (!this.active) this.expanded = false;
     const height = this.expanded ? available : Math.max(minimum, Math.min(this.preferredHeight, maximum));
@@ -142,12 +143,12 @@ export class BottomPanels {
     this.resize.setAttribute("aria-valuemax", String(Math.round(maximum)));
     this.resize.setAttribute("aria-valuenow", String(Math.round(height)));
     this.simultaneous.setAttribute("aria-pressed", String(shared));
-    this.simultaneous.disabled = !canShare && !this.together;
+    this.simultaneous.disabled = !sharingActive || (!canShare && !this.together);
     this.simultaneous.title = canShare ? "左右并列查看信号链与搜索" : "空间不足，暂用切换；放大窗口后可同时查看";
-    this.hint.textContent = this.together && this.opened.size === 2 && !canShare ? "空间不足，暂用切换" : "";
+    this.hint.textContent = this.together && sharingActive && this.opened.has("search") && this.opened.has("flow") && !canShare ? "空间不足，暂用切换" : "";
     this.hint.hidden = !this.hint.textContent;
     for (const [id, button] of this.buttons) {
-      const visible = !!this.active && (id === this.active || shared);
+      const visible = !!this.active && (id === this.active || shared && (id === "search" || id === "flow"));
       const panel = this.panels[id];
       const hadFocus = !visible && (panel.contains(document.activeElement) || id === "flow" && this.header.contains(document.activeElement));
       panel.hidden = !visible;

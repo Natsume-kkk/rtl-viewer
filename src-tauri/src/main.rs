@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod syntax;
+
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -90,7 +92,7 @@ fn walk_depth(dir: &Path, out: &mut ScanResult, depth: usize) {
     }
 }
 
-fn normalize(path: &Path) -> String {
+pub(crate) fn normalize(path: &Path) -> String {
     let text = path.to_string_lossy();
     if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
         format!("//{}", unc.replace('\\', "/"))
@@ -376,6 +378,7 @@ fn write_file_sync(path: String, content: String, encoding: String) -> Result<u6
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(std::sync::Arc::new(syntax::SyntaxJobState::default()))
         .invoke_handler(tauri::generate_handler![
             scan_folder,
             read_file,
@@ -384,7 +387,9 @@ fn main() {
             path_exists,
             is_directory,
             show_in_folder,
-            open_directory
+            open_directory,
+            syntax::run_syntax_check,
+            syntax::cancel_syntax_check
         ])
         .run(tauri::generate_context!())
         .expect("error while running rtl-viewer");

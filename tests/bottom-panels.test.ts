@@ -12,17 +12,17 @@ function setup(height = 710, width = 1000) {
     constructor(callback: () => void) { resized = callback; }
     observe() {} disconnect = disconnect;
   });
-  document.body.innerHTML = '<div id="workspace"><section id="panels" hidden><div><section id="search" hidden><input value="clk"><p>已完成结果</p></section><aside id="flow" hidden><p>top/u0.clk</p></aside></div></section></div>';
+  document.body.innerHTML = '<div id="workspace"><section id="panels" hidden><div><section id="search" hidden><input value="clk"><p>已完成结果</p></section><aside id="flow" hidden><p>top/u0.clk</p></aside><section id="problems" hidden><p>语法问题</p></section></div></section></div>';
   const workspace = document.getElementById("workspace")!, root = document.getElementById("panels")!;
   Object.defineProperty(workspace, "clientHeight", { get: () => height });
   Object.defineProperty(workspace, "clientWidth", { get: () => width });
   Object.defineProperty(root, "clientHeight", { get: () => Number.parseFloat(root.style.height) || 0 });
-  const search = document.getElementById("search")!, flow = document.getElementById("flow")!;
+  const search = document.getElementById("search")!, flow = document.getElementById("flow")!, problems = document.getElementById("problems")!;
   const changed = vi.fn();
-  const panels = new BottomPanels(root, { search, flow }, changed);
+  const panels = new BottomPanels(root, { search, flow, problems }, changed);
   cleanup.push(() => panels.dispose());
   const share = [...root.querySelectorAll("button")].find(button => button.textContent === "同时查看")!;
-  return { panels, root, search, flow, share, changed, disconnect, resize: (next: number, nextWidth = width) => { height = next; width = nextWidth; resized(); } };
+  return { panels, root, search, flow, problems, share, changed, disconnect, resize: (next: number, nextWidth = width) => { height = next; width = nextWidth; resized(); } };
 }
 
 it("默认切换保留查询、追踪节点与滚动状态，收起后可重新打开", () => {
@@ -109,4 +109,20 @@ it("合并标题沿用原按钮事件，切换后焦点不留在隐藏标题，�
   expect(document.activeElement).not.toBe(action);
   panels.show("flow"); expect(root.querySelector<HTMLElement>(".bottom-panel-header")!.hidden).toBe(false);
   panels.dispose(); expect(flow.firstChild).toBe(header);
+});
+
+it("问题面板与搜索、信号链独立切换，不错误触发双面板共存", () => {
+  const { panels, search, flow, problems, share } = setup();
+  panels.show("flow"); share.click();
+  expect(search.hidden).toBe(false); expect(flow.hidden).toBe(false);
+  panels.show("problems");
+  expect(problems.hidden).toBe(false);
+  expect(search.hidden).toBe(true); expect(flow.hidden).toBe(true);
+  expect(share.disabled).toBe(true);
+  panels.show("flow");
+  expect(problems.hidden).toBe(true);
+  expect(search.hidden).toBe(false); expect(flow.hidden).toBe(false);
+  panels.hide("search");
+  panels.hide("flow");
+  expect(problems.hidden).toBe(false);
 });

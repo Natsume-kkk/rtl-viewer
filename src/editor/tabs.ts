@@ -87,6 +87,10 @@ export class TabManager {
     return this.tabs.length;
   }
 
+  get allTabs(): readonly Tab[] {
+    return this.tabs;
+  }
+
   tabAt(element: Element): Tab | undefined {
     return this.tabs.find(tab => tab.element.contains(element));
   }

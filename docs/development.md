@@ -83,11 +83,29 @@ npm run dev
 
 底部布局由 `src/ui/bottom-panels.ts` 管理，信号面板标题在组件创建后挂到共用栏，销毁时归还原面板；隐藏标题时同步转移焦点。共存按可用宽高退回切换，展开仅隐藏编辑区域，不销毁模型；源码定位先恢复布局再导航。相关回归入口为 `tests/bottom-panels.test.ts`，实际滚动、命中范围与窄窗口布局仍须浏览器检查。
 
+## 外部语法检查
+
+`tools/windows-x64/` 保存随应用发布的 Verilator 5.050、GHDL 6.0.0 及其运行库，`tools/licenses/` 保存对应许可。开发构建直接调用该目录；`scripts/Build-Release.ps1` 通过 `bundled-tools` 特性让 `src-tauri/build.rs` 将运行文件嵌入单 exe，首次检查时按内容修订号释放到应用数据目录，不写入用户源码工程。更新工具后需通过正式入口重建并核对版本，不能用裸 `cargo build` 验收发布行为。
+
+`src-tauri/src/syntax.rs` 管理检查请求、进程、超时与取消。Verilator 使用响应文件传入全部 Verilog／SystemVerilog 编译单元和 `.vh`／`.svh` 所在 include 目录，工作输出放在应用工作目录；GHDL 根据 `work` package 定义与引用进行稳定拓扑排序，再逐文件分析。自定义 VHDL library 映射不从目录名猜测。Verilator 超时为 120 秒，GHDL 单文件超时为 60 秒，切换工程或退出会取消任务。
+
+外部检查只读取磁盘文件，工程内未保存修改会阻止发起。前端统一诊断位于 `src/ipc.ts`，`src/ui/problems.ts` 负责过滤与运行状态，`src/app/problem-markers.ts` 管理 Monaco 标记，`src/app/syntax-report.ts` 生成 HTML／CSV。源码变化使旧结果失效，面板最多显示 500 条过滤结果，后端最多保留 5000 条诊断；报告包含后端版本与覆盖状态。
+
+常规 Rust 测试不启动外部工具。以下命令分别显式运行开发目录和内嵌资源的真实后端检查，均覆盖 Verilog include、VHDL 标准库及诊断返回：
+
+```powershell
+pwsh -NoProfile -Command "& './scripts/Invoke-Cargo.ps1' -CargoArgs 'test','--locked','--manifest-path','src-tauri/Cargo.toml','real_backends_check_verilog_and_vhdl','--','--ignored','--nocapture'"
+pwsh -NoProfile -Command "& './scripts/Invoke-Cargo.ps1' -CargoArgs 'test','--locked','--manifest-path','src-tauri/Cargo.toml','--features','bundled-tools','embedded_backends_check_verilog_and_vhdl','--','--ignored','--nocapture'"
+```
+
+前端回归入口为 `tests/problems.test.ts`、`tests/problem-markers.test.ts`、`tests/syntax-report.test.ts` 和 `tests/bottom-panels.test.ts`。真实工程依赖、桌面原生检查交互仍需另行验收，不能用浏览器 mock 代替外部后端结果。
+
 ## 架构与目录
 
 ```text
 src/         前端：analysis/（按需运算语义与单模块逻辑）、parser/（HDL 解析）、model/（索引、层级树、搜索、导航历史、大纲、信号声明定位）、app/（编辑工作区、工程扫描、外部变更监视、信号链与模块元数据）、editor/（Monaco、标签页、代码补全）、ui/（树、搜索面板、大纲、状态栏、对话框、右键菜单、最近工程）
-src-tauri/   本机 Rust 桌面后端：源码在 src/，负责文件扫描、编码读写与系统调用；另含桌面配置和图标
+src-tauri/   本机 Rust 桌面后端：源码在 src/，负责文件扫描、编码读写、系统调用与外部检查进程；另含桌面配置和图标
+tools/       随应用发布的 Verilator／GHDL Windows 运行环境及第三方许可
 docs/        使用指南、开发指南与 assets/ 界面素材
 tests/       Vitest 测试；samples/ 为可提交样例，fixtures/ 为不入 Git 的私有验收副本；私有套件通过环境变量显式启用
 scripts/     构建辅助（Build-Release.ps1、Invoke-Cargo.ps1、make-icon.mjs、Capture-Window.ps1 exe 窗口冒烟截图）

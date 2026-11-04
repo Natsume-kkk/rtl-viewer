@@ -12,7 +12,10 @@ import type { OutlineItem } from "./model/outline";
 import { createProjectSearch } from "./app/project-search";
 import { scanStructure } from "./parser";
 import type { ModuleInfo, IpInfo } from "./parser";
-import { openFolderDialog, openFileDialog, pathExists, showInFolder, isDirectory, normalizePath } from "./ipc";
+import { openFolderDialog, openFileDialog, pathExists, showInFolder, isDirectory, normalizePath, runSyntaxCheck, cancelSyntaxCheck, saveReportDialog, writeFile, type SyntaxCheckResult } from "./ipc";
+import { ProblemPanel } from "./ui/problems";
+import { syncProblemMarkers } from "./app/problem-markers";
+import { syntaxReportHtml, syntaxReportCsv } from "./app/syntax-report";
 import { registerAppShortcuts } from "./ui/shortcuts";
 import { initMonaco, createEditor, monaco } from "./editor/monaco";
 import { registerCompletionProviders } from "./editor/completion";
@@ -126,7 +129,10 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   flowBtn.id = "flow-action";
   flowBtn.title = "信号链分析";
   flowBtn.setAttribute("aria-expanded", "false");
-  end.append(searchBtn, splitBtn, flowBtn);
+  const checkBtn = action("检查", "warning", () => void runProjectSyntaxCheck());
+  checkBtn.id = "syntax-check-action";
+  checkBtn.title = "使用 Verilator／GHDL 检查当前工程";
+  end.append(searchBtn, splitBtn, flowBtn, checkBtn);
   bar.append(openWrap, newBtn, saveBtn, editBtn, end);
   const progress = document.createElement("div");
   progress.id = "progress";
@@ -253,9 +259,89 @@ const searchPanel = new SearchPanel(searchRootEl, {
   displayPath,
 });
 
+let projectReady = false;
+let syntaxSerial = 0;
+let runningSyntaxRequest = 0;
+let lastSyntaxResult: SyntaxCheckResult | undefined;
+const problemPanel = new ProblemPanel(document.getElementById("problem-root")!, {
+  onRun: () => void runProjectSyntaxCheck(),
+  onCancel: () => { if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest); },
+  onExport: format => void exportSyntaxReport(format),
+  onOpen: diagnostic => { bottomPanels.restoreEditor(); void navigateTo(diagnostic.file, diagnostic.line, diagnostic.column); },
+  onClose: () => { setProblemsVisible(false); activeGroup().editor.focus(); },
+  displayPath,
+});
+
+function refreshProblemMarkers(): void {
+  const models = new Map<string, { path: string; model: import("./editor/monaco").monaco.editor.ITextModel }>();
+  for (const group of groups) for (const tab of group.tabs.allTabs) {
+    if (tab.path) models.set(tab.uriKey, { path: tab.path, model: tab.model });
+  }
+  syncProblemMarkers(models.values(), lastSyntaxResult?.diagnostics ?? [], problemPanel.isStale);
+}
+
+async function runProjectSyntaxCheck(): Promise<void> {
+  const folder = state.folder;
+  if (!folder || !projectReady) {
+    statusbar.hint(projectReady ? "请先打开工程" : "工程仍在载入，请稍后运行语法检查");
+    return;
+  }
+  const dirty = new Set<string>();
+  for (const group of groups) for (const tab of group.tabs.allTabs) {
+    if (tab.dirty && tab.path && state.contents.has(indexedFilePath(state.contents, tab.path))) dirty.add(tab.path);
+  }
+  if (dirty.size) {
+    await appAlert(`外部语法检查读取磁盘文件，请先保存工程内的未保存修改：\n\n${[...dirty].join("\n")}`);
+    return;
+  }
+  const files = [...state.contents.keys()].filter(file => /\.(?:v|sv|vh|svh|vhd|vhdl)$/i.test(file));
+  if (!files.length) {
+    statusbar.hint("当前工程没有可检查的 Verilog／VHDL 文件");
+    return;
+  }
+  if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest);
+  const request = ++syntaxSerial;
+  runningSyntaxRequest = request;
+  problemPanel.start();
+  setProblemsVisible(true);
+  try {
+    const result = await runSyntaxCheck(folder, files, state.topName, request, progress => {
+      if (request === syntaxSerial) problemPanel.update(progress);
+    });
+    if (request !== syntaxSerial || folder !== state.folder) return;
+    runningSyntaxRequest = 0;
+    lastSyntaxResult = result;
+    problemPanel.finish(result);
+    refreshProblemMarkers();
+  } catch (error) {
+    if (request !== syntaxSerial) return;
+    runningSyntaxRequest = 0;
+    problemPanel.fail(error);
+  }
+}
+
+function cancelProjectSyntaxCheck(): void {
+  syntaxSerial++;
+  if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest);
+  runningSyntaxRequest = 0;
+}
+
+async function exportSyntaxReport(format: "html" | "csv"): Promise<void> {
+  if (!lastSyntaxResult || !state.folder) return;
+  try {
+    const path = await saveReportDialog(format, `${state.folder}/rtl-syntax-report.${format}`);
+    if (!path) return;
+    const content = format === "html" ? syntaxReportHtml(state.folder, lastSyntaxResult) : syntaxReportCsv(lastSyntaxResult);
+    await writeFile(path, content, "utf8");
+    statusbar.hint(`检查报告已导出：${path}`);
+  } catch (error) {
+    statusbar.hint(`导出检查报告失败：${String(error)}`);
+  }
+}
+
 let searchWasVisible = false;
 const bottomPanels = new BottomPanels(document.getElementById("bottom-panels")!, {
-  search: searchRootEl, flow: document.getElementById("signal-flow")!,
+  search: searchRootEl, flow: document.getElementById("signal-flow")!, problems: document.getElementById("problem-root")!,
 }, () => {
   const searchVisible = bottomPanels.isVisible("search");
   if (searchWasVisible && !searchVisible) searchPanel.cancel();
@@ -268,6 +354,11 @@ function setSearchVisible(visible: boolean, focus = true): void {
   if (visible) bottomPanels.show("search");
   else bottomPanels.hide("search");
   if (visible && focus) searchPanel.focus();
+}
+
+function setProblemsVisible(visible: boolean): void {
+  if (visible) bottomPanels.show("problems");
+  else bottomPanels.hide("problems");
 }
 
 // ---------- 按需模块元数据（补全与 IP stub） ----------
@@ -348,6 +439,8 @@ function selectTreeInstance(node: TreeNode): void {
 function markResultsStale(): void {
   signalController.invalidate();
   searchPanel.markStale();
+  problemPanel.markStale();
+  refreshProblemMarkers();
 }
 
 // ---------- 按需信号链：显式追踪，浏览源码不改变目标 ----------
@@ -502,6 +595,7 @@ const workspace = createEditorWorkspace([editor, editor2], {
     const pos = tab && group.editor.getPosition();
     if (pos) statusbar.setPosition(`行 ${pos.lineNumber}，列 ${pos.column}`);
     refreshOutline();
+    refreshProblemMarkers();
   },
   onContentChange: active => { markResultsStale(); if (active) refreshOutline(); },
   onCursorChange: line => {
@@ -647,6 +741,11 @@ async function openFolder(folder: string): Promise<void> {
   try { if (!(await workspace.closeAll())) return; }
   finally { preparingProject = false; }
   watcher.stop();
+  cancelProjectSyntaxCheck();
+  projectReady = false;
+  lastSyntaxResult = undefined;
+  problemPanel.clear();
+  setProblemsVisible(false);
   state.folder = folder;
   updateProjectChrome();
   workspace.refreshChrome();
@@ -707,6 +806,7 @@ const projectScanner = createProjectScanner({
   setConstraints: files => { state.constraints = files; },
   progress: setProgress,
   complete: issues => {
+    projectReady = true;
     rebuildIndex(); renderTree(); watcher.start();
     setProgress(issues.length ? `部分载入：${issues.length} 项失败` : "");
     if (issues.length) {
@@ -715,12 +815,13 @@ const projectScanner = createProjectScanner({
     }
   },
   failed: async error => {
+    projectReady = false;
     state.folder = "";
     updateProjectChrome(); workspace.refreshChrome(); setProgress(""); rebuildIndex(); renderTree();
     await appAlert(`打开工程失败：${String(error)}`);
   },
 });
-window.addEventListener("pagehide", () => { projectScanner.cancel(); watcher.stop(); }, { once: true });
+window.addEventListener("pagehide", () => { projectScanner.cancel(); watcher.stop(); cancelProjectSyntaxCheck(); }, { once: true });
 
 // ---------- 树节点打开 ----------
 

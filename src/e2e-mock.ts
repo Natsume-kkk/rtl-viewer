@@ -17,9 +17,12 @@ const FIXTURE: string = await (async () => {
 
 interface TauriInternals {
   invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+  transformCallback: (callback: (argument: unknown) => void, once?: boolean) => number;
 }
 
+let callbackSerial = 0;
 const internals: TauriInternals = {
+  transformCallback: () => ++callbackSerial,
   async invoke(cmd, args = {}) {
     const path = typeof args.path === "string" ? args.path : "";
     switch (cmd) {
@@ -65,6 +68,15 @@ const internals: TauriInternals = {
       }
       case "is_directory":
         return true; // e2e 拖放测试固定用 fixture 目录
+      case "run_syntax_check": {
+        const request = args.request as { requestId: number; files: string[] };
+        const diagnostics = (window as unknown as { __rtlSyntaxDiagnostics?: unknown[] }).__rtlSyntaxDiagnostics ?? [];
+        return { requestId: request.requestId, diagnostics, checkedFiles: request.files.length, backends: [
+          { name: "verilator", version: "E2E", files: request.files.length, status: "completed" },
+        ], cancelled: false };
+      }
+      case "cancel_syntax_check":
+        return null;
       case "show_in_folder":
       case "open_directory":
         return null; // e2e 环境不起资源管理器
@@ -72,7 +84,7 @@ const internals: TauriInternals = {
       case "plugin:dialog|open":
         return (args.options as { directory?: boolean } | undefined)?.directory ? FIXTURE : null;
       case "plugin:dialog|save":
-        return `${FIXTURE}/e2e-out.v`;
+        return (args.options as { defaultPath?: string } | undefined)?.defaultPath ?? `${FIXTURE}/e2e-out.v`;
       default:
         throw new Error(`e2e mock: unhandled command ${cmd}`);
     }

@@ -14,6 +14,10 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 encoding_rs = "0.8"
 
+[features]
+default = []
+bundled-tools = []
+
 [profile.release]
 lto = true
 opt-level = "z"

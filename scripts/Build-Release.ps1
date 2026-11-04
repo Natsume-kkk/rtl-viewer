@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Initialize-BuildEnvironment.ps1')
 
 Set-Location (Join-Path $PSScriptRoot '..')
-npm run tauri build -- --no-bundle
+npm run tauri build -- --no-bundle --features bundled-tools
 if ($LASTEXITCODE -ne 0) { throw "tauri build failed with exit code $LASTEXITCODE" }
 
 # 交付物归位：cargo 输出埋在 target 深处，统一复制到项目根 release/

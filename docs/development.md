@@ -81,15 +81,15 @@ npm run dev
 
 文件访问限制在指定目录内；E2E mock 和文件服务不进入生产构建。单文件选择在当前 mock 中固定返回取消，不能据此验收原生文件选择成功路径。真实工程编辑验收同样只使用隔离副本。
 
-底部布局由 `src/ui/bottom-panels.ts` 管理，信号面板标题在组件创建后挂到共用栏，销毁时归还原面板；隐藏标题时同步转移焦点。共存按可用宽高退回切换，展开仅隐藏编辑区域，不销毁模型；源码定位先恢复布局再导航。相关回归入口为 `tests/bottom-panels.test.ts`，实际滚动、命中范围与窄窗口布局仍须浏览器检查。
+底部布局由 `src/ui/bottom-panels.ts` 管理，信号面板标题在组件创建后挂到共用栏，销毁时归还原面板；隐藏标题时同步转移焦点。任意两个底部面板都可按当前与上一面板并列，切换面板延续组合，空间不足退回切换；展开仅隐藏编辑区域，不销毁模型，源码定位先恢复布局再导航。相关回归入口为 `tests/bottom-panels.test.ts`，实际滚动、命中范围与窄窗口布局仍须浏览器检查。
 
 ## 外部语法检查
 
 `tools/windows-x64/` 保存随应用发布的 Verilator 5.050、GHDL 6.0.0 及其运行库，`tools/licenses/` 保存对应许可。开发构建直接调用该目录；`scripts/Build-Release.ps1` 通过 `bundled-tools` 特性让 `src-tauri/build.rs` 将运行文件嵌入单 exe，首次检查时按内容修订号释放到应用数据目录，不写入用户源码工程。更新工具后需通过正式入口重建并核对版本，不能用裸 `cargo build` 验收发布行为。
 
-`src-tauri/src/syntax.rs` 管理检查请求、进程、超时与取消。Verilator 使用响应文件传入全部 Verilog／SystemVerilog 编译单元和 `.vh`／`.svh` 所在 include 目录，工作输出放在应用工作目录；GHDL 根据 `work` package 定义与引用进行稳定拓扑排序，再逐文件分析。自定义 VHDL library 映射不从目录名猜测。Verilator 超时为 120 秒，GHDL 单文件超时为 60 秒，切换工程或退出会取消任务。
+`src-tauri/src/syntax.rs` 管理检查请求、进程、超时与取消。Verilator 使用响应文件传入当前范围内 Verilog／SystemVerilog 编译单元、配置的 include 与宏，以及按 IP／VHDL 端口和参数接口生成的临时黑盒，默认范围为当前顶层可达模块，可切换全部工程；顶层按配置覆盖、手动选择、`autoTop` 顺序确定。`src/app/syntax-stubs.ts` 负责黑盒转换，保留输入输出方向和常见位宽，不编译 IP 内部实现。GHDL 根据 library 与 package 定义及引用进行稳定拓扑排序，逐文件分析，并将所有相关 library 工作目录加入 `-P` 搜索路径。`src/app/syntax-options.ts` 按工程保存宏、include、library 映射和附加参数，路径在传参前解析，参数不经过 shell。Verilator 超时为 120 秒，GHDL 单文件超时为 60 秒，切换工程或退出会取消任务。
 
-外部检查只读取磁盘文件，工程内未保存修改会阻止发起。前端统一诊断位于 `src/ipc.ts`，`src/ui/problems.ts` 负责过滤与运行状态，`src/app/problem-markers.ts` 管理 Monaco 标记，`src/app/syntax-report.ts` 生成 HTML／CSV。源码变化使旧结果失效，面板最多显示 500 条过滤结果，后端最多保留 5000 条诊断；报告包含后端版本与覆盖状态。
+外部检查通过隔离工作区读取工程内已打开文件的未保存快照，不写回原工程；未打开文件仍读取磁盘。前端统一诊断位于 `src/ipc.ts`，`src/ui/problems.ts` 负责显示筛选、分组折叠与运行状态，`src/app/problem-markers.ts` 管理 Monaco 标记，`src/app/syntax-report.ts` 生成包含内置与外部诊断的 HTML／CSV。筛选只改变显示，报告始终包含当前顶层或全部工程范围内的全部诊断、实际配置、统计和后端状态。首次运行也会跟踪编辑版本，源码或配置变化使外部旧结果失效；面板最多显示 500 条过滤结果，单文件 Monaco 标记最多 500 条，后端最多保留 5000 条诊断。
 
 常规 Rust 测试不启动外部工具。以下命令分别显式运行开发目录和内嵌资源的真实后端检查，均覆盖 Verilog include、VHDL 标准库及诊断返回：
 
@@ -100,6 +100,26 @@ pwsh -NoProfile -Command "& './scripts/Invoke-Cargo.ps1' -CargoArgs 'test','--lo
 
 前端回归入口为 `tests/problems.test.ts`、`tests/problem-markers.test.ts`、`tests/syntax-report.test.ts` 和 `tests/bottom-panels.test.ts`。真实工程依赖、桌面原生检查交互仍需另行验收，不能用浏览器 mock 代替外部后端结果。
 
+## 检查事实与后台调度
+
+`src/analysis/facts.ts` 统一生成轻量文件事实：物理行、代码行、纯注释行、行内注释行、空白行、注释比例、行宽／Tab／行尾空白、定义、过程、敏感列表、赋值、分支、例化端口连接和检查边界。`instanceReads` 复用 `parseFileDetail` 的端口连接，冗余声明判断同时纳入连接、敏感列表和条件使用，避免 Wrapper 误报。过程范围与赋值分析复用 `src/model/signal-flow.ts` 和 `src/parser/procedural.ts`，不再由每条规则独立猜测。注释比例按“纯注释行＋行内注释行”除以“代码行＋纯注释行＋行内注释行”计算，混合行同时计入代码和注释；工程总比例分别累加分子与分母，不平均各文件百分比。
+
+`src/app/facts-scheduler.ts` 在工程结构载入后按文件调度，当前文件优先。`src/analysis/facts-worker.ts` 在独立 Worker 中计算内容摘要、文件事实、通用／GJB 规则和去重，前台只接收结果并渲染；编辑刷新、取消、切换工程或退出会终止旧 Worker，避免旧任务继续占用资源。统计、诊断和外部检查默认限定当前顶层可达模块，切换顶层或全部工程会同步更新队列和旧结果状态。结果不保存整份源码或语法树，只保留结构事实、诊断与内容摘要。相关回归为 `tests/facts.test.ts` 与 `tests/facts-scheduler.test.ts`，构建需确认独立 `facts-worker` 产物。
+
+## 通用规则与统计
+
+`src/analysis/general-rules.ts` 消费共享事实，输出统一 `RuleDiagnostic`。当前实现 Verilog／VHDL 各 7 条风格规则和 9 条可综合性规则，全部随事实队列执行。多驱动只比较完整简单标识符，位选和局部对象不按模块级完整信号合并；条件覆盖只报告“存在未覆盖的条件赋值路径且未检测到无条件默认赋值”，复位只识别定义的条件分支，不把名称搜索当作完整语义证明。
+
+`src/ui/stats.ts` 复用事实及内置／外部诊断生成工程汇总、结构统计与文件明细，支持当前顶层／全部工程范围、模块拓扑展开、简短文件列表排序、定义行定位和按严重程度或文件进入显示筛选；拓扑保留展开状态，长路径仅在悬停提示中显示，未分析文件明确标记待分析。`src/ui/problems.ts` 合并诊断并提供程度、来源、文件和文本显示筛选，提示与 Stub 分组折叠，筛选不改变检查集合。对应回归为 `tests/general-rules.test.ts`、`tests/stats.test.ts`、`tests/problems.test.ts` 和 `tests/bottom-panels.test.ts`。
+
+`src/analysis/gjb-catalog.ts` 收录 GJB 10157 全部 110 条与 GJB 9765 全部 81 条作为规则依据；`src/analysis/gjb-rules.ts` 当前分别自动检查 81 和 56 条，按语言全部执行。未实现的条款不显示为人工任务，也不计算合规率。`src/analysis/rule-preferences.ts` 使用固定全量配置和空格 Tab 约定合并通用与 GJB 重复问题，不再提供规则执行配置。相关回归为 `tests/gjb-rules.test.ts` 和 `tests/rule-preferences.test.ts`。
+
+## CLI
+
+`vite.cli.config.ts` 将 `scripts/rtl-lint.ts` 构建为 `dist-cli/rtl-lint.mjs`，`npm run build:cli` 可单独执行。正式 `scripts/Build-Release.ps1` 同时复制 `release/rtl-lint.mjs` 和 `release/tools/windows-x64`，CLI 优先从自身目录定位工具，也可用 `RTL_VIEWER_TOOLS` 覆盖。
+
+`src/app/node-syntax.ts` 在 Node 进程直接调用相同版本的 Verilator／GHDL，CLI 与桌面共用 `src/analysis/facts.ts`、通用／GJB 规则、诊断去重及 `src/app/syntax-report.ts`，默认执行全部自动规则。`--no-external` 可只运行内置规则，退出码 1 表示 Error，2 表示参数或导出失败。`tests/node-syntax.test.ts` 覆盖未保存快照，真实 CLI 样例同时验证 IP 排除和 HTML／CSV。
+
 ## 架构与目录
 
 ```text
@@ -109,7 +129,7 @@ tools/       随应用发布的 Verilator／GHDL Windows 运行环境及第三�
 docs/        使用指南、开发指南与 assets/ 界面素材
 tests/       Vitest 测试；samples/ 为可提交样例，fixtures/ 为不入 Git 的私有验收副本；私有套件通过环境变量显式启用
 scripts/     构建辅助（Build-Release.ps1、Invoke-Cargo.ps1、make-icon.mjs、Capture-Window.ps1 exe 窗口冒烟截图）
-release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
+release/     便携 exe、CLI 与检查工具交付物（Build-Release.ps1 生成，不入 Git）
 ```
 
 `src/` 与 `src-tauri/` 属于同一个桌面应用，通过 `src/ipc.ts` 通信；HDL 解析和信号分析在前端执行，磁盘访问与编码读写在本机 Rust 后端执行。
@@ -127,7 +147,7 @@ release/     便携 exe 交付物（Build-Release.ps1 生成，不入 Git）
 | `dist/` | Vite 前端构建资源，打包时嵌入 exe |
 | `src-tauri/target/` | Cargo 编译输出与增量缓存，清理后下次编译需重建 |
 | `src-tauri/gen/` | Tauri 生成的配置 schema |
-| `release/` | 正式便携交付物，只使用 `rtl-viewer.exe` |
+| `release/` | 正式便携交付物：应用使用 `rtl-viewer.exe`，命令行使用 `rtl-lint.mjs` 及同目录工具 |
 | `.tmp/<task-slug>/` | 临时夹具、截图、日志与页面快照 |
 
 上述生成目录不入 Git。`tests/fixtures/` 是真实工程验收副本，属于测试输入，不能作为普通构建缓存清理。
@@ -228,7 +248,9 @@ Rust 扫描结果可携带 `issues`，目录读取失败和深度上限都显式
 
 ### 品牌图标与桌面截图
 
-界面图标使用 [src/ui/icons.ts](../src/ui/icons.ts) 的 `setIcon`，保持 16 px 栅格、1.5 px 描边和圆角收口，以 `currentColor` 跟随主题；搜索开关 Aa、词、.* 保留文字。
+界面图标使用 [src/ui/icons.ts](../src/ui/icons.ts) 的 `setIcon`，保持 16 px 栅格、1.5 px 描边和圆角收口，以 `currentColor` 跟随主题；搜索开关 Aa、词、.* 保留文字。检查、取消、配置、导出、筛选、严重程度、统计与排序共用同一图标集，不新增独立 SVG、emoji 或另一套填充图标；对应回归为 `tests/icons.test.ts`。
+
+工具栏、面板和行内按钮分别采用 30、28、26 px 高度，次要操作复用 `.btn-ghost`。诊断分组保持扁平，宽屏单行显示，1100 px 以下筛选默认折叠且诊断消息改为两行，640 px 以下配置表单改为单列。后端完整版本只放在悬停提示与报告中，界面保留名称、短版本和状态。调整这些样式后需实际检查深浅主题和窄窗口。
 
 品牌采用透明背景的紧凑交织符号：[brand.svg](../src-tauri/icons/brand.svg) 为常规白色线构，[brand-small.svg](../src-tauri/icons/brand-small.svg) 为 16–24 px 光学校正版，线宽由 9 增至 12，构形微放大 8%。标题栏使用小尺寸源，浅色主题通过 CSS 转黑；Windows ICO 使用白色透明线条，不添加底板。修改后的处理顺序：
 

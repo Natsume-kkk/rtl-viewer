@@ -25,7 +25,7 @@ import { StatusBar } from "./ui/statusbar";
 import { OutlineView } from "./ui/outline";
 import { SearchPanel } from "./ui/search";
 import { RecentMenu } from "./ui/recent";
-import { appAlert } from "./ui/dialog";
+import { appAlert, choiceDialog } from "./ui/dialog";
 import { createNewFileControl, preferredNewFileType } from "./ui/new-file";
 import { createEditorWorkspace } from "./app/editor-workspace";
 import { openColumnEditor, registerColumnActions } from "./editor/column-editor";
@@ -39,11 +39,17 @@ import { createSignalController } from "./app/signal-controller";
 import { createModuleMetadataLoader } from "./app/module-metadata";
 import { createProjectScanner } from "./app/project-scanner";
 import { isGeneratedNetlist } from "./app/project-files";
+import { verilogStub } from "./app/syntax-stubs";
+import { loadSyntaxOptions, saveSyntaxOptions, configuredPath, validateSyntaxOptions } from "./app/syntax-options";
+import { showSyntaxOptionsDialog } from "./ui/syntax-options";
+import { createFactsScheduler } from "./app/facts-scheduler";
+import { StatsPanel } from "./ui/stats";
+import { emptySyntaxCheckOptions } from "./ipc";
 import { createExternalWatcher, type CachedFile } from "./app/watcher";
 import { attachSidebarWidth } from "./ui/sidebar-width";
 import { BottomPanels } from "./ui/bottom-panels";
 import { showCtxMenu } from "./ui/menu";
-import { indexedFilePath } from "./file-path";
+import { filePathKey, indexedFilePath } from "./file-path";
 import type { FileVersion } from "./app/module-metadata";
 
 /** 全局工程状态 */
@@ -56,6 +62,7 @@ const state = {
   /** 约束文件（.xdc/.sdc）路径列表，树底部「约束」分组 */
   constraints: [] as string[],
   topName: undefined as string | undefined,
+  autoTop: undefined as string | undefined,
 };
 
 const sidebarEl = document.getElementById("sidebar")!;
@@ -129,10 +136,14 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   flowBtn.id = "flow-action";
   flowBtn.title = "信号链分析";
   flowBtn.setAttribute("aria-expanded", "false");
-  const checkBtn = action("检查", "warning", () => void runProjectSyntaxCheck());
+  const statsBtn = action("统计", "stats", () => setStatsVisible(document.getElementById("stats-root")!.hidden));
+  statsBtn.id = "stats-action";
+  statsBtn.title = "工程代码、结构与检查统计";
+  statsBtn.setAttribute("aria-expanded", "false");
+  const checkBtn = action("检查", "check", () => void runProjectSyntaxCheck());
   checkBtn.id = "syntax-check-action";
   checkBtn.title = "使用 Verilator／GHDL 检查当前工程";
-  end.append(searchBtn, splitBtn, flowBtn, checkBtn);
+  end.append(searchBtn, splitBtn, flowBtn, statsBtn, checkBtn);
   bar.append(openWrap, newBtn, saveBtn, editBtn, end);
   const progress = document.createElement("div");
   progress.id = "progress";
@@ -187,7 +198,12 @@ const tree = new HierarchyTree(treeRootEl, {
   onSelectTop: (name) => {
     state.topName = name;
     signalController.invalidate();
+    if (runningSyntaxRequest) syntaxChangedWhileRunning = true;
+    problemPanel.markStale();
     renderTree();
+    factsDone = factsTotal = 0;
+    refreshFactsViews();
+    void factsScheduler.start();
   },
   onOpenFile: (path) => void navigateTo(path),
   onFindInstances: (name) => {
@@ -263,9 +279,12 @@ let projectReady = false;
 let syntaxSerial = 0;
 let runningSyntaxRequest = 0;
 let lastSyntaxResult: SyntaxCheckResult | undefined;
+let syntaxOptions = { ...emptySyntaxCheckOptions };
 const problemPanel = new ProblemPanel(document.getElementById("problem-root")!, {
   onRun: () => void runProjectSyntaxCheck(),
+  onConfigure: () => void configureSyntaxCheck(),
   onCancel: () => { if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest); },
+  onScopeChange: setAnalysisScope,
   onExport: format => void exportSyntaxReport(format),
   onOpen: diagnostic => { bottomPanels.restoreEditor(); void navigateTo(diagnostic.file, diagnostic.line, diagnostic.column); },
   onClose: () => { setProblemsVisible(false); activeGroup().editor.focus(); },
@@ -277,46 +296,108 @@ function refreshProblemMarkers(): void {
   for (const group of groups) for (const tab of group.tabs.allTabs) {
     if (tab.path) models.set(tab.uriKey, { path: tab.path, model: tab.model });
   }
-  syncProblemMarkers(models.values(), lastSyntaxResult?.diagnostics ?? [], problemPanel.isStale);
+  syncProblemMarkers(models.values(), (lastSyntaxResult?.diagnostics ?? []).filter(item => inAnalysisScope(item.file)), problemPanel.isStale, problemPanel.builtinDiagnostics);
 }
 
-async function runProjectSyntaxCheck(): Promise<void> {
+async function configureSyntaxCheck(): Promise<void> {
+  if (!state.folder) {
+    statusbar.hint("请先打开工程");
+    return;
+  }
+  if (runningSyntaxRequest) {
+    statusbar.hint("请先取消当前检查，再修改配置");
+    return;
+  }
+  const next = await showSyntaxOptionsDialog(syntaxOptions, {
+    browseInclude: async () => configurationPath(await openFolderDialog()),
+    browseLibrary: async () => configurationPath(await openFileDialog(state.folder)),
+  });
+  if (!next) return;
+  syntaxOptions = next;
+  saveSyntaxOptions(state.folder, next);
+  problemPanel.markStale();
+  refreshFactsViews();
+}
+
+function configurationPath(file: string | null): string | undefined {
+  if (!file) return undefined;
+  const normalized = normalizePath(file);
+  const root = state.folder.toLowerCase().replace(/\/+$/, "");
+  return normalized.toLowerCase().startsWith(`${root}/`) ? normalized.slice(root.length + 1) : normalized;
+}
+
+let syntaxChangedWhileRunning = false;
+
+async function runProjectSyntaxCheck(): Promise<boolean> {
   const folder = state.folder;
   if (!folder || !projectReady) {
     statusbar.hint(projectReady ? "请先打开工程" : "工程仍在载入，请稍后运行语法检查");
-    return;
+    return false;
   }
-  const dirty = new Set<string>();
+  const optionErrors = validateSyntaxOptions(syntaxOptions);
+  if (optionErrors.length) {
+    await appAlert(`语法检查配置无效：\n\n${optionErrors.join("\n")}`);
+    return false;
+  }
+  const snapshots = new Map<string, { file: string; content: string; encoding: string }>();
   for (const group of groups) for (const tab of group.tabs.allTabs) {
-    if (tab.dirty && tab.path && state.contents.has(indexedFilePath(state.contents, tab.path))) dirty.add(tab.path);
+    if (tab.dirty && tab.path && state.contents.has(indexedFilePath(state.contents, tab.path))) {
+      snapshots.set(tab.path, { file: tab.path, content: tab.model.getValue(), encoding: tab.encoding });
+    }
   }
-  if (dirty.size) {
-    await appAlert(`外部语法检查读取磁盘文件，请先保存工程内的未保存修改：\n\n${[...dirty].join("\n")}`);
-    return;
-  }
-  const files = [...state.contents.keys()].filter(file => /\.(?:v|sv|vh|svh|vhd|vhdl)$/i.test(file));
+  const files = [...new Set([
+    ...analysisHdlFiles(),
+    ...syntaxOptions.vhdlLibraries.map(mapping => configuredPath(folder, mapping.file)),
+  ])];
   if (!files.length) {
     statusbar.hint("当前工程没有可检查的 Verilog／VHDL 文件");
-    return;
+    return false;
   }
   if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest);
   const request = ++syntaxSerial;
   runningSyntaxRequest = request;
+  syntaxChangedWhileRunning = false;
   problemPanel.start();
   setProblemsVisible(true);
+  refreshFactsViews();
   try {
-    const result = await runSyntaxCheck(folder, files, state.topName, request, progress => {
+    const scopedIps = analysisScope === "project" ? state.ips : state.ips.filter(ip => activeTopModules.has(ip.name.toLowerCase()));
+    const ipStubs = (await Promise.all(scopedIps.map(async ip => {
+      const ports = await modulePorts(ip.name);
+      const parameters = await moduleIpParameters(ip.name);
+      return { name: ip.name, source: ports.length ? verilogStub(ip.name, ports, parameters) : "" };
+    }))).filter(stub => stub.source);
+    const vhdlModules = new Map<string, ModuleInfo>();
+    for (const file of analysisHdlFiles()) for (const module of state.structures.get(file) ?? []) {
+      if (module.vhdl?.entity && !vhdlModules.has(module.name.toLowerCase())) vhdlModules.set(module.name.toLowerCase(), module);
+    }
+    const vhdlStubs = await Promise.all([...vhdlModules.values()].map(async module => ({
+      name: module.name,
+      source: verilogStub(module.name, await modulePorts(module.name), moduleParameters(module.name)),
+    })));
+    const stubs = [...ipStubs, ...vhdlStubs];
+    if (request !== syntaxSerial || folder !== state.folder) return false;
+    const options = {
+      ...syntaxOptions,
+      includeDirs: syntaxOptions.includeDirs.map(path => configuredPath(folder, path)),
+      vhdlLibraries: syntaxOptions.vhdlLibraries.map(mapping => ({ ...mapping, file: configuredPath(folder, mapping.file) })),
+    };
+    const result = await runSyntaxCheck(folder, files, options.top || state.topName || state.autoTop, request, progress => {
       if (request === syntaxSerial) problemPanel.update(progress);
-    });
-    if (request !== syntaxSerial || folder !== state.folder) return;
+    }, stubs, options, [...snapshots.values()]);
+    if (request !== syntaxSerial || folder !== state.folder) return false;
     runningSyntaxRequest = 0;
     lastSyntaxResult = result;
     problemPanel.finish(result);
-    refreshProblemMarkers();
+    if (syntaxChangedWhileRunning) problemPanel.markStale();
+    refreshFactsViews();
+    return !result.cancelled;
   } catch (error) {
-    if (request !== syntaxSerial) return;
+    if (request !== syntaxSerial) return false;
     runningSyntaxRequest = 0;
     problemPanel.fail(error);
+    refreshFactsViews();
+    return false;
   }
 }
 
@@ -327,11 +408,19 @@ function cancelProjectSyntaxCheck(): void {
 }
 
 async function exportSyntaxReport(format: "html" | "csv"): Promise<void> {
-  if (!lastSyntaxResult || !state.folder) return;
+  if (!state.folder || !problemPanel.hasResults) return;
   try {
-    const path = await saveReportDialog(format, `${state.folder}/rtl-syntax-report.${format}`);
+    if (lastSyntaxResult && problemPanel.isStale) {
+      const choice = await choiceDialog("源码或检查配置已变化，外部诊断来自上次快照。", ["重新检查后导出", "导出上次结果", "取消"], 0);
+      if (choice < 0 || choice === 2) return;
+      if (choice === 0 && !(await runProjectSyntaxCheck())) return;
+    }
+    const generated = new Date();
+    const path = await saveReportDialog(format, `${state.folder}/${reportFileName(state.folder, format, generated)}`);
     if (!path) return;
-    const content = format === "html" ? syntaxReportHtml(state.folder, lastSyntaxResult) : syntaxReportCsv(lastSyntaxResult);
+    const external: SyntaxCheckResult = lastSyntaxResult ?? { requestId: 0, checkedFiles: 0, cancelled: false, backends: [], diagnostics: [] };
+    const reportResult = { ...external, diagnostics: [...problemPanel.builtinDiagnostics, ...external.diagnostics.filter(item => inAnalysisScope(item.file))] };
+    const content = format === "html" ? syntaxReportHtml(state.folder, reportResult, generated, { options: syntaxOptions, facts: factsScheduler.values().filter(item => inAnalysisScope(item.file)), stale: problemPanel.isStale }) : syntaxReportCsv(reportResult);
     await writeFile(path, content, "utf8");
     statusbar.hint(`检查报告已导出：${path}`);
   } catch (error) {
@@ -339,15 +428,39 @@ async function exportSyntaxReport(format: "html" | "csv"): Promise<void> {
   }
 }
 
+function reportFileName(folder: string, format: "html" | "csv", date: Date): string {
+  const project = folder.split(/[\\/]/).filter(Boolean).pop() || "rtl-project";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const timestamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
+  return `${project}-check-${timestamp}.${format}`;
+}
+
+let factsDone = 0, factsTotal = 0;
+let analysisScope: "top" | "project" = "top";
+let activeTopFiles = new Set<string>();
+let activeTopModules = new Set<string>();
+let activeTopology: import("./model/hierarchy").TreeNode[] = [];
+const statsPanel = new StatsPanel(document.getElementById("stats-root")!, {
+  displayPath,
+  onOpenFile: (file, line) => { bottomPanels.restoreEditor(); void navigateTo(file, line); },
+  onOpenProblems: filter => {
+    problemPanel.setDisplayFilter(filter);
+    setProblemsVisible(true);
+  },
+  onScopeChange: setAnalysisScope,
+  onClose: () => { setStatsVisible(false); activeGroup().editor.focus(); },
+});
+
 let searchWasVisible = false;
 const bottomPanels = new BottomPanels(document.getElementById("bottom-panels")!, {
-  search: searchRootEl, flow: document.getElementById("signal-flow")!, problems: document.getElementById("problem-root")!,
+  search: searchRootEl, flow: document.getElementById("signal-flow")!, problems: document.getElementById("problem-root")!, stats: document.getElementById("stats-root")!,
 }, () => {
   const searchVisible = bottomPanels.isVisible("search");
   if (searchWasVisible && !searchVisible) searchPanel.cancel();
   searchWasVisible = searchVisible;
   document.getElementById("search-action")!.setAttribute("aria-expanded", String(searchVisible));
   document.getElementById("flow-action")!.setAttribute("aria-expanded", String(bottomPanels.isVisible("flow")));
+  document.getElementById("stats-action")!.setAttribute("aria-expanded", String(bottomPanels.isVisible("stats")));
 });
 
 function setSearchVisible(visible: boolean, focus = true): void {
@@ -361,6 +474,11 @@ function setProblemsVisible(visible: boolean): void {
   else bottomPanels.hide("problems");
 }
 
+function setStatsVisible(visible: boolean): void {
+  if (visible) bottomPanels.show("stats");
+  else bottomPanels.hide("stats");
+}
+
 // ---------- 按需模块元数据（补全与 IP stub） ----------
 
 const moduleMetadataLoader = createModuleMetadataLoader({
@@ -369,7 +487,7 @@ const moduleMetadataLoader = createModuleMetadataLoader({
   fileContent,
   fileToken,
 });
-const { modulePorts, moduleParameters } = moduleMetadataLoader;
+const { modulePorts, moduleIpParameters, moduleParameters } = moduleMetadataLoader;
 
 /** 打开中的标签页用当前缓冲区（含未保存修改），否则用扫描缓存。两组标签都查。 */
 function fileContent(file: string): string | undefined {
@@ -439,6 +557,7 @@ function selectTreeInstance(node: TreeNode): void {
 function markResultsStale(): void {
   signalController.invalidate();
   searchPanel.markStale();
+  if (runningSyntaxRequest) syntaxChangedWhileRunning = true;
   problemPanel.markStale();
   refreshProblemMarkers();
 }
@@ -587,6 +706,7 @@ const workspace = createEditorWorkspace([editor, editor2], {
     if (state.contents.get(path)?.content !== content) markResultsStale();
     state.contents.set(path, { content, encoding, mtime });
     updateStructure(path, content);
+    if (inAnalysisScope(path)) void factsScheduler.refresh(path, content);
   },
   onActiveChange: group => {
     bottomPanels.restoreEditor();
@@ -597,7 +717,7 @@ const workspace = createEditorWorkspace([editor, editor2], {
     refreshOutline();
     refreshProblemMarkers();
   },
-  onContentChange: active => { markResultsStale(); if (active) refreshOutline(); },
+  onContentChange: active => { markResultsStale(); if (active) { refreshOutline(); scheduleFactsRefresh(); } },
   onCursorChange: line => {
     statusbar.setBreadcrumb(breadcrumbAt(currentOutline, line));
     outline.highlightLine(line);
@@ -611,6 +731,64 @@ const workspace = createEditorWorkspace([editor, editor2], {
 });
 const { groups, activeGroup, focusGroup, navigateTo, navBack, navForward,
   openInOtherGroup, openFile: openProjectFile } = workspace;
+function refreshFactsViews(): void {
+  const files = analysisHdlFiles();
+  const facts = factsScheduler.values().filter(item => inAnalysisScope(item.file));
+  const diagnostics = factsScheduler.diagnosticValues().filter(item => inAnalysisScope(item.file));
+  problemPanel.setScope(analysisScope, state.topName || state.autoTop);
+  problemPanel.setBuiltins(diagnostics, factsDone > 0);
+  statsPanel.render({
+    facts,
+    files,
+    diagnostics: [...diagnostics, ...(lastSyntaxResult?.diagnostics ?? []).filter(item => inAnalysisScope(item.file))],
+    done: factsDone,
+    total: factsTotal,
+    external: lastSyntaxResult,
+    running: runningSyntaxRequest !== 0,
+    stale: problemPanel.isStale,
+    scope: analysisScope,
+    topName: state.topName || state.autoTop,
+    topology: activeTopology,
+  });
+  refreshProblemMarkers();
+}
+
+function setAnalysisScope(scope: "top" | "project"): void {
+  if (analysisScope === scope) return;
+  analysisScope = scope;
+  if (runningSyntaxRequest) syntaxChangedWhileRunning = true;
+  problemPanel.markStale();
+  factsDone = factsTotal = 0;
+  refreshFactsViews();
+  void factsScheduler.start();
+}
+
+function inAnalysisScope(file: string): boolean {
+  return analysisScope === "project" || !activeTopFiles.size || activeTopFiles.has(filePathKey(file));
+}
+
+function analysisHdlFiles(): string[] {
+  return projectHdlFiles().filter(inAnalysisScope);
+}
+
+function projectHdlFiles(): string[] {
+  return [...state.contents.keys()].filter(file => /\.(?:v|sv|vh|svh|vhd|vhdl)$/i.test(file));
+}
+
+const factsScheduler = createFactsScheduler({
+  files: () => analysisHdlFiles().map(file => ({ file, content: fileContent(file) ?? state.contents.get(file)!.content })),
+  priorityFile: () => activeGroup().tabs.activeTab?.path,
+  result: refreshFactsViews,
+  progress: (done, total) => { factsDone = done; factsTotal = total; refreshFactsViews(); },
+  complete: () => undefined,
+});
+let factsRefreshTimer: number | undefined;
+function scheduleFactsRefresh(): void {
+  const tab = activeGroup().tabs.activeTab;
+  if (!tab?.path || !state.contents.has(indexedFilePath(state.contents, tab.path)) || !inAnalysisScope(tab.path)) return;
+  window.clearTimeout(factsRefreshTimer);
+  factsRefreshTimer = window.setTimeout(() => void factsScheduler.refresh(tab.path, tab.model.getValue()), 400);
+}
 registerEditorActions();
 window.addEventListener("pagehide", () => workspace.dispose(), { once: true });
 
@@ -650,6 +828,21 @@ function rebuildIndex(): void {
 
 function renderTree(): void {
   const h: Hierarchy = buildHierarchy(state.index, state.structures, state.topName);
+  state.autoTop = h.autoTop;
+  activeTopology = h.tops;
+  activeTopModules = new Set<string>();
+  const pending = h.tops.length ? [h.tops[0]] : [];
+  while (pending.length) {
+    const node = pending.pop()!;
+    const key = node.moduleName.toLowerCase();
+    if (activeTopModules.has(key)) continue;
+    activeTopModules.add(key);
+    pending.push(...node.children);
+  }
+  activeTopFiles = new Set<string>();
+  for (const [file, modules] of state.structures) {
+    if (modules.some(module => activeTopModules.has(module.name.toLowerCase()))) activeTopFiles.add(filePathKey(file));
+  }
   tree.render(h, state.constraints);
 }
 
@@ -742,11 +935,21 @@ async function openFolder(folder: string): Promise<void> {
   finally { preparingProject = false; }
   watcher.stop();
   cancelProjectSyntaxCheck();
+  window.clearTimeout(factsRefreshTimer);
+  factsScheduler.clear();
   projectReady = false;
   lastSyntaxResult = undefined;
   problemPanel.clear();
   setProblemsVisible(false);
+  setStatsVisible(false);
+  factsDone = factsTotal = 0;
+  analysisScope = "top";
+  activeTopFiles.clear();
+  activeTopModules.clear();
+  activeTopology = [];
+  statsPanel.render({ facts: [], files: [], diagnostics: [], done: 0, total: 0, running: false, stale: false, scope: "top" });
   state.folder = folder;
+  syntaxOptions = loadSyntaxOptions(folder);
   updateProjectChrome();
   workspace.refreshChrome();
   setSignalFlowVisible(false);
@@ -755,6 +958,7 @@ async function openFolder(folder: string): Promise<void> {
   tree.reset();
   addRecent(folder);
   state.topName = undefined;
+  state.autoTop = undefined;
   state.structures.clear();
   state.contents.clear();
   state.ips = [];
@@ -809,6 +1013,7 @@ const projectScanner = createProjectScanner({
     projectReady = true;
     rebuildIndex(); renderTree(); watcher.start();
     setProgress(issues.length ? `部分载入：${issues.length} 项失败` : "");
+    void factsScheduler.start();
     if (issues.length) {
       const details = issues.slice(0, 20).map(issue => `${issue.file}\n${issue.reason}`).join("\n\n");
       void appAlert(`工程已部分载入，${issues.length} 个文件或目录未能读取。已载入的文件仍可使用。\n\n${details}${issues.length > 20 ? `\n\n另有 ${issues.length - 20} 项失败。` : ""}`);
@@ -821,7 +1026,7 @@ const projectScanner = createProjectScanner({
     await appAlert(`打开工程失败：${String(error)}`);
   },
 });
-window.addEventListener("pagehide", () => { projectScanner.cancel(); watcher.stop(); cancelProjectSyntaxCheck(); }, { once: true });
+window.addEventListener("pagehide", () => { projectScanner.cancel(); watcher.stop(); cancelProjectSyntaxCheck(); factsScheduler.dispose(); }, { once: true });
 
 // ---------- 树节点打开 ----------
 

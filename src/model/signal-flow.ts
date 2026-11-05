@@ -182,7 +182,7 @@ function splitVhdlWhen(expression: string, display = expression): { valueText: s
   };
 }
 
-function processRanges(body: string, vhdl: boolean): { index: number; text: string }[] {
+export function processRanges(body: string, vhdl: boolean): { index: number; text: string }[] {
   const result: { index: number; text: string }[] = [];
   const starts = vhdl ? /\b(process|function|procedure)\b/gi : /\b(always(?:_ff|_comb|_latch)?|initial|function|task)\b/g;
   let match: RegExpExecArray | null;

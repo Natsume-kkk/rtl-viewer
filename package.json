@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:cli": "vite build --config vite.cli.config.ts",
     "test": "vitest run",
     "tauri": "tauri"
   },

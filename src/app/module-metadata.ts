@@ -8,7 +8,7 @@ export interface FileVersion { identity: unknown; version: unknown }
 export interface ModuleMetadataContext {
   ips(): IpInfo[];
   resolveModule(name: string): ModuleDef | undefined;
-  /** 打开中的标签页用当前缓冲区（含未保存修改），否则用扫描缓存。 */
+  /** 打开中的标签页用当前缓冲区（含未保存修改），否则使用扫描缓存。 */
   fileContent(file: string): string | undefined;
   /** 与 fileContent 同源：标签页使用 model 身份与版本，否则使用索引路径与缓存内容。 */
   fileToken(file: string): FileVersion;
@@ -16,21 +16,22 @@ export interface ModuleMetadataContext {
 
 export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
   modulePorts(moduleName: string): Promise<PortInfo[]>;
+  moduleIpParameters(moduleName: string): Promise<ParameterInfo[]>;
   moduleParameters(moduleName: string): ParameterInfo[];
   reset(): void;
 } {
-  const ipPortsCache = new Map<string, { ports: PortInfo[]; source: string }>();
+  const ipMetadataCache = new Map<string, { ports: PortInfo[]; parameters: ParameterInfo[] }>();
   /** 工程内模块文件解析缓存（按 fileToken 失效），modulePorts 与 moduleParameters 共享。 */
   const moduleFileCache = new Map<string, { token: FileVersion; modules: ModuleInfo[] }>();
   let generation = 0;
 
-  /** 从 IP stub（同名 .v / synth / sim 子目录）提取端口，.veo 兜底；结果缓存。 */
-  async function loadIpPorts(name: string): Promise<{ ports: PortInfo[]; source: string }> {
+  /** 只从 IP stub 提取端口和参数接口，不返回或编译 IP 内部实现。 */
+  async function loadIpPorts(name: string): Promise<{ ports: PortInfo[]; parameters: ParameterInfo[] }> {
     const request = generation;
     const key = name.toLowerCase();
-    const hit = ipPortsCache.get(key);
+    const empty = { ports: [], parameters: [] };
+    const hit = ipMetadataCache.get(key);
     if (hit) return hit;
-    const empty = { ports: [] as PortInfo[], source: "" };
     const ip = ctx.ips().find((i) => i.name.toLowerCase() === key);
     if (!ip) return empty;
     const base = ip.file.replace(/\.xci$/i, "");
@@ -49,15 +50,15 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
         const modules = parseFile(content, candidate);
         const mod = modules.find((m) => m.name.toLowerCase() === key) ?? modules[0];
         if (mod && mod.ports.length > 0) {
-          const result = { ports: mod.ports, source: candidate };
-          ipPortsCache.set(key, result);
+          const result = { ports: mod.ports, parameters: mod.parameters ?? [] };
+          ipMetadataCache.set(key, result);
           return result;
         }
       } catch {
         // 候选文件不存在或解析失败，尝试下一个
       }
     }
-    if (request === generation) ipPortsCache.set(key, empty);
+    if (request === generation) ipMetadataCache.set(key, empty);
     return empty;
   }
 
@@ -72,7 +73,7 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
     return modules;
   }
 
-  /** 子模块端口元数据：工程内模块取解析结果，IP 取 stub。 */
+  /** 子模块端口元数据：工程内模块取解析结果，IP 只取端口。 */
   async function modulePorts(moduleName: string): Promise<PortInfo[]> {
     const def = ctx.resolveModule(moduleName);
     const key = moduleName.toLowerCase();
@@ -82,6 +83,10 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
       return mod?.ports ?? [];
     }
     return (await loadIpPorts(moduleName)).ports;
+  }
+
+  async function moduleIpParameters(moduleName: string): Promise<ParameterInfo[]> {
+    return (await loadIpPorts(moduleName)).parameters;
   }
 
   function moduleParameters(moduleName: string): ParameterInfo[] {
@@ -94,9 +99,9 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
   /** 端口与解析缓存按工程失效：换工程后同名 IP（clk_wiz_0 等）不得沿用旧定义。 */
   function reset(): void {
     generation++;
-    ipPortsCache.clear();
+    ipMetadataCache.clear();
     moduleFileCache.clear();
   }
 
-  return { modulePorts, moduleParameters, reset };
+  return { modulePorts, moduleIpParameters, moduleParameters, reset };
 }

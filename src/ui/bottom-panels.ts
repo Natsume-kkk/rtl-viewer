@@ -1,6 +1,6 @@
 import { setIcon } from "./icons";
 
-type Panel = "search" | "flow" | "problems";
+type Panel = "search" | "flow" | "problems" | "stats";
 const DEFAULT_HEIGHT = 380;
 
 /** 只管理面板可见性和空间，不重建搜索或追踪视图。 */
@@ -8,6 +8,7 @@ export class BottomPanels {
   private active: Panel | undefined;
   private opened = new Set<Panel>();
   private together = false;
+  private companion?: Panel;
   private preferredHeight = DEFAULT_HEIGHT;
   private expanded = false;
   private expand: HTMLButtonElement;
@@ -58,7 +59,7 @@ export class BottomPanels {
     };
     const bar = document.createElement("div");
     bar.className = "bottom-panel-bar";
-    for (const [id, label] of [["search", "搜索"], ["flow", "信号链"], ["problems", "问题"]] as const) {
+    for (const [id, label] of [["search", "搜索"], ["flow", "信号链"], ["problems", "问题"], ["stats", "统计"]] as const) {
       const button = document.createElement("button");
       button.textContent = label;
       button.setAttribute("aria-controls", panels[id].id);
@@ -76,7 +77,10 @@ export class BottomPanels {
     this.simultaneous.textContent = "同时查看";
     this.simultaneous.onclick = () => {
       this.together = !this.together;
-      if (this.together) { this.opened.add("search"); this.opened.add("flow"); }
+      if (this.together) {
+        this.companion = this.active === "search" ? "flow" : this.active === "flow" ? "search" : this.active === "problems" ? "stats" : "problems";
+        if (this.companion) this.opened.add(this.companion);
+      } else this.companion = undefined;
       this.render();
     };
     this.expand = document.createElement("button");
@@ -93,13 +97,19 @@ export class BottomPanels {
   }
 
   show(panel: Panel): void {
+    if (this.together && this.active && this.active !== panel) this.companion = this.active;
     this.active = panel;
     this.opened.add(panel);
+    if (this.together && this.companion) this.opened.add(this.companion);
     this.render();
   }
 
   hide(panel: Panel): void {
     this.opened.delete(panel);
+    if (this.active === panel || this.companion === panel) {
+      this.together = false;
+      this.companion = undefined;
+    }
     if (this.active === panel) this.active = this.opened.values().next().value;
     this.render();
   }
@@ -124,8 +134,7 @@ export class BottomPanels {
     // 常规窗口保留 320 px 编辑区（标签／路径栏之外约 10 行源码），小窗口保留至少一半空间。
     const maximum = Math.max(0, available - Math.min(320, available * 0.55));
     const canShare = this.root.parentElement!.clientWidth >= 860 && (this.expanded ? available : maximum) >= 300;
-    const sharingActive = this.active === "search" || this.active === "flow";
-    const shared = this.together && sharingActive && this.opened.has("search") && this.opened.has("flow") && canShare;
+    const shared = this.together && !!this.active && !!this.companion && this.active !== this.companion && this.opened.has(this.active) && this.opened.has(this.companion) && canShare;
     const minimum = Math.min(shared ? 300 : 180, maximum);
     if (!this.active) this.expanded = false;
     const height = this.expanded ? available : Math.max(minimum, Math.min(this.preferredHeight, maximum));
@@ -143,12 +152,12 @@ export class BottomPanels {
     this.resize.setAttribute("aria-valuemax", String(Math.round(maximum)));
     this.resize.setAttribute("aria-valuenow", String(Math.round(height)));
     this.simultaneous.setAttribute("aria-pressed", String(shared));
-    this.simultaneous.disabled = !sharingActive || (!canShare && !this.together);
-    this.simultaneous.title = canShare ? "左右并列查看信号链与搜索" : "空间不足，暂用切换；放大窗口后可同时查看";
-    this.hint.textContent = this.together && sharingActive && this.opened.has("search") && this.opened.has("flow") && !canShare ? "空间不足，暂用切换" : "";
+    this.simultaneous.disabled = !this.active || (!canShare && !this.together);
+    this.simultaneous.title = canShare && this.companion ? `左右并列查看${this.buttons.get(this.companion)?.textContent ?? "两个面板"}` : "空间不足，暂用切换；放大窗口后可同时查看";
+    this.hint.textContent = this.together && this.companion && !canShare ? "空间不足，暂用切换" : "";
     this.hint.hidden = !this.hint.textContent;
     for (const [id, button] of this.buttons) {
-      const visible = !!this.active && (id === this.active || shared && (id === "search" || id === "flow"));
+      const visible = !!this.active && (id === this.active || shared && id === this.companion);
       const panel = this.panels[id];
       const hadFocus = !visible && (panel.contains(document.activeElement) || id === "flow" && this.header.contains(document.activeElement));
       panel.hidden = !visible;

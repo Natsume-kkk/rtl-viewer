@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { readFile } from "../src/ipc";
 import { createModuleMetadataLoader } from "../src/app/module-metadata";
+
 import type { ModuleDef } from "../src/model";
 import { ModuleIndex } from "../src/model";
 import { scanStructure } from "../src/parser";
+
+vi.mock("../src/ipc", () => ({ readFile: vi.fn() }));
 
 it.each([false,true])("分文件 entity 的定义、端口及参数不依赖扫描排序（反序=%s）", async reverse => {
   const entries:[string,string][]=[
@@ -25,6 +29,16 @@ it("重复定义不提供跳转或端口补全，也不回退到同名 IP", asyn
   const loader=createModuleMetadataLoader({ips:()=>[{name:"core",file:"ip/core.xci"}],resolveModule:name=>index.resolve(name),fileContent:()=>undefined,fileToken:file=>({identity:file,version:1})});
   expect(index.resolve("core")).toBeUndefined(); expect(index.allDefs()).toEqual([]);
   expect(await loader.modulePorts("core")).toEqual([]);
+});
+
+it("IP 只读取端口和参数接口并缓存，不返回内部实现", async () => {
+  vi.mocked(readFile).mockResolvedValue({ content: "module core #(parameter W = 8) (input clk, output [W-1:0] q); wire secret; endmodule", encoding: "utf8", mtime: 1 });
+  const index = new ModuleIndex();
+  index.addIp("core", "ip/core.xci");
+  const loader = createModuleMetadataLoader({ ips: () => [{ name: "core", file: "ip/core.xci" }], resolveModule: name => index.resolve(name), fileContent: () => undefined, fileToken: file => ({ identity: file, version: 1 }) });
+  expect((await loader.modulePorts("core")).map(port => [port.name, port.direction, port.width])).toEqual([["clk", "input", undefined], ["q", "output", "[W-1:0]"]]);
+  expect((await loader.moduleIpParameters("core")).map(parameter => parameter.name)).toEqual(["W"]);
+  expect(readFile).toHaveBeenCalledOnce();
 });
 
 describe("模块文件解析缓存", () => {

@@ -70,7 +70,10 @@ const internals: TauriInternals = {
         return true; // e2e 拖放测试固定用 fixture 目录
       case "run_syntax_check": {
         const request = args.request as { requestId: number; files: string[] };
+        (window as unknown as { __rtlLastSyntaxRequest?: unknown }).__rtlLastSyntaxRequest = request;
         const diagnostics = (window as unknown as { __rtlSyntaxDiagnostics?: unknown[] }).__rtlSyntaxDiagnostics ?? [];
+        const delay = (window as unknown as { __rtlSyntaxDelay?: number }).__rtlSyntaxDelay ?? 0;
+        if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
         return { requestId: request.requestId, diagnostics, checkedFiles: request.files.length, backends: [
           { name: "verilator", version: "E2E", files: request.files.length, status: "completed" },
         ], cancelled: false };

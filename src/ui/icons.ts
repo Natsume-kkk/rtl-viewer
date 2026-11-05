@@ -14,7 +14,9 @@ export type IconName =
   | "arrow-left"
   | "arrow-right"
   | "module" | "folder" | "file" | "plus" | "save" | "search" | "split" | "ports"
-  | "minimize" | "maximize" | "restore";
+  | "minimize" | "maximize" | "restore"
+  | "check" | "cancel" | "settings" | "export" | "filter" | "filter-clear"
+  | "error" | "info" | "sort-asc" | "sort-desc" | "stats";
 
 const SW = `stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"`;
 
@@ -43,6 +45,17 @@ const ICONS: Record<IconName, string> = {
   "warning": `<path d="M8 2.8l6 10.4H2z" ${SW}/><path d="M8 6.6v3.2" ${SW}/><circle cx="8" cy="11.6" r=".9" fill="currentColor"/>`,
   "arrow-left": `<path d="M13 8H4M7 4.5L3.5 8 7 11.5" ${SW}/>`,
   "arrow-right": `<path d="M3 8h9M9 4.5L12.5 8 9 11.5" ${SW}/>`,
+  "check": `<circle cx="8" cy="8" r="6" ${SW}/><path d="m5.2 8.1 1.8 1.8 3.8-4" ${SW}/>`,
+  "cancel": `<circle cx="8" cy="8" r="6" ${SW}/><path d="m6 6 4 4m0-4-4 4" ${SW}/>`,
+  "settings": `<path d="M3 4h10M3 8h10M3 12h10" ${SW}/><circle cx="6" cy="4" r="1.5" ${SW}/><circle cx="10" cy="8" r="1.5" ${SW}/><circle cx="5" cy="12" r="1.5" ${SW}/>`,
+  "export": `<path d="M8 2.5v7M5 5l3-3 3 3M3.5 9.5v3h9v-3" ${SW}/>`,
+  "filter": `<path d="M2.5 3h11l-4.2 4.8v4.1l-2.6 1.4V7.8z" ${SW}/>`,
+  "filter-clear": `<path d="M2.5 3h10l-3.7 4.3v4.1l-2.1 1.2V7.3zM11 10l3 3m0-3-3 3" ${SW}/>`,
+  "error": `<circle cx="8" cy="8" r="6" ${SW}/><path d="m6 6 4 4m0-4-4 4" ${SW}/>`,
+  "info": `<circle cx="8" cy="8" r="6" ${SW}/><path d="M8 7.2v3.6" ${SW}/><circle cx="8" cy="5" r=".8" fill="currentColor"/>`,
+  "sort-asc": `<path d="m4 10 4-4 4 4M8 6v7" ${SW}/>`,
+  "sort-desc": `<path d="m4 6 4 4 4-4M8 3v7" ${SW}/>`,
+  "stats": `<path d="M3 13V9M8 13V3M13 13V6" ${SW}/>`,
 };
 
 /** 把 el 设置为指定图标：加 icon 基类与 icon-<name> 修饰类，注入内联 SVG（静态可信字符串，CSP 安全）。

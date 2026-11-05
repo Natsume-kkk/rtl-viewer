@@ -123,10 +123,37 @@ export interface SyntaxProgress {
   total: number;
 }
 
-export function runSyntaxCheck(root: string, files: string[], top: string | undefined, requestId: number, progress: (event: SyntaxProgress) => void): Promise<SyntaxCheckResult> {
+export interface SyntaxStub {
+  name: string;
+  source: string;
+}
+
+export interface VhdlLibraryMapping {
+  library: string;
+  file: string;
+}
+
+export interface SyntaxCheckOptions {
+  top: string;
+  defines: string[];
+  includeDirs: string[];
+  vhdlLibraries: VhdlLibraryMapping[];
+  verilatorArgs: string[];
+  ghdlArgs: string[];
+}
+
+export const emptySyntaxCheckOptions: SyntaxCheckOptions = { top: "", defines: [], includeDirs: [], vhdlLibraries: [], verilatorArgs: [], ghdlArgs: [] };
+
+export interface SourceSnapshot {
+  file: string;
+  content: string;
+  encoding: string;
+}
+
+export function runSyntaxCheck(root: string, files: string[], top: string | undefined, requestId: number, progress: (event: SyntaxProgress) => void, stubs: SyntaxStub[] = [], options: SyntaxCheckOptions = emptySyntaxCheckOptions, snapshots: SourceSnapshot[] = []): Promise<SyntaxCheckResult> {
   const channel = new Channel<SyntaxProgress>();
   channel.onmessage = progress;
-  return invoke<SyntaxCheckResult>("run_syntax_check", { request: { requestId, root, files, top: top ?? null }, channel });
+  return invoke<SyntaxCheckResult>("run_syntax_check", { request: { requestId, root, files, top: top ?? null, stubs, options, snapshots }, channel });
 }
 
 export function cancelSyntaxCheck(requestId: number): Promise<void> {

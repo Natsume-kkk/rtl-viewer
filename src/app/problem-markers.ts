@@ -7,8 +7,15 @@ interface MarkedModel {
   model: monaco.editor.ITextModel;
 }
 
-export function syncProblemMarkers(models: Iterable<MarkedModel>, diagnostics: SyntaxDiagnostic[], stale: boolean): void {
+export function syncProblemMarkers(models: Iterable<MarkedModel>, diagnostics: SyntaxDiagnostic[], stale: boolean, currentDiagnostics: SyntaxDiagnostic[] = []): void {
   const grouped = new Map<string, SyntaxDiagnostic[]>();
+  for (const diagnostic of currentDiagnostics) {
+    if (!diagnostic.file) continue;
+    const key = filePathKey(diagnostic.file);
+    const items = grouped.get(key) ?? [];
+    items.push(diagnostic);
+    grouped.set(key, items);
+  }
   if (!stale) {
     for (const diagnostic of diagnostics) {
       if (!diagnostic.file) continue;
@@ -20,7 +27,7 @@ export function syncProblemMarkers(models: Iterable<MarkedModel>, diagnostics: S
   }
   for (const { path, model } of models) {
     if (model.isDisposed()) continue;
-    const markers = (grouped.get(filePathKey(path)) ?? []).map(diagnostic => ({
+    const markers = (grouped.get(filePathKey(path)) ?? []).slice(0, 500).map(diagnostic => ({
       severity: diagnostic.severity === "error" ? monaco.MarkerSeverity.Error
         : diagnostic.severity === "warning" ? monaco.MarkerSeverity.Warning
           : monaco.MarkerSeverity.Info,

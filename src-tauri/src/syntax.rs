@@ -14,13 +14,56 @@ const MAX_DIAGNOSTICS: usize = 5000;
 const VERILATOR_TIMEOUT: Duration = Duration::from_secs(120);
 const GHDL_TIMEOUT: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyntaxCheckRequest {
     pub request_id: u64,
     pub root: String,
     pub files: Vec<String>,
     pub top: Option<String>,
+    #[serde(default)]
+    pub stubs: Vec<SyntaxStub>,
+    #[serde(default)]
+    pub options: SyntaxCheckOptions,
+    #[serde(default)]
+    pub snapshots: Vec<SourceSnapshot>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSnapshot {
+    pub file: String,
+    pub content: String,
+    pub encoding: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyntaxCheckOptions {
+    #[serde(default)]
+    pub defines: Vec<String>,
+    #[serde(default)]
+    pub include_dirs: Vec<String>,
+    #[serde(default)]
+    pub vhdl_libraries: Vec<VhdlLibraryMapping>,
+    #[serde(default)]
+    pub verilator_args: Vec<String>,
+    #[serde(default)]
+    pub ghdl_args: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VhdlLibraryMapping {
+    pub library: String,
+    pub file: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyntaxStub {
+    pub name: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -167,6 +210,32 @@ fn work_directory(data_root: &Path, request_id: u64) -> Result<PathBuf, String> 
     Ok(directory)
 }
 
+struct SnapshotFiles {
+    overlays: HashMap<String, PathBuf>,
+    originals: HashMap<String, String>,
+}
+
+fn prepare_snapshots(snapshots: &[SourceSnapshot], root: &Path, work: &Path) -> Result<SnapshotFiles, String> {
+    let mut overlays = HashMap::new();
+    let mut originals = HashMap::new();
+    for snapshot in snapshots {
+        let original = fs::canonicalize(&snapshot.file).map_err(|error| format!("读取快照源文件失败：{error}"))?;
+        if !original.starts_with(root) {
+            return Err(format!("快照文件不在当前工程内：{}", snapshot.file));
+        }
+        let relative = original.strip_prefix(root).map_err(|_| format!("无法计算快照相对路径：{}", snapshot.file))?;
+        let overlay = work.join("snapshot").join(relative);
+        let parent = overlay.parent().ok_or_else(|| "快照目标路径无效".to_owned())?;
+        fs::create_dir_all(parent).map_err(|error| format!("创建快照目录失败：{error}"))?;
+        let bytes = crate::encode(&snapshot.content, &snapshot.encoding)?;
+        fs::write(&overlay, bytes).map_err(|error| format!("写入快照失败：{error}"))?;
+        let original_display = crate::normalize(&original);
+        overlays.insert(original_display.clone(), overlay.clone());
+        originals.insert(crate::normalize(&overlay), original_display);
+    }
+    Ok(SnapshotFiles { overlays, originals })
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SourceKind {
     Verilog,
@@ -179,6 +248,7 @@ struct SourceFile {
     path: PathBuf,
     display: String,
     kind: SourceKind,
+    library: String,
 }
 
 fn execute_check(
@@ -190,7 +260,17 @@ fn execute_check(
 ) -> Result<SyntaxCheckResult, String> {
     jobs.cancelled.lock().unwrap().remove(&request.request_id);
     let root = fs::canonicalize(&request.root).map_err(|error| format!("读取工程目录失败：{error}"))?;
+    let snapshot_files = prepare_snapshots(&request.snapshots, &root, work)?;
     let mut diagnostics = Vec::new();
+    let mut library_mappings = HashMap::new();
+    for mapping in &request.options.vhdl_libraries {
+        match fs::canonicalize(&mapping.file) {
+            Ok(path) if path.is_file() && path.starts_with(&root) && valid_identifier(&mapping.library) => {
+                library_mappings.insert(crate::normalize(&path), mapping.library.clone());
+            }
+            _ => diagnostics.push(system_diagnostic(&mapping.file, &format!("VHDL library 映射无效：{}", mapping.library))),
+        }
+    }
     let mut files = Vec::new();
     for file in request.files {
         let kind = match extension(&file).as_str() {
@@ -201,7 +281,10 @@ fn execute_check(
         };
         match fs::canonicalize(&file) {
             Ok(path) if path.is_file() && path.starts_with(&root) => {
-                files.push(SourceFile { display: crate::normalize(&path), path, kind });
+                let display = crate::normalize(&path);
+                let library = library_mappings.get(&display).cloned().unwrap_or_else(|| "work".into());
+                let path = snapshot_files.overlays.get(&display).cloned().unwrap_or(path);
+                files.push(SourceFile { display, path, kind, library });
             }
             _ => diagnostics.push(system_diagnostic(&file, "文件不存在、不可读或不在当前工程内")),
         }
@@ -214,10 +297,11 @@ fn execute_check(
     let mut backends = Vec::new();
     let verilator = tools.join("verilator/bin/verilator_bin.exe");
     let ghdl = tools.join("ghdl/bin/ghdl.exe");
-    let include_dirs: BTreeSet<PathBuf> = files.iter()
+    let mut include_dirs: BTreeSet<PathBuf> = files.iter()
         .filter(|file| file.kind != SourceKind::Vhdl)
         .filter_map(|file| file.path.parent().map(Path::to_path_buf))
         .collect();
+    include_dirs.extend(request.options.include_dirs.iter().map(PathBuf::from));
 
     if !verilogs.is_empty() {
         progress(SyntaxProgress { stage: "verilator".into(), file: String::new(), completed: 0, total });
@@ -226,7 +310,7 @@ fn execute_check(
         let count = ordered.len();
         let version = tool_version(&verilator, tools);
         let mut status = "completed".to_owned();
-        match run_verilator(&verilator, tools, &root, work, &ordered, &include_dirs, request.top.as_deref(), request.request_id, jobs) {
+        match run_verilator(&verilator, tools, &root, work, &ordered, &include_dirs, &request.stubs, &request.options, request.top.as_deref(), request.request_id, jobs) {
             Ok(outcome) => {
                 parse_verilator_output(&outcome.stdout, &root, &mut diagnostics);
                 parse_verilator_output(&outcome.stderr, &root, &mut diagnostics);
@@ -258,19 +342,27 @@ fn execute_check(
         let mut status = "completed".to_owned();
         let ghdl_work = work.join("ghdl");
         fs::create_dir_all(&ghdl_work).map_err(|error| format!("创建 GHDL 工作目录失败：{error}"))?;
+        let library_paths: BTreeSet<PathBuf> = ordered.iter().map(|file| ghdl_work.join(&file.library)).collect();
         for (index, file) in ordered.iter().enumerate() {
             if is_cancelled(jobs, request.request_id) {
                 status = "cancelled".into();
                 break;
             }
             progress(SyntaxProgress { stage: "ghdl".into(), file: file.display.clone(), completed: checked_files + index, total });
-            let args = vec![
+            let library_work = ghdl_work.join(&file.library);
+            fs::create_dir_all(&library_work).map_err(|error| format!("创建 GHDL library 工作目录失败：{error}"))?;
+            let mut args = vec![
                 "-a".to_owned(),
                 "--std=08".to_owned(),
                 "-fsynopsys".to_owned(),
-                format!("--workdir={}", crate::normalize(&ghdl_work)),
-                file.display.clone(),
+                format!("--work={}", file.library),
+                format!("--workdir={}", crate::normalize(&library_work)),
             ];
+            for directory in &library_paths {
+                args.push(format!("-P{}", crate::normalize(directory)));
+            }
+            args.extend(request.options.ghdl_args.iter().filter(|argument| !argument.contains(['\r', '\n'])).cloned());
+            args.push(crate::normalize(&file.path));
             match run_external(&ghdl, tools, &args, &root, request.request_id, GHDL_TIMEOUT, jobs) {
                 Ok(outcome) => {
                     let before = diagnostics.len();
@@ -302,13 +394,25 @@ fn execute_check(
 
     jobs.cancelled.lock().unwrap().remove(&request.request_id);
     let cancelled = backends.iter().any(|backend| backend.status == "cancelled");
-    diagnostics.sort_by(|a, b| (&a.file, a.line, a.column, &a.rule_id, &a.message).cmp(&(&b.file, b.line, b.column, &b.rule_id, &b.message)));
+    for diagnostic in &mut diagnostics {
+        if let Some(original) = snapshot_files.originals.get(&diagnostic.file) {
+            diagnostic.file = original.clone();
+        }
+    }
+    finalize_diagnostics(&mut diagnostics);
+    Ok(SyntaxCheckResult { request_id: request.request_id, diagnostics, checked_files, backends, cancelled })
+}
+
+fn finalize_diagnostics(diagnostics: &mut Vec<SyntaxDiagnostic>) {
+    diagnostics.sort_by(|a, b| {
+        let rank = |diagnostic: &SyntaxDiagnostic| match diagnostic.severity.as_str() { "error" => 0, "warning" => 1, _ => 2 };
+        (rank(a), &a.file, a.line, a.column, &a.rule_id, &a.message).cmp(&(rank(b), &b.file, b.line, b.column, &b.rule_id, &b.message))
+    });
     diagnostics.dedup();
     if diagnostics.len() > MAX_DIAGNOSTICS {
-        diagnostics.truncate(MAX_DIAGNOSTICS);
+        diagnostics.truncate(MAX_DIAGNOSTICS - 1);
         diagnostics.push(system_diagnostic("", &format!("诊断数量超过 {MAX_DIAGNOSTICS}，其余结果已省略")));
     }
-    Ok(SyntaxCheckResult { request_id: request.request_id, diagnostics, checked_files, backends, cancelled })
 }
 
 fn run_verilator(
@@ -318,6 +422,8 @@ fn run_verilator(
     work: &Path,
     files: &[SourceFile],
     include_dirs: &BTreeSet<PathBuf>,
+    stubs: &[SyntaxStub],
+    options: &SyntaxCheckOptions,
     top: Option<&str>,
     request_id: u64,
     jobs: &Arc<SyntaxJobState>,
@@ -336,11 +442,29 @@ fn run_verilator(
     for directory in include_dirs {
         content.push_str(&format!("-I\"{}\"\n", crate::normalize(&directory)));
     }
+    for define in &options.defines {
+        let name = define.split('=').next().unwrap_or("");
+        if valid_identifier(name) && !define.chars().any(char::is_whitespace) {
+            content.push_str(&format!("+define+{define}\n"));
+        }
+    }
+    for argument in &options.verilator_args {
+        if !argument.contains(['\r', '\n']) {
+            content.push_str(argument);
+            content.push('\n');
+        }
+    }
     if let Some(top) = top.filter(|name| valid_identifier(name)) {
         content.push_str(&format!("--top-module \"{top}\"\n"));
     }
+    for stub in stubs.iter().filter(|stub| valid_identifier(&stub.name)) {
+        let path = response_dir.join("stubs").join(format!("{}.sv", stub.name));
+        fs::create_dir_all(path.parent().unwrap()).map_err(|error| format!("创建 IP stub 目录失败：{error}"))?;
+        fs::write(&path, &stub.source).map_err(|error| format!("写入 IP 黑盒 stub 失败：{error}"))?;
+        content.push_str(&format!("\"{}\"\n", crate::normalize(&path)));
+    }
     for file in files {
-        content.push_str(&format!("\"{}\"\n", file.display));
+        content.push_str(&format!("\"{}\"\n", crate::normalize(&file.path)));
     }
     fs::write(&response, content).map_err(|error| format!("写入 Verilator 文件列表失败：{error}"))?;
     let args = vec!["-f".to_owned(), crate::normalize(&response)];
@@ -455,7 +579,7 @@ fn system_diagnostic(file: &str, message: &str) -> SyntaxDiagnostic {
 fn parse_verilator_output(output: &str, root: &Path, diagnostics: &mut Vec<SyntaxDiagnostic>) {
     for raw in output.lines() {
         let line = raw.trim();
-        let severity = if line.starts_with("%Error") { "error" } else if line.starts_with("%Warning") { "warning" } else { continue };
+        let severity = if line.starts_with("%Error") { "error" } else if line.starts_with("%Warning") { "warning" } else if line.starts_with("%Note") { "info" } else { continue };
         let Some(header_end) = line.find(':') else { continue };
         let header = &line[1..header_end];
         let rule = header.split_once('-').map(|(_, tag)| tag).unwrap_or("GENERAL");
@@ -507,7 +631,7 @@ fn reported_path(root: &Path, file: &str) -> String {
 }
 
 fn push_diagnostic(diagnostics: &mut Vec<SyntaxDiagnostic>, diagnostic: SyntaxDiagnostic) {
-    if diagnostics.len() < MAX_DIAGNOSTICS && !diagnostics.contains(&diagnostic) {
+    if diagnostics.len() < MAX_DIAGNOSTICS * 4 && !diagnostics.contains(&diagnostic) {
         diagnostics.push(diagnostic);
     }
 }
@@ -570,26 +694,24 @@ fn order_vhdl(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>
             Ok(text) => {
                 let cleaned = strip_comments(&text, SourceKind::Vhdl).to_lowercase();
                 let (packages, package_bodies) = vhdl_packages(&cleaned);
-                for package in packages { specifications.entry(package).or_insert(index); }
-                for package in package_bodies { bodies.entry(package).or_insert(index); }
+                for package in packages { specifications.entry((file.library.clone(), package)).or_insert(index); }
+                for package in package_bodies { bodies.entry((file.library.clone(), package)).or_insert(index); }
                 texts.push(cleaned);
             }
             Err(error) => { errors.push(error); texts.push(String::new()); }
         }
     }
     let mut dependencies = vec![BTreeSet::new(); files.len()];
-    for (body, body_index) in &bodies {
-        if let Some(specification) = specifications.get(body) {
+    for ((library, package), body_index) in &bodies {
+        if let Some(specification) = specifications.get(&(library.clone(), package.clone())) {
             dependencies[*body_index].insert(*specification);
         }
     }
     for (index, text) in texts.iter().enumerate() {
         let words = words(text);
         for pair in words.windows(2) {
-            if pair[0] == "work" {
-                if let Some(provider) = specifications.get(&pair[1]) {
-                    if *provider != index { dependencies[index].insert(*provider); }
-                }
+            if let Some(provider) = specifications.get(&(pair[0].clone(), pair[1].clone())) {
+                if *provider != index { dependencies[index].insert(*provider); }
             }
         }
     }
@@ -700,7 +822,7 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join(name);
         fs::write(&path, content).unwrap();
-        SourceFile { display: crate::normalize(&path), path, kind: SourceKind::Vhdl }
+        SourceFile { display: crate::normalize(&path), path, kind: SourceKind::Vhdl, library: "work".into() }
     }
 
     #[test]
@@ -727,6 +849,24 @@ mod tests {
         parse_ghdl_output("D:/project/top.vhd:4:2: error: missing \";\": details\n", &root, &mut diagnostics);
         assert_eq!(diagnostics[1].severity, "error");
         assert_eq!(diagnostics[1].message, "error: missing \";\": details");
+        parse_verilator_output("%Note-DECLFILENAME: D:/project/top.sv:2:8: Related declaration\n", &root, &mut diagnostics);
+        let note = diagnostics.last().unwrap();
+        assert_eq!(note.severity, "info");
+        assert_eq!(note.rule_id, "VERILATOR-DECLFILENAME");
+        assert_eq!(note.line, 2);
+    }
+
+    #[test]
+    fn truncation_preserves_errors_before_information() {
+        let mut diagnostics: Vec<_> = (0..6000).map(|index| SyntaxDiagnostic {
+            file: format!("D:/project/{index}.sv"), line: 1, column: 1, severity: "info".into(), rule_id: "INFO".into(), source: "verilator".into(), message: "information".into(),
+        }).collect();
+        diagnostics.push(system_diagnostic("D:/project/error.sv", "critical"));
+        finalize_diagnostics(&mut diagnostics);
+        assert_eq!(diagnostics.len(), MAX_DIAGNOSTICS);
+        assert_eq!(diagnostics[0].severity, "error");
+        assert_eq!(diagnostics[0].file, "D:/project/error.sv");
+        assert!(diagnostics.last().unwrap().message.contains("其余结果已省略"));
     }
 
     #[test]
@@ -747,18 +887,54 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the local Verilator runtime and an unsaved source snapshot"]
+    fn real_backend_uses_unsaved_snapshot_instead_of_disk() {
+        let root = std::env::temp_dir().join(format!("rtl-viewer-snapshot-syntax-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("top.sv");
+        fs::write(&source, "module top; invalid verilog\n").unwrap();
+        let snapshot = SourceSnapshot { file: crate::normalize(&source), content: "module top(input logic a, output logic b); assign b = a; endmodule\n".into(), encoding: "utf8".into() };
+        let result = execute_check(SyntaxCheckRequest { request_id: 95, root: crate::normalize(&root), files: vec![crate::normalize(&source)], snapshots: vec![snapshot], ..Default::default() }, &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools/windows-x64"), &root.join("work"), &Arc::new(SyntaxJobState::default()), &|_| {}).unwrap();
+        assert_eq!(result.checked_files, 1, "{result:?}");
+        assert!(!result.diagnostics.iter().any(|diagnostic| diagnostic.severity == "error"), "{result:?}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[ignore = "requires the local GHDL runtime and a custom VHDL library"]
+    fn real_ghdl_checks_custom_library_dependencies() {
+        let root = std::env::temp_dir().join(format!("rtl-viewer-vhdl-library-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let vendor = root.join("vendor.vhd");
+        let consumer = root.join("consumer.vhd");
+        fs::write(&vendor, "package types is constant WIDTH: integer := 8; end package;\n").unwrap();
+        fs::write(&consumer, "library vendor; use vendor.types.all; entity consumer is end;\n").unwrap();
+        let options = SyntaxCheckOptions { vhdl_libraries: vec![VhdlLibraryMapping { library: "vendor".into(), file: crate::normalize(&vendor) }], ..Default::default() };
+        let result = execute_check(SyntaxCheckRequest { request_id: 94, root: crate::normalize(&root), files: vec![crate::normalize(&consumer), crate::normalize(&vendor)], options, ..Default::default() }, &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools/windows-x64"), &root.join("work"), &Arc::new(SyntaxJobState::default()), &|_| {}).unwrap();
+        assert_eq!(result.checked_files, 2, "{result:?}");
+        assert!(!result.diagnostics.iter().any(|diagnostic| diagnostic.severity == "error"), "{result:?}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     #[ignore = "checks the repository mixed-language sample with the local tools"]
-    fn repository_sample_reports_unresolved_ip_without_aborting() {
+    fn repository_sample_uses_ip_stub_without_aborting_vhdl() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/samples/basic");
         let tools = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools/windows-x64");
         let work = std::env::temp_dir().join(format!("rtl-viewer-sample-syntax-{}", std::process::id()));
         let _ = fs::remove_dir_all(&work);
         fs::create_dir_all(&work).unwrap();
         let files = vec![crate::normalize(&root.join("top.v")), crate::normalize(&root.join("register.vhd"))];
-        let result = execute_check(SyntaxCheckRequest { request_id: 93, root: crate::normalize(&root), files, top: Some("top".into()) }, &tools, &work, &Arc::new(SyntaxJobState::default()), &|_| {}).unwrap();
+        let stubs = vec![
+            SyntaxStub { name: "sample_clock".into(), source: fs::read_to_string(root.join("ip/sample_clock.v")).unwrap() },
+            SyntaxStub { name: "sample_register".into(), source: "module sample_register (input wire clk, input wire reset_n, input wire data_in, output wire data_out); endmodule\n".into() },
+        ];
+        let result = execute_check(SyntaxCheckRequest { request_id: 93, root: crate::normalize(&root), files, top: Some("sample_top".into()), stubs, ..Default::default() }, &tools, &work, &Arc::new(SyntaxJobState::default()), &|_| {}).unwrap();
         assert_eq!(result.checked_files, 2, "{result:?}");
         assert!(result.backends.iter().all(|backend| backend.status == "completed"), "{result:?}");
-        assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.source == "verilator" && diagnostic.severity == "error"), "{result:?}");
+        assert!(!result.diagnostics.iter().any(|diagnostic| diagnostic.source == "verilator" && diagnostic.severity == "error"), "{result:?}");
         let _ = fs::remove_dir_all(work);
     }
 
@@ -780,12 +956,19 @@ mod tests {
         let include = root.join("include/types.svh");
         fs::create_dir_all(include.parent().unwrap()).unwrap();
         fs::write(&include, "typedef logic [1:0] my_type;\n").unwrap();
-        fs::write(&verilog, "`include \"types.svh\"\nmodule top(input logic a, output logic b); my_type value; assign value = {a, a}; assign b = value[0]; endmodule\n").unwrap();
+        fs::write(&verilog, "`include \"types.svh\"\n`ifdef RTL_CHECK\nmodule top(input logic a, output logic b); my_type value; assign value = {a, a}; assign b = value[0]; endmodule\n`else\nmodule top; invalid verilog\n`endif\n").unwrap();
         fs::write(&vhdl, "library ieee; use ieee.std_logic_1164.all; entity top is port(a:in std_logic;b:out std_logic); end; architecture rtl of top is begin b<=a; end;\n").unwrap();
         let work = root.join("work");
         fs::create_dir_all(&work).unwrap();
         let jobs = Arc::new(SyntaxJobState::default());
-        let result = execute_check(SyntaxCheckRequest { request_id, root: crate::normalize(&root), files: vec![crate::normalize(&verilog), crate::normalize(&vhdl), crate::normalize(&include)], top: Some("top".into()) }, &tools, &work, &jobs, &|_| {}).unwrap();
+        let options = SyntaxCheckOptions {
+            defines: vec!["RTL_CHECK=1".into()],
+            include_dirs: vec![crate::normalize(include.parent().unwrap())],
+            verilator_args: vec!["--Wno-DECLFILENAME".into()],
+            ghdl_args: vec!["-frelaxed-rules".into()],
+            ..Default::default()
+        };
+        let result = execute_check(SyntaxCheckRequest { request_id, root: crate::normalize(&root), files: vec![crate::normalize(&verilog), crate::normalize(&vhdl), crate::normalize(&include)], top: Some("top".into()), options, ..Default::default() }, &tools, &work, &jobs, &|_| {}).unwrap();
         assert_eq!(result.checked_files, 2, "{result:?}");
         assert_eq!(result.backends.len(), 2);
         assert!(result.backends.iter().all(|backend| backend.status == "completed"), "{result:?}");

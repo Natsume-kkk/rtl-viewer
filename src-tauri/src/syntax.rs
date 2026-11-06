@@ -28,6 +28,8 @@ pub struct SyntaxCheckRequest {
     #[serde(default)]
     pub stubs: Vec<SyntaxStub>,
     #[serde(default)]
+    pub vhdl_stubs: Vec<SyntaxStub>,
+    #[serde(default)]
     pub options: SyntaxCheckOptions,
     #[serde(default)]
     pub snapshots: Vec<SourceSnapshot>,
@@ -339,20 +341,30 @@ fn execute_check(
     }
 
     if !vhdls.is_empty() && !is_cancelled(jobs, request.request_id) {
-        let (ordered, mut read_errors) = order_vhdl(vhdls);
-        diagnostics.append(&mut read_errors);
-        let count = ordered.len();
+        let count = vhdls.len();
         let version = tool_version(&ghdl, tools);
         let mut status = "completed".to_owned();
         let ghdl_work = work.join("ghdl");
-        fs::create_dir_all(&ghdl_work).map_err(|error| format!("创建 GHDL 工作目录失败：{error}"))?;
+        let stub_directory = ghdl_work.join("stubs");
+        fs::create_dir_all(&stub_directory).map_err(|error| format!("创建 GHDL 工作目录失败：{error}"))?;
+        let mut stub_files = Vec::new();
+        for stub in request.vhdl_stubs.iter().filter(|stub| valid_identifier(&stub.name)) {
+            let path = stub_directory.join(format!("{}.vhd", stub.name));
+            fs::write(&path, &stub.source).map_err(|error| format!("写入 VHDL 黑盒 stub 失败：{error}"))?;
+            stub_files.push(SourceFile { display: crate::normalize(&path), path, kind: SourceKind::Vhdl, library: "work".into() });
+        }
+        let (ordered, mut read_errors) = order_vhdl(stub_files.into_iter().chain(vhdls).collect());
+        diagnostics.append(&mut read_errors);
         let library_paths: BTreeSet<PathBuf> = ordered.iter().map(|file| ghdl_work.join(&file.library)).collect();
-        for (index, file) in ordered.iter().enumerate() {
+        for file in &ordered {
             if is_cancelled(jobs, request.request_id) {
                 status = "cancelled".into();
                 break;
             }
-            progress(SyntaxProgress { stage: "ghdl".into(), file: file.display.clone(), completed: checked_files + index, total });
+            let is_stub = file.path.starts_with(&stub_directory);
+            if !is_stub {
+                progress(SyntaxProgress { stage: "ghdl".into(), file: file.display.clone(), completed: checked_files, total });
+            }
             let library_work = ghdl_work.join(&file.library);
             fs::create_dir_all(&library_work).map_err(|error| format!("创建 GHDL library 工作目录失败：{error}"))?;
             let mut args = vec![
@@ -384,7 +396,7 @@ fn execute_check(
                         diagnostics.push(system_diagnostic(&file.display, "GHDL 单文件分析超过 60 秒，已停止"));
                         break;
                     }
-                    checked_files += 1;
+                    if !is_stub { checked_files += 1; }
                 }
                 Err(error) => {
                     status = "failed".into();
@@ -589,6 +601,7 @@ fn parse_verilator_output(output: &str, root: &Path, diagnostics: &mut Vec<Synta
         let Some(header_end) = line.find(':') else { continue };
         let header = &line[1..header_end];
         let rule = header.split_once('-').map(|(_, tag)| tag).unwrap_or("GENERAL");
+        let severity = if rule == "PINCONNECTEMPTY" { "info" } else { severity };
         let body = line[header_end + 1..].trim();
         let (file, line_number, column, message) = split_location(body)
             .map(|(file, line, column, message)| (reported_path(root, &file), line, column, message))
@@ -695,6 +708,7 @@ fn order_vhdl(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>
     let mut errors = Vec::new();
     let mut specifications = HashMap::new();
     let mut bodies = HashMap::new();
+    let mut entities = HashMap::new();
     for (index, file) in files.iter().enumerate() {
         match source_text(file) {
             Ok(text) => {
@@ -702,6 +716,7 @@ fn order_vhdl(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>
                 let (packages, package_bodies) = vhdl_packages(&cleaned);
                 for package in packages { specifications.entry((file.library.clone(), package)).or_insert(index); }
                 for package in package_bodies { bodies.entry((file.library.clone(), package)).or_insert(index); }
+                for entity in vhdl_entities(&cleaned) { entities.entry((file.library.clone(), entity)).or_insert(index); }
                 texts.push(cleaned);
             }
             Err(error) => { errors.push(error); texts.push(String::new()); }
@@ -717,6 +732,17 @@ fn order_vhdl(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>
         let words = words(text);
         for pair in words.windows(2) {
             if let Some(provider) = specifications.get(&(pair[0].clone(), pair[1].clone())) {
+                if *provider != index { dependencies[index].insert(*provider); }
+            }
+            if pair[0] == "component" {
+                if let Some(provider) = entities.get(&(files[index].library.clone(), pair[1].clone())) {
+                    if *provider != index { dependencies[index].insert(*provider); }
+                }
+            }
+        }
+        for window in words.windows(3) {
+            if window[0] != "entity" { continue; }
+            if let Some(provider) = entities.get(&(window[1].clone(), window[2].clone())) {
                 if *provider != index { dependencies[index].insert(*provider); }
             }
         }
@@ -761,6 +787,11 @@ fn vhdl_packages(text: &str) -> (Vec<String>, Vec<String>) {
         else if window[1] != "is" { specifications.push(window[1].clone()); }
     }
     (specifications, bodies)
+}
+
+fn vhdl_entities(text: &str) -> Vec<String> {
+    let tokens = words(text);
+    tokens.windows(3).filter(|window| window[0] == "entity" && window[2] == "is").map(|window| window[1].clone()).collect()
 }
 
 fn words(text: &str) -> Vec<String> {
@@ -844,6 +875,17 @@ mod tests {
     }
 
     #[test]
+    fn vhdl_entity_and_component_consumers_follow_definitions() {
+        let direct = fixture("direct-entity.vhd", "entity direct is end; architecture rtl of direct is begin u: entity work. provider; end;");
+        let component = fixture("component-consumer.vhd", "entity component_consumer is end; architecture rtl of component_consumer is component provider is port(a: in bit); end component; begin u: provider port map(a => '0'); end;");
+        let provider = fixture("entity-provider.vhd", "entity provider is port(a: in bit); end;");
+        let (ordered, errors) = order_vhdl(vec![direct, component, provider]);
+        assert!(errors.is_empty());
+        let names: Vec<_> = ordered.iter().map(|file| file.path.file_name().unwrap().to_string_lossy()).collect();
+        assert_eq!(names, ["entity-provider.vhd", "direct-entity.vhd", "component-consumer.vhd"]);
+    }
+
+    #[test]
     fn diagnostics_parse_windows_paths_and_message_colons() {
         let root = PathBuf::from("D:/project");
         let mut diagnostics = Vec::new();
@@ -860,6 +902,10 @@ mod tests {
         assert_eq!(note.severity, "info");
         assert_eq!(note.rule_id, "VERILATOR-DECLFILENAME");
         assert_eq!(note.line, 2);
+        parse_verilator_output("%Warning-PINCONNECTEMPTY: D:/project/top.sv:3:8: Cell pin connected by name with empty reference: 'full'\n", &root, &mut diagnostics);
+        assert_eq!(diagnostics.last().unwrap().severity, "info");
+        parse_verilator_output("%Warning-PINMISSING: D:/project/top.sv:4:8: Cell has missing pin: 'empty'\n", &root, &mut diagnostics);
+        assert_eq!(diagnostics.last().unwrap().severity, "warning");
     }
 
     #[test]

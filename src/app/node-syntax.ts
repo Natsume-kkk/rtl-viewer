@@ -11,6 +11,7 @@ interface NodeCheckRequest {
   files: string[];
   top?: string;
   stubs: SyntaxStub[];
+  vhdlStubs?: SyntaxStub[];
   options: SyntaxCheckOptions;
   snapshots?: SourceSnapshot[];
 }
@@ -44,7 +45,7 @@ export function runNodeSyntaxCheck(request: NodeCheckRequest): SyntaxCheckResult
     }
     if (vhdl.length) {
       const version = toolVersion(tools, "ghdl");
-      const outcome = runGhdl(tools, root, work, vhdl, request.options);
+      const outcome = runGhdl(tools, root, work, vhdl, request.vhdlStubs ?? [], request.options);
       parseGhdl(outcome.output, root, diagnostics, snapshots.originals);
       backends.push({ name: "ghdl", version, files: vhdl.length, status: outcome.timedOut ? "timed_out" : "completed" });
       if (!outcome.timedOut) checkedFiles += vhdl.length;
@@ -97,10 +98,16 @@ function runVerilator(tools: string, root: string, work: string, files: { actual
   return run(program, ["-f", response], root, tools, 120_000);
 }
 
-function runGhdl(tools: string, root: string, work: string, files: { actual: string; display: string; library: string }[], options: SyntaxCheckOptions) {
+function runGhdl(tools: string, root: string, work: string, files: { actual: string; display: string; library: string }[], stubs: SyntaxStub[], options: SyntaxCheckOptions) {
   const ghdlWork = path.join(work, "ghdl");
-  fs.mkdirSync(ghdlWork, { recursive: true });
-  const ordered = orderVhdl(files);
+  const stubDirectory = path.join(ghdlWork, "stubs");
+  fs.mkdirSync(stubDirectory, { recursive: true });
+  const stubFiles = stubs.map(stub => {
+    const actual = path.join(stubDirectory, `${stub.name}.vhd`);
+    fs.writeFileSync(actual, stub.source);
+    return { actual, display: actual, library: "work" };
+  });
+  const ordered = orderVhdl([...stubFiles, ...files]);
   const output: string[] = [];
   let timedOut = false;
   for (const file of ordered) {
@@ -122,15 +129,28 @@ function runGhdl(tools: string, root: string, work: string, files: { actual: str
 function orderVhdl<T extends { actual: string; library: string }>(files: T[]): T[] {
   const definitions = new Map<string, number>();
   const bodies = new Map<string, number>();
+  const entities = new Map<string, number>();
   const texts = files.map(file => fs.readFileSync(file.actual, "utf8").toLowerCase());
   texts.forEach((text, index) => {
     for (const match of text.matchAll(/\bpackage\s+(?!body\b)([a-z_]\w*)\s+is\b/g)) definitions.set(`${files[index].library}.${match[1]}`, index);
     for (const match of text.matchAll(/\bpackage\s+body\s+([a-z_]\w*)\s+is\b/g)) bodies.set(`${files[index].library}.${match[1]}`, index);
+    for (const match of text.matchAll(/\bentity\s+([a-z_]\w*)\s+is\b/g)) {
+      const key = `${files[index].library}.${match[1]}`;
+      if (!entities.has(key)) entities.set(key, index);
+    }
   });
   const dependencies = files.map(() => new Set<number>());
   for (const [key, body] of bodies) if (definitions.has(key)) dependencies[body].add(definitions.get(key)!);
   texts.forEach((text, index) => {
     for (const [key, provider] of definitions) if (provider !== index && text.includes(key)) dependencies[index].add(provider);
+    for (const match of text.matchAll(/\bentity\s+([a-z_]\w*)\s*\.\s*([a-z_]\w*)\b/g)) {
+      const provider = entities.get(`${match[1]}.${match[2]}`);
+      if (provider !== undefined && provider !== index) dependencies[index].add(provider);
+    }
+    for (const match of text.matchAll(/\bcomponent\s+([a-z_]\w*)\b/g)) {
+      const provider = entities.get(`${files[index].library}.${match[1]}`);
+      if (provider !== undefined && provider !== index) dependencies[index].add(provider);
+    }
   });
   const emitted = new Set<number>(), ordered: T[] = [];
   while (ordered.length < files.length) {
@@ -176,13 +196,14 @@ function parseVerilator(output: string, root: string, diagnostics: SyntaxDiagnos
     const headerEnd = line.indexOf(":");
     if (headerEnd < 0) continue;
     const rule = line.slice(1, headerEnd).split("-")[1] ?? "GENERAL";
+    const diagnosticSeverity = rule === "PINCONNECTEMPTY" ? "info" : severity;
     const body = line.slice(headerEnd + 1).trim();
     const location = splitLocation(body);
     diagnostics.push({
       file: location ? originals.get(location.file) ?? reportedPath(root, location.file) : "",
       line: location?.line ?? 1,
       column: location?.column ?? 1,
-      severity,
+      severity: diagnosticSeverity,
       ruleId: `VERILATOR-${rule}`,
       source: "verilator",
       message: location?.message ?? body,

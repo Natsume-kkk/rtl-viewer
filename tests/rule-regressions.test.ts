@@ -91,6 +91,32 @@ it("case 支持单行、常量参数、VHDL 标签和正规枚举", () => {
   expect(vhdlFacts.signatures.some(signature => signature.kind === "enum")).toBe(true);
 });
 
+it("case 数字标签不会被前一段 begin end 或嵌套分支拼接", () => {
+  const source = `module demo;
+reg [1:0] state;
+reg condition;
+reg result;
+always @* case (state)
+  2'd0: begin
+    if (condition) result = 1'b0;
+    else result = 1'b1;
+  end
+  2'd1: if (condition) begin result = 1'b1; end
+  2'd2: result = 1'b0;
+  default: result = 1'b0;
+endcase
+endmodule`;
+  const facts = analyzeFileFacts("demo.v", source);
+  expect(facts.cases).toHaveLength(1);
+  expect(facts.cases[0].labels).toEqual(["2'd0", "2'd1", "2'd2"]);
+  expect(facts.cases[0].nonconstantLabel).toBe(false);
+  expect(ids(source)).not.toContain("10157-R-11-6");
+  const expression = analyzeFileFacts("demo.v", "module demo; localparam A=0,B=1; reg state; always @* case (state) A+B: state = 0; endcase endmodule").cases[0];
+  expect(expression.labels).toEqual(["A+B"]);
+  expect(expression.nonconstantLabel).toBe(false);
+  expect(analyzeFileFacts("demo.v", "module demo; reg state; always @* case (state) choice: state = 0; endcase endmodule").cases[0].nonconstantLabel).toBe(true);
+});
+
 it("复位、时钟、三态和端口类型只在对应上下文中报警", () => {
   const first = ids("module first; wire first; always @(posedge clk) first <= 1'b0; endmodule");
   expect(first).not.toContain("10157-A-2-4");

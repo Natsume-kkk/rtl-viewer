@@ -49,9 +49,13 @@ it("后台进度、取消、定位和过期状态共用同一份诊断结果", (
   panel.finish(result());
   expect(progress.hidden).toBe(true);
   expect(cancel.hidden).toBe(true);
-  expect(root.querySelectorAll(".problem-row")).toHaveLength(2);
+  expect(root.querySelectorAll(".problem-group")).toHaveLength(2);
+  expect(root.querySelectorAll(".problem-row")).toHaveLength(0);
   expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 2/2 条");
-  (root.querySelector(".problem-row") as HTMLButtonElement).click();
+  const errorGroup = root.querySelector<HTMLDetailsElement>(".problem-error-group")!;
+  errorGroup.querySelector("summary")!.click();
+  errorGroup.dispatchEvent(new Event("toggle"));
+  (errorGroup.querySelector(".problem-row") as HTMLButtonElement).click();
   expect(callbacks.onOpen).toHaveBeenCalledWith(expect.objectContaining({ file: "D:/project/a.sv", line: 8 }));
   panel.markStale();
   expect(root.querySelector(".problem-summary")!.textContent).toContain("等待自动复查");
@@ -94,7 +98,7 @@ it("多选、文件和文本筛选只改变显示，清除后恢复全部诊断"
   expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 1/4 条");
 });
 
-it("提示按规则折叠，黑盒提示独立折叠且错误仍直接显示", () => {
+it("所有诊断按规则折叠，黑盒提示独立折叠且错误按严重程度归组", () => {
   const { root, panel, callbacks } = setup();
   const external = result();
   external.diagnostics.push(
@@ -107,19 +111,32 @@ it("提示按规则折叠，黑盒提示独立折叠且错误仍直接显示", (
   const stubGroup = root.querySelector<HTMLDetailsElement>(".problem-stub-group")!;
   expect(infoGroup.querySelector("summary")!.textContent).toContain("a.sv");
   expect(infoGroup.querySelector("summary")!.textContent).not.toContain("D:/project");
-  expect(infoGroup.title).toBe("D:/project/a.sv");
-  expect(root.querySelector(".problem-location")!.textContent).toBe("a.sv:8:3");
+  expect(infoGroup.title).toContain("D:/project/a.sv");
+  expect(infoGroup.title).toContain("10157-A-1-1");
+  const firstError = root.querySelector<HTMLDetailsElement>(".problem-error-group")!;
+  firstError.querySelector("summary")!.click();
+  firstError.dispatchEvent(new Event("toggle"));
+  expect(firstError.querySelector(".problem-location")!.textContent).toBe("a.sv:8:3");
   expect([...root.querySelectorAll('select[aria-label="文件筛选"] option')].map(option => option.textContent)).not.toContain("D:/project/a.sv");
   expect(infoGroup.open).toBe(false);
   infoGroup.querySelector<HTMLButtonElement>(".problem-group-jump")!.click();
   expect(callbacks.onOpen).toHaveBeenCalledWith(expect.objectContaining({ file: "D:/project/a.sv", line: 3, column: 1 }));
   expect(infoGroup.open).toBe(false);
+  expect(infoGroup.querySelector(".problem-row")).toBeNull();
   infoGroup.querySelector("summary")!.click();
+  infoGroup.dispatchEvent(new Event("toggle"));
   expect(infoGroup.open).toBe(true);
+  expect(infoGroup.querySelector(".problem-row")).not.toBeNull();
   expect(stubGroup.open).toBe(false);
   expect(stubGroup.textContent).toContain("黑盒／生成文件提示 · 1 条");
+  stubGroup.querySelector("summary")!.click();
+  stubGroup.dispatchEvent(new Event("toggle"));
   expect(stubGroup.querySelector("button")!.disabled).toBe(true);
-  expect([...root.querySelectorAll(".problem-error")].some(row => row.textContent?.includes("Bad stub") && !stubGroup.contains(row))).toBe(true);
+  const stubErrorGroup = [...root.querySelectorAll<HTMLDetailsElement>(".problem-environment-group")].find(group => group.textContent?.includes("语法错误"))!;
+  stubErrorGroup.querySelector("summary")!.click();
+  stubErrorGroup.dispatchEvent(new Event("toggle"));
+  expect(stubErrorGroup.textContent).toContain("Bad stub");
+  expect(stubErrorGroup).not.toBe(stubGroup);
 });
 
 it("内置分析完成即可导出，不依赖外部检查", () => {
@@ -146,7 +163,7 @@ it("筛选区可折叠且后端版本保持简短", () => {
 
 it("常规状态隐藏检查设置，依赖错误和范围切换提供明确入口", () => {
   const { root, panel, callbacks } = setup();
-  const configure = [...root.querySelectorAll("button")].find(button => button.textContent === "检查设置")!;
+  const configure = [...root.querySelectorAll("button")].find(button => button.textContent === "修复环境")!;
   expect(configure.hidden).toBe(true);
   panel.finish(result());
   expect(configure.hidden).toBe(true);
@@ -161,4 +178,93 @@ it("常规状态隐藏检查设置，依赖错误和范围切换提供明确入�
   panel.setScope("top", "demo");
   expect(scope.value).toBe("top");
   expect(scope.title).toContain("demo");
+});
+
+it("同规则大量警告默认折叠，展开后显示全部诊断", () => {
+  const { root, panel } = setup();
+  const external = result();
+  external.diagnostics = Array.from({ length: 1200 }, (_, index) => ({
+    file: "D:/project/a.sv", line: index + 1, column: 1, severity: "warning", ruleId: "VERILATOR-WIDTH", source: "verilator", message: `warning ${index}`,
+  }));
+  panel.finish(external);
+  const group = root.querySelector<HTMLDetailsElement>(".problem-warning-group")!;
+  expect(group.open).toBe(false);
+  expect(group.querySelector("summary")!.textContent).toContain("位宽不匹配");
+  expect(group.querySelector("summary")!.textContent).toContain("1200 条");
+  expect(group.querySelectorAll(".problem-row")).toHaveLength(0);
+  expect(root.textContent).not.toContain("仅显示前");
+  group.querySelector("summary")!.click();
+  group.dispatchEvent(new Event("toggle"));
+  expect(group.querySelectorAll(".problem-row")).toHaveLength(500);
+  group.querySelector<HTMLButtonElement>(".problem-load-more")!.click();
+  expect(group.querySelectorAll(".problem-row")).toHaveLength(1000);
+  group.querySelector<HTMLButtonElement>(".problem-load-more")!.click();
+  expect(group.querySelectorAll(".problem-row")).toHaveLength(1200);
+  expect(group.querySelector(".problem-load-more")).toBeNull();
+  expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 1200/1200 条");
+  expect(root.textContent).not.toContain("仅显示前");
+});
+
+it("刷新只更新变化分组并保留展开、滚动位置和焦点", () => {
+  const { root, panel } = setup();
+  panel.finish(result());
+  const group = root.querySelector<HTMLDetailsElement>(".problem-error-group")!;
+  group.querySelector("summary")!.click();
+  group.dispatchEvent(new Event("toggle"));
+  const list = root.querySelector<HTMLElement>(".problem-list")!;
+  list.scrollTop = 120;
+  const row = group.querySelector<HTMLButtonElement>(".problem-row")!;
+  row.focus();
+  expect(document.activeElement).toBe(row);
+  panel.setBuiltins([builtin("VLG-ST-001", "style")]);
+  expect(root.querySelector(".problem-error-group")).toBe(group);
+  expect(group.open).toBe(true);
+  expect(list.scrollTop).toBe(120);
+  expect(document.activeElement).toBe(row);
+  const external = result();
+  external.diagnostics[0].message = "Changed width diagnostic";
+  panel.finish(external);
+  expect(root.querySelector(".problem-error-group")).toBe(group);
+  expect(group.open).toBe(true);
+  expect(list.scrollTop).toBe(120);
+  expect(group.textContent).toContain("Changed width diagnostic");
+  expect(document.activeElement).toBe(group.querySelector(".problem-row"));
+});
+
+it("依赖环境、重名最短目录和工程级中文摘要清晰可辨", () => {
+  const { root, panel } = setup();
+  const external = result();
+  external.diagnostics = [
+    { file: "D:/p/project_2.srcs/sources_1/bd/design_1/hdl/design_1_wrapper.v", line: 1, column: 1, severity: "warning", ruleId: "VERILATOR-MODDUP", source: "verilator", message: "Duplicate declaration" },
+    { file: "D:/p/HWDCMCS.srcs/sources_1/bd/design_1/hdl/design_1_wrapper.v", line: 1, column: 1, severity: "warning", ruleId: "VERILATOR-MODDUP", source: "verilator", message: "Duplicate declaration" },
+    { file: "D:/p/consumer.vhd", line: 8, column: 12, severity: "error", ruleId: "GHDL", source: "ghdl", message: "error: unit \"fifo_256x8\" not found in library \"work\"" },
+    { file: "D:/p/missing.v", line: 4, column: 3, severity: "error", ruleId: "VERILATOR-MODMISSING", source: "verilator", message: "Cannot find file containing module: 'missing'" },
+    { file: "", line: 1, column: 1, severity: "error", ruleId: "VERILATOR", source: "verilator", message: "Exiting due to 2 error(s)" },
+  ];
+  panel.finish(external);
+  const environments = [...root.querySelectorAll<HTMLDetailsElement>(".problem-environment-group")];
+  expect(environments).toHaveLength(4);
+  expect(environments[0].textContent).toContain("分析环境");
+  const environmentText = environments.map(group => group.textContent).join("\n");
+  expect(environmentText).toContain("project_2.srcs");
+  expect(environmentText).toContain("HWDCMCS.srcs");
+  expect(environmentText).toContain("VHDL 依赖单元缺失");
+  expect(environmentText).toContain("缺少模块定义");
+  expect(root.querySelector(".problem-error-group summary")!.textContent).toContain("检查因错误停止");
+  const options = [...root.querySelectorAll('select[aria-label="文件筛选"] option')].map(option => option.textContent);
+  expect(options.some(text => text?.includes("project_2.srcs"))).toBe(true);
+  expect(options.some(text => text?.includes("HWDCMCS.srcs"))).toBe(true);
+});
+
+it("快捷严重程度筛选可切换，来源筛选默认折叠", () => {
+  const { root, panel } = setup();
+  panel.setBuiltins([builtin("VLG-ST-001", "style"), builtin("10157-A-1-1", "gjb10157")]);
+  panel.finish(result());
+  expect(root.querySelector<HTMLDetailsElement>(".problem-advanced-filters")!.open).toBe(false);
+  const toggle = [...root.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "仅看错误和警告")!;
+  toggle.click();
+  expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 2/4 条");
+  const restore = [...root.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "查看全部问题")!;
+  restore.click();
+  expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 4/4 条");
 });

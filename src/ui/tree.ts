@@ -20,6 +20,8 @@ export interface TreeCallbacks {
   onOpenFile?(path: string): void;
   /** 右键「查看例化处」：列出工程内例化该模块的位置 */
   onFindInstances?(moduleName: string): void;
+  /** 同名定义中明确指定一个实现 */
+  onSelectDefinition?(node: TreeNode, file: string): void;
 }
 
 export class HierarchyTree {
@@ -253,6 +255,13 @@ export class HierarchyTree {
     row.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       const items: MenuItem[] = [];
+      for (const candidate of node.definitionCandidates ?? []) {
+        items.push({
+          label: `使用此定义：${definitionLabel(candidate.file, node.definitionCandidates!.map(item => item.file))}`,
+          checked: candidate.file === node.file,
+          action: () => this.callbacks.onSelectDefinition?.(node, candidate.file),
+        });
+      }
       if (node.file) {
         items.push({ label: "打开定义", action: () => this.callbacks.onOpen(node) });
       }
@@ -380,4 +389,16 @@ export class HierarchyTree {
     box.appendChild(ul);
     this.rootEl.appendChild(box);
   }
+}
+
+function definitionLabel(file: string, candidates: string[]): string {
+  const normalized = file.replace(/\\/g, "/");
+  const base = normalized.split("/").pop() ?? normalized;
+  const directory = normalized.split("/").slice(0, -1);
+  const others = candidates.filter(candidate => candidate.toLowerCase() !== normalized.toLowerCase()).map(candidate => candidate.replace(/\\/g, "/").split("/").slice(0, -1));
+  for (let count = 1; count <= directory.length; count++) {
+    const suffix = directory.slice(-count).join("/");
+    if (others.every(other => other.slice(-count).join("/").toLowerCase() !== suffix.toLowerCase())) return `${base}（${suffix}）`;
+  }
+  return others.length ? `${base}（${directory.join("/")}）` : base;
 }

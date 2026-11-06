@@ -25,6 +25,19 @@ describe("HierarchyTree", () => {
     expect(rootEl.querySelector(".tree-row")?.getAttribute("aria-label")).toContain("b/core.v");
     expect(rootEl.querySelector(".tree-inst")).toBeNull();
   });
+  it("重复定义菜单列出候选并回调用户选择", () => {
+    const onSelectDefinition = vi.fn();
+    const { rootEl, tree } = makeTree({ onOpen: vi.fn(), onSelectDefinition });
+    const selected = node({ key: "core", label: "core", moduleName: "core", file: "new/core.v", definitionCandidates: [{ file: "old/core.v", line: 1 }, { file: "new/core.v", line: 1 }, { file: "D:/p/HWDCMCS/HWDCMCS.srcs/sources_1/bd/design_1/hdl/design_1_wrapper.v", line: 1 }, { file: "D:/p/project_2/project_2.srcs/sources_1/bd/design_1/hdl/design_1_wrapper.v", line: 1 }] });
+    tree.render({ tops: [selected], topCandidates: ["core"], unused: [] });
+    rootEl.querySelector<HTMLElement>(".tree-row")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    const items = [...document.querySelectorAll<HTMLButtonElement>(".ctx-item")];
+    expect(items.map(item => item.textContent)).toEqual(expect.arrayContaining(["使用此定义：core.v（old）", "使用此定义：core.v（new）", "使用此定义：design_1_wrapper.v（HWDCMCS.srcs/sources_1/bd/design_1/hdl）"]));
+    items.find(item => item.textContent === "使用此定义：core.v（old）")!.click();
+    expect(onSelectDefinition).toHaveBeenCalledExactlyOnceWith(selected, "old/core.v");
+    document.querySelector(".ctx-menu")?.remove();
+  });
+
   it("同时显示实例、模块与定义文件，复用实例及同名实例不丢失身份", () => {
     const onOpen = vi.fn(), onOpenInst = vi.fn();
     const { rootEl, tree } = makeTree({ onOpen, onOpenInst });

@@ -35,13 +35,12 @@ export interface StatsView {
   topology?: StatsTopologyNode[];
 }
 
-type SortKey = "file" | "code" | "comments" | "processes" | "instances" | "issues";
+type SortKey = "file" | "code" | "comments" | "instances" | "issues";
 
 const COLUMNS: { key: SortKey; label: string }[] = [
   { key: "file", label: "文件" },
   { key: "code", label: "代码行" },
   { key: "comments", label: "注释比例" },
-  { key: "processes", label: "过程" },
   { key: "instances", label: "例化" },
   { key: "issues", label: "问题" },
 ];
@@ -197,7 +196,7 @@ export class StatsPanel {
     label.title = node.file ?? node.moduleName;
     row.append(label);
     const fact = node.file ? facts.get(filePathKey(node.file)) : undefined;
-    row.append(metric(fact?.statistics.codeLines ?? 0), metric(`${Math.round((fact?.statistics.commentRatio ?? 0) * 100)}%`), metric(fact?.processes.length ?? 0), metric(fact?.instanceCount ?? 0));
+    row.append(metric(fact?.statistics.codeLines ?? 0), metric(`${Math.round((fact?.statistics.commentRatio ?? 0) * 100)}%`), metric(fact?.instanceCount ?? 0));
     const issues = node.file ? issueCounts.get(filePathKey(node.file)) ?? 0 : 0;
     const issueButton = document.createElement("button");
     issueButton.className = "stats-topology-issues";
@@ -255,7 +254,6 @@ export class StatsPanel {
         item,
         code: item?.statistics.codeLines ?? -1,
         comments: item?.statistics.commentRatio ?? -1,
-        processes: item?.processes.length ?? -1,
         instances: item?.instanceCount ?? -1,
         issues: item ? issueCounts.get(filePathKey(file)) ?? 0 : -1,
       };
@@ -296,7 +294,7 @@ export class StatsPanel {
     const totals = statsTotals(view);
     const totalRow = document.createElement("tr");
     totalRow.className = "stats-total-row";
-    totalRow.append(textCell("合计"), textCell(totals.codeLines), textCell(totals.commentRatio), textCell(totals.processes), textCell(totals.instances), textCell(totals.issues));
+    totalRow.append(textCell("合计"), textCell(totals.codeLines), textCell(totals.commentRatio), textCell(totals.instances), textCell(totals.issues));
     body.append(totalRow);
     for (const row of rows) {
       const line = document.createElement("tr");
@@ -315,7 +313,6 @@ export class StatsPanel {
       }
       line.append(textCell(row.item.statistics.codeLines));
       line.append(textCell(`${Math.round(row.item.statistics.commentRatio * 100)}%`));
-      line.append(textCell(row.item.processes.length));
       line.append(textCell(row.item.instanceCount));
       const issues = document.createElement("td");
       const count = issueCounts.get(filePathKey(row.file)) ?? 0;
@@ -353,7 +350,6 @@ function statsTotals(view: StatsView) {
   return {
     codeLines: view.facts.reduce((sum, item) => sum + item.statistics.codeLines, 0),
     commentRatio: `${commentDenominator ? Math.round(commentLines / commentDenominator * 100) : 0}%`,
-    processes: view.facts.reduce((sum, item) => sum + item.processes.length, 0),
     instances: view.facts.reduce((sum, item) => sum + item.instanceCount, 0),
     issues: view.diagnostics.length,
   };
@@ -367,7 +363,7 @@ function topologyTotal(view: StatsView): HTMLElement {
   const label = document.createElement("span");
   label.className = "stats-topology-label";
   label.textContent = "合计";
-  total.append(document.createElement("span"), label, metric(totals.codeLines), metric(totals.commentRatio), metric(totals.processes), metric(totals.instances), metric(totals.issues), document.createElement("span"));
+  total.append(document.createElement("span"), label, metric(totals.codeLines), metric(totals.commentRatio), metric(totals.instances), metric(totals.issues), document.createElement("span"));
   return total;
 }
 
@@ -376,7 +372,7 @@ function topologyHeader(): HTMLElement {
   header.className = "stats-topology-row stats-topology-head";
   const label = document.createElement("span");
   label.textContent = "模块／实例";
-  header.append(document.createElement("span"), label, metric("代码行"), metric("注释"), metric("过程"), metric("例化"), metric("问题"));
+  header.append(document.createElement("span"), label, metric("代码行"), metric("注释"), metric("例化"), metric("问题"));
   const locate = document.createElement("span");
   locate.textContent = "定位";
   header.append(locate);

@@ -39,7 +39,7 @@ import { createSignalController } from "./app/signal-controller";
 import { createModuleMetadataLoader } from "./app/module-metadata";
 import { createProjectScanner } from "./app/project-scanner";
 import { isGeneratedNetlist } from "./app/project-files";
-import { verilogStub } from "./app/syntax-stubs";
+import { verilogStub, vhdlStub } from "./app/syntax-stubs";
 import { loadSyntaxOptions, saveSyntaxOptions, configuredPath, validateSyntaxOptions } from "./app/syntax-options";
 import { showSyntaxOptionsDialog } from "./ui/syntax-options";
 import { createFactsScheduler } from "./app/facts-scheduler";
@@ -63,6 +63,7 @@ const state = {
   constraints: [] as string[],
   topName: undefined as string | undefined,
   autoTop: undefined as string | undefined,
+  definitionPreferences: new Map<string, string>(),
 };
 
 const sidebarEl = document.getElementById("sidebar")!;
@@ -207,6 +208,7 @@ const tree = new HierarchyTree(treeRootEl, {
     void factsScheduler.start();
     scheduleProjectSyntaxCheck();
   },
+  onSelectDefinition: (node, file) => selectDefinition(node.moduleName, file),
   onOpenFile: (path) => void navigateTo(path),
   onFindInstances: (name) => {
     document.getElementById("ref-panel")?.remove();
@@ -372,7 +374,8 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
   refreshFactsViews();
   try {
     const scopedIps = analysisScope === "project" ? state.ips : state.ips.filter(ip => activeTopModules.has(ip.name.toLowerCase()));
-    const ipStubs = (await Promise.all(scopedIps.map(async ip => {
+    const selectedIps = scopedIps.filter(ip => state.index.resolve(ip.name)?.isIp);
+    const ipStubs = (await Promise.all(selectedIps.map(async ip => {
       const ports = await modulePorts(ip.name);
       const parameters = await moduleIpParameters(ip.name);
       return { name: ip.name, source: ports.length ? verilogStub(ip.name, ports, parameters) : "" };
@@ -381,11 +384,15 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
     for (const file of analysisHdlFiles()) for (const module of state.structures.get(file) ?? []) {
       if (module.vhdl?.entity && !vhdlModules.has(module.name.toLowerCase())) vhdlModules.set(module.name.toLowerCase(), module);
     }
-    const vhdlStubs = await Promise.all([...vhdlModules.values()].map(async module => ({
+    const verilogVhdlStubs = await Promise.all([...vhdlModules.values()].map(async module => ({
       name: module.name,
       source: verilogStub(module.name, await modulePorts(module.name), moduleParameters(module.name)),
     })));
-    const stubs = [...ipStubs, ...vhdlStubs];
+    const vhdlStubs = (await Promise.all(selectedIps.map(async ip => {
+      const ports = await modulePorts(ip.name);
+      return { name: ip.name, source: ports.length ? vhdlStub(ip.name, ports, await moduleIpParameters(ip.name)) : "" };
+    }))).filter(stub => stub.source);
+    const stubs = [...ipStubs, ...verilogVhdlStubs];
     if (request !== syntaxSerial || folder !== state.folder) return false;
     const options = {
       ...syntaxOptions,
@@ -394,7 +401,7 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
     };
     const result = await runSyntaxCheck(folder, files, options.top || state.topName || state.autoTop, request, progress => {
       if (request === syntaxSerial) problemPanel.update(progress);
-    }, stubs, options, [...snapshots.values()]);
+    }, stubs, options, [...snapshots.values()], vhdlStubs);
     if (request !== syntaxSerial || folder !== state.folder) return false;
     runningSyntaxRequest = 0;
     lastSyntaxResult = result;
@@ -840,7 +847,23 @@ function rebuildIndex(): void {
   for (const ip of state.ips) {
     index.addIp(ip.name, ip.file);
   }
+  for (const [name, file] of state.definitionPreferences) index.setPreferred(name, file);
   state.index = index;
+}
+
+function selectDefinition(name: string, file: string): void {
+  state.index.setPreferred(name, file);
+  state.definitionPreferences.set(name.toLowerCase(), normalizePath(file));
+  saveDefinitionPreferences();
+  signalController.invalidate();
+  if (runningSyntaxRequest) syntaxChangedWhileRunning = true;
+  problemPanel.markStale();
+  factsDone = factsTotal = 0;
+  renderTree();
+  refreshFactsViews();
+  void factsScheduler.start();
+  scheduleProjectSyntaxCheck();
+  statusbar.hint(`${name} 已指定使用 ${file}`);
 }
 
 function renderTree(): void {
@@ -858,7 +881,11 @@ function renderTree(): void {
   }
   activeTopFiles = new Set<string>();
   for (const [file, modules] of state.structures) {
-    if (modules.some(module => activeTopModules.has(module.name.toLowerCase()))) activeTopFiles.add(filePathKey(file));
+    if (modules.some(module => {
+      if (!activeTopModules.has(module.name.toLowerCase())) return false;
+      const definition = state.index.resolve(module.name);
+      return definition?.vhdl || filePathKey(definition?.file ?? "") === filePathKey(file);
+    })) activeTopFiles.add(filePathKey(file));
   }
   tree.render(h, state.constraints);
 }
@@ -886,6 +913,20 @@ function loadRecents(): string[] {
 
 function saveRecents(list: string[]): void {
   localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 8)));
+}
+
+function loadDefinitionPreferences(folder: string): Map<string, string> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`rtl-viewer.definitionPreferences.${folder.toLowerCase()}`) ?? "{}");
+    return new Map(Object.entries(saved).filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string").map(([name, file]) => [name.toLowerCase(), normalizePath(file)]));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveDefinitionPreferences(): void {
+  if (!state.folder) return;
+  localStorage.setItem(`rtl-viewer.definitionPreferences.${state.folder.toLowerCase()}`, JSON.stringify(Object.fromEntries(state.definitionPreferences)));
 }
 
 const recentMenu = new RecentMenu(document.getElementById("sidebar")!, {
@@ -967,6 +1008,7 @@ async function openFolder(folder: string): Promise<void> {
   activeTopology = [];
   statsPanel.render({ facts: [], files: [], diagnostics: [], done: 0, total: 0, running: false, stale: false, scope: "top" });
   state.folder = folder;
+  state.definitionPreferences = loadDefinitionPreferences(folder);
   syntaxOptions = loadSyntaxOptions(folder);
   updateProjectChrome();
   workspace.refreshChrome();

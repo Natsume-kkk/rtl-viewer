@@ -29,6 +29,25 @@ describe("层级树构建", () => {
     expect(hierarchy.topCandidates).toContain("leaf");
   });
 
+  it("用户指定重复定义后，层级、导航和实现绑定使用同一文件", () => {
+    const index = new ModuleIndex();
+    const structures = new Map<string, ReturnType<typeof scanStructure>>();
+    for (const [file, source] of Object.entries({ "backup/core.v": "module core; endmodule", "rtl/core.v": "module core; leaf u(); endmodule module leaf; endmodule" })) {
+      const modules = scanStructure(source, file);
+      index.addStructure(modules);
+      structures.set(file, modules);
+    }
+    index.setPreferred("core", "rtl/core.v");
+    const hierarchy = buildHierarchy(index, structures, "core");
+    expect(index.preferredFile("core")).toBe("rtl/core.v");
+    expect(index.candidates("core")).toHaveLength(2);
+    expect(index.problem("core")).toBeUndefined();
+    expect(hierarchy.tops[0].file).toBe("rtl/core.v");
+    expect(hierarchy.tops[0].problem).toBeUndefined();
+    expect(hierarchy.tops[0].children[0].moduleName).toBe("leaf");
+    expect(hierarchy.tops[0].definitionCandidates?.map(candidate => candidate.file)).toEqual(["backup/core.v", "rtl/core.v"]);
+  });
+
   it("多 architecture 不猜测选择实现，空端口 entity 仍是定义来源", () => {
     const files={"a.vhd":"architecture a of core is begin end a;", "b.vhd":"architecture b of core is begin end b;", "z.vhd":"entity core is end core;"};
     const hierarchy=buildFromFiles(files, [], "core");

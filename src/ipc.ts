@@ -150,10 +150,10 @@ export interface SourceSnapshot {
   encoding: string;
 }
 
-export function runSyntaxCheck(root: string, files: string[], top: string | undefined, requestId: number, progress: (event: SyntaxProgress) => void, stubs: SyntaxStub[] = [], options: SyntaxCheckOptions = emptySyntaxCheckOptions, snapshots: SourceSnapshot[] = []): Promise<SyntaxCheckResult> {
+export function runSyntaxCheck(root: string, files: string[], top: string | undefined, requestId: number, progress: (event: SyntaxProgress) => void, stubs: SyntaxStub[] = [], options: SyntaxCheckOptions = emptySyntaxCheckOptions, snapshots: SourceSnapshot[] = [], vhdlStubs: SyntaxStub[] = []): Promise<SyntaxCheckResult> {
   const channel = new Channel<SyntaxProgress>();
   channel.onmessage = progress;
-  return invoke<SyntaxCheckResult>("run_syntax_check", { request: { requestId, root, files, top: top ?? null, stubs, options, snapshots }, channel });
+  return invoke<SyntaxCheckResult>("run_syntax_check", { request: { requestId, root, files, top: top ?? null, stubs, vhdlStubs, options, snapshots }, channel });
 }
 
 export function cancelSyntaxCheck(requestId: number): Promise<void> {

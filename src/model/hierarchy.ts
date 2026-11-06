@@ -1,5 +1,5 @@
 import type { ModuleInfo } from "../parser";
-import { ModuleIndex, bindModuleParts } from "./index";
+import { ModuleIndex, bindModuleParts, selectModuleParts } from "./index";
 
 export type NodeKind = "module" | "ip" | "unresolved" | "primitive";
 
@@ -55,6 +55,7 @@ export interface TreeNode {
   instLine?: number;
   recursive: boolean;
   problem?: string;
+  definitionCandidates?: { file: string; line: number }[];
   children: TreeNode[];
 }
 
@@ -178,7 +179,7 @@ export function buildHierarchy(
     }
   }
   for (const [key, parts] of partsByModule) {
-    const { implementation } = bindModuleParts(parts);
+    const { implementation } = bindModuleParts(selectModuleParts(parts, index.preferredFile(key)));
     if (implementation) structByModule.set(key, implementation);
   }
 
@@ -214,6 +215,7 @@ export function buildHierarchy(
       line: def?.line,
       recursive: ancestors.has(lower),
       children: [],
+      ...(index.candidates(moduleName).length > 1 ? { definitionCandidates: index.candidates(moduleName).map(candidate => ({ file: candidate.file, line: candidate.line })) } : {}),
       ...(problem ? { problem } : {}),
     };
     if (node.recursive || problem) return node;

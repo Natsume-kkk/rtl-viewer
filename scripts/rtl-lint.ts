@@ -8,7 +8,7 @@ import { runGjb10157Rules, runGjb9765Rules } from "../src/analysis/gjb-rules";
 import { ALL_RULE_PREFERENCES, applyRulePreferences } from "../src/analysis/rule-preferences";
 import { emptySyntaxCheckOptions, type SyntaxCheckResult, type SyntaxStub } from "../src/ipc";
 import { parseFile, parseXci } from "../src/parser";
-import { verilogStub } from "../src/app/syntax-stubs";
+import { verilogStub, vhdlStub } from "../src/app/syntax-stubs";
 import { syntaxReportCsv, syntaxReportHtml } from "../src/app/syntax-report";
 import { projectFiles } from "../src/app/project-files";
 
@@ -44,7 +44,7 @@ function main(argv: string[]): number {
     root,
     files,
     top: options.top,
-    stubs: buildStubs(scanned),
+    ...buildStubs(scanned),
     options: syntaxOptions(options),
   }) : { requestId: 1, diagnostics: [], checkedFiles: 0, backends: [], cancelled: false };
   const facts = files.map(file => analyzeFileFacts(file, fs.readFileSync(file, "utf8")));
@@ -129,8 +129,8 @@ function collect(target: string): string[] {
   return files;
 }
 
-function buildStubs(files: string[]): SyntaxStub[] {
-  const stubs: SyntaxStub[] = [];
+function buildStubs(files: string[]): { stubs: SyntaxStub[]; vhdlStubs: SyntaxStub[] } {
+  const stubs: SyntaxStub[] = [], vhdlStubs: SyntaxStub[] = [];
   for (const file of files.filter(file => file.endsWith(".xci"))) {
     const ip = parseXci(fs.readFileSync(file, "utf8"), file);
     const base = file.replace(/\.xci$/i, "");
@@ -139,7 +139,10 @@ function buildStubs(files: string[]): SyntaxStub[] {
       if (!fs.existsSync(candidate)) continue;
       const modules = parseFile(fs.readFileSync(candidate, "utf8"), candidate);
       const module = modules.find(item => item.name.toLowerCase() === ip.name.toLowerCase()) ?? modules[0];
-      if (module?.ports.length) stubs.push({ name: ip.name, source: verilogStub(ip.name, module.ports, module.parameters ?? []) });
+      if (module?.ports.length) {
+        stubs.push({ name: ip.name, source: verilogStub(ip.name, module.ports, module.parameters ?? []) });
+        vhdlStubs.push({ name: ip.name, source: vhdlStub(ip.name, module.ports, module.parameters ?? []) });
+      }
       break;
     }
   }
@@ -148,7 +151,7 @@ function buildStubs(files: string[]): SyntaxStub[] {
       stubs.push({ name: module.name, source: verilogStub(module.name, module.ports, module.parameters ?? []) });
     }
   }
-  return stubs;
+  return { stubs, vhdlStubs };
 }
 
 function printHelp(): void {

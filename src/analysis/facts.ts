@@ -298,7 +298,7 @@ function caseFacts(clean: string, language: HdlLang, starts: number[], constants
     const control = match[1], body = match[2];
     const labels = language === "vhdl"
       ? [...body.matchAll(/\bwhen\s+([\s\S]*?)=>/gi)].map(label => label[1].trim()).filter(label => !/^others\b/i.test(label)).flatMap(label => label.split("|").map(item => item.trim()))
-      : [...body.matchAll(/(?:^|[;\n])\s*([^:;]+?)\s*:/g)].map(label => label[1].trim()).filter(label => !/^default\b/i.test(label) && !/[?<=]/.test(label));
+      : verilogCaseLabels(body);
     const defaultText = language === "vhdl" ? /\bwhen\s+others\b([\s\S]*)/i.exec(body)?.[1] ?? "" : /\bdefault\b([\s\S]*)/.exec(body)?.[1] ?? "";
     result.push({
       startLine: lineAt(starts, match.index!),
@@ -311,6 +311,46 @@ function caseFacts(clean: string, language: HdlLang, starts: number[], constants
     });
   }
   return result;
+}
+
+function verilogCaseLabels(body: string): string[] {
+  const labels: string[] = [];
+  const tokens = [...body.matchAll(/\d+\s*'\s*[sS]?[bBoOdDhH][0-9a-fA-FxXzZ_]+|[A-Za-z_]\w*|\d[\d_]*|[():;{}\[\]]|<=|>=|==|!=|&&|\|\||[+\-*/|&^~?,=]/g)].map(match => ({ text: match[0], index: match.index! }));
+  let depth = 0, parens = 0, brackets = 0, statementStart = true, labelStart = -1;
+  for (const token of tokens) {
+    if (token.text === "begin") {
+      depth++;
+      statementStart = false;
+      continue;
+    }
+    if (token.text === "end") {
+      depth = Math.max(0, depth - 1);
+      statementStart = depth === 0;
+      continue;
+    }
+    if (token.text === "(") { parens++; continue; }
+    if (token.text === ")") { parens = Math.max(0, parens - 1); continue; }
+    if (token.text === "[") { brackets++; continue; }
+    if (token.text === "]") { brackets = Math.max(0, brackets - 1); continue; }
+    if (token.text === ";") {
+      if (depth === 0 && parens === 0 && brackets === 0) statementStart = true;
+      continue;
+    }
+    if (token.text === ":") {
+      if (statementStart && depth === 0 && parens === 0 && brackets === 0 && labelStart >= 0) {
+        const label = body.slice(labelStart, token.index).trim();
+        if (label && !/^default\b/i.test(label)) labels.push(label);
+      }
+      statementStart = false;
+      labelStart = -1;
+      continue;
+    }
+    if (statementStart && depth === 0 && parens === 0 && brackets === 0 && labelStart < 0) labelStart = token.index;
+    if (!/^(?:if|else|case|casex|casez|endcase|for|while|repeat|forever)$/.test(token.text)) continue;
+    statementStart = false;
+    labelStart = -1;
+  }
+  return labels;
 }
 
 function sourceSignatures(clean: string, language: HdlLang, starts: number[]): SourceSignature[] {

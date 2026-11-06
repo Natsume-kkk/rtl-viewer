@@ -1,4 +1,5 @@
 import type { ModuleInfo } from "../parser";
+import { filePathKey } from "../file-path";
 
 export interface ModuleDef {
   name: string;
@@ -25,9 +26,18 @@ export function bindModuleParts<T extends { vhdl?: ModuleInfo["vhdl"] }>(parts: 
   return { definition, implementation: parts.find(part => part.vhdl!.architectures.length) ?? definition };
 }
 
+export function selectModuleParts<T extends { file: string; vhdl?: ModuleInfo["vhdl"] }>(parts: readonly T[], preferredFile?: string): readonly T[] {
+  if (!preferredFile) return parts;
+  const preferred = parts.find(part => filePathKey(part.file) === preferredFile);
+  if (!preferred) return parts;
+  if (preferred.vhdl && !preferred.vhdl.entity) return [...parts.filter(part => part.vhdl?.entity), preferred];
+  return [preferred];
+}
+
 /** 模块名索引；歧义定义不作为跳转或补全目标。 */
 export class ModuleIndex {
   private byName = new Map<string, ModuleDef[]>();
+  private preferred = new Map<string, string>();
 
   addModule(def: ModuleDef): void {
     const key = def.name.toLowerCase();
@@ -47,7 +57,21 @@ export class ModuleIndex {
   }
 
   resolve(name: string): ModuleDef | undefined {
-    return bindModuleParts(this.byName.get(name.toLowerCase()) ?? []).definition;
+    const key = name.toLowerCase();
+    return bindModuleParts(selectModuleParts(this.byName.get(key) ?? [], this.preferred.get(key))).definition;
+  }
+
+  setPreferred(name: string, file: string): void {
+    const key = name.toLowerCase();
+    if ((this.byName.get(key) ?? []).some(part => filePathKey(part.file) === filePathKey(file))) this.preferred.set(key, filePathKey(file));
+  }
+
+  preferredFile(name: string): string | undefined {
+    return this.preferred.get(name.toLowerCase());
+  }
+
+  candidates(name: string): ModuleDef[] {
+    return [...this.byName.get(name.toLowerCase()) ?? []];
   }
 
   allDefs(): ModuleDef[] {
@@ -59,6 +83,7 @@ export class ModuleIndex {
   }
 
   problem(name: string): string | undefined {
+    if (this.preferredFile(name) && this.resolve(name)) return undefined;
     const parts = this.byName.get(name.toLowerCase()) ?? [];
     const problem = bindModuleParts(parts).problem;
     return problem ? `${problem}\n${parts.map(part => `${part.file}:${part.line}`).join("\n")}` : undefined;

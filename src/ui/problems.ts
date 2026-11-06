@@ -10,7 +10,6 @@ interface ProblemPanelCallbacks {
   onExport(format: "html" | "csv"): void;
   onOpen(diagnostic: SyntaxDiagnostic): void;
   onClose(): void;
-  displayPath(file: string): string;
 }
 
 export interface ProblemDisplayFilter {
@@ -242,7 +241,7 @@ export class ProblemPanel {
     if (this.running) {
       const current = this.progress;
       const stage = current?.stage === "ghdl" ? "GHDL" : "Verilator";
-      const location = current?.file ? ` · ${this.callbacks.displayPath(current.file)}` : "";
+      const location = current?.file ? ` · ${fileName(current.file)}` : "";
       this.summary.textContent = current
         ? `${stage} 检查中 ${current.completed}/${current.total}${location}${this.result ? " · 下方为上次结果" : ""}`
         : `准备检查工具与工程文件…${this.result ? " · 下方为上次结果" : ""}`;
@@ -307,8 +306,10 @@ export class ProblemPanel {
     }
     for (const diagnostics of infoGroups.values()) {
       const first = diagnostics[0];
-      const title = `${first.file ? this.callbacks.displayPath(first.file) : "工程级"} · ${first.ruleId} · ${diagnostics.length} 条提示`;
-      this.list.append(diagnosticGroup("problem-info-group", title, diagnostics.map(item => this.createRow(item)), first.file ? () => this.callbacks.onOpen(first) : undefined));
+      const title = `${first.file ? fileName(first.file) : "工程级"} · ${first.ruleId} · ${diagnostics.length} 条提示`;
+      const group = diagnosticGroup("problem-info-group", title, diagnostics.map(item => this.createRow(item)), first.file ? () => this.callbacks.onOpen(first) : undefined);
+      group.title = first.file ?? title;
+      this.list.append(group);
     }
     const stubs = visible.filter(isStubHint);
     if (stubs.length) {
@@ -330,7 +331,7 @@ export class ProblemPanel {
     source.textContent = diagnostic.source === "ghdl" ? "GHDL" : diagnostic.source === "verilator" ? "Verilator" : diagnostic.source === "builtin" && "category" in diagnostic && diagnostic.category === "gjb10157" ? "10157" : diagnostic.source === "builtin" && "category" in diagnostic && diagnostic.category === "gjb9765" ? "9765" : diagnostic.source === "builtin" ? "通用" : "应用";
     const location = document.createElement("span");
     location.className = "problem-location";
-    location.textContent = stub ? `黑盒 ${fileName(diagnostic.file)}:${diagnostic.line}:${diagnostic.column}` : diagnostic.file ? `${this.callbacks.displayPath(diagnostic.file)}:${diagnostic.line}:${diagnostic.column}` : "工程级";
+    location.textContent = stub ? `黑盒 ${fileName(diagnostic.file)}:${diagnostic.line}:${diagnostic.column}` : diagnostic.file ? `${fileName(diagnostic.file)}:${diagnostic.line}:${diagnostic.column}` : "工程级";
     const message = document.createElement("span");
     message.className = "problem-message";
     message.textContent = `${diagnostic.ruleId} · ${diagnostic.message}`;
@@ -352,7 +353,7 @@ export class ProblemPanel {
     for (const file of files) {
       const option = document.createElement("option");
       option.value = file;
-      option.textContent = isStubPath(file) ? `黑盒 ${fileName(file)}` : this.callbacks.displayPath(file);
+      option.textContent = isStubPath(file) ? `黑盒 ${fileName(file)}` : fileName(file);
       this.fileFilter.append(option);
     }
     if (this.file !== "all" && !files.includes(this.file)) this.file = "all";

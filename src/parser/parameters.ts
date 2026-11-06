@@ -16,25 +16,30 @@ export function parseOverrides(text: string, vhdl: boolean): { name?: string; ex
 }
 
 /** clean 与 source 等长；结构使用去注释文本，默认值保留字符串字面量。 */
-export function parseParameters(clean: string, source: string, vhdl: boolean, includeLocal=false): ParameterInfo[] {
+export function parseParameters(clean: string, source: string, vhdl: boolean, includeLocal=false, sourceLine?: (offset: number) => number): ParameterInfo[] {
   const result: ParameterInfo[] = [];
   let depth = 0, start = 0;
-  const parts: { text: string; raw: string }[] = [];
+  const parts: { text: string; raw: string; start: number }[] = [];
   for (let i = 0; i <= clean.length; i++) {
     if (/[([{]/.test(clean[i] ?? "")) depth++;
     if (/[)\]}]/.test(clean[i] ?? "")) depth--;
     if (i === clean.length || (clean[i] === (vhdl ? ";" : ",") && depth === 0)) {
-      parts.push({ text: clean.slice(start, i), raw: source.slice(start, i) }); start = i + 1;
+      parts.push({ text: clean.slice(start, i), raw: source.slice(start, i), start }); start = i + 1;
     }
   }
   let inheritedType:string|undefined;
-  for (const { text, raw } of parts) {
+  for (const { text, raw, start } of parts) {
     if (vhdl) {
       const match = /^\s*(?:constant\s+)?([A-Za-z_]\w*(?:\s*,\s*\w+)*)\s*:/i.exec(text);
       if (!match) continue;
       const eq = text.indexOf(":=");
       const typeDeclaration=text.slice(text.indexOf(":")+1,eq>=0?eq:undefined).trim();
-      for (const name of match[1].split(",").map(n => n.trim())) result.push({ name,typeDeclaration, ...(eq >= 0 ? { defaultValue: raw.slice(eq + 2).trim() } : {}) });
+      let nameStart = match[0].indexOf(match[1]);
+      for (const rawName of match[1].split(",")) {
+        const name = rawName.trim();
+        result.push({ name,typeDeclaration,line:sourceLine?.(start+nameStart+rawName.search(/\S|$/)), ...(eq >= 0 ? { defaultValue: raw.slice(eq + 2).trim() } : {}) });
+        nameStart += rawName.length + 1;
+      }
     } else {
       if (!includeLocal&&/\blocalparam\b/.test(text)) continue;
       const eq = text.indexOf("=");
@@ -43,7 +48,7 @@ export function parseParameters(clean: string, source: string, vhdl: boolean, in
       if (name) {
         const declaration=head.slice(0,head.length-name.length).replace(/^\s*(?:parameter|localparam)\b/,"").trim();
         if(declaration||/\b(?:parameter|localparam)\b/.test(head))inheritedType=declaration||undefined;
-        result.push({ name,...(inheritedType?{typeDeclaration:inheritedType}:{}), ...(eq >= 0 ? { defaultValue: raw.slice(eq + 1).trim() } : {}) });
+        result.push({ name,line:sourceLine?.(start+text.lastIndexOf(name,eq>=0?eq:text.length)),...(inheritedType?{typeDeclaration:inheritedType}:{}), ...(eq >= 0 ? { defaultValue: raw.slice(eq + 1).trim() } : {}) });
       }
     }
   }

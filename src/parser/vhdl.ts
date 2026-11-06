@@ -83,22 +83,31 @@ export function stripVhdlComments(src: string, maskStrings = true): string {
   return out.join("");
 }
 
-function parseVhdlPorts(portListSrc: string): PortInfo[] {
+function parseVhdlPorts(portListSrc: string, lineStarts?: number[], baseOffset = 0): PortInfo[] {
   const ports: PortInfo[] = [];
+  let entryStart = 0;
   for (const entry of portListSrc.split(";")) {
     const m = /^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*:\s*(in|out|inout|buffer|linkage)\s+([\s\S]+?)\s*$/i.exec(
       entry,
     );
-    if (!m) continue;
-    const type = m[3].trim();
-    const widthMatch = /\([^)]*\)/.exec(type);
-    for (const rawName of m[1].split(",")) {
-      ports.push({
-        name: rawName.trim(),
-        direction: m[2].toLowerCase(),
-        width: widthMatch ? type : undefined,
-      });
+    if (m) {
+      const type = m[3].trim();
+      const widthMatch = /\([^)]*\)/.exec(type);
+      const namesStart = m[0].indexOf(m[1]);
+      let nameStart = 0;
+      for (const rawName of m[1].split(",")) {
+        const name = rawName.trim();
+        const leading = rawName.search(/\S|$/);
+        ports.push({
+          name,
+          direction: m[2].toLowerCase(),
+          width: widthMatch ? type : undefined,
+          line: lineStarts ? lineAt(lineStarts, baseOffset + entryStart + namesStart + nameStart + leading) : undefined,
+        });
+        nameStart += rawName.length + 1;
+      }
     }
+    entryStart += entry.length + 1;
   }
   return ports;
 }
@@ -172,13 +181,13 @@ export function parseVhdl(src: string, file: string, withPorts = true, withConn 
       const generic = /\bgeneric\s*\(/i.exec(body);
       if (generic) {
         const open = generic.index + generic[0].length - 1, close = skipBalanced(body, open);
-        if (close > 0) parameters = parseParameters(body.slice(open + 1, close - 1), expressions.slice(entRe.lastIndex + open + 1, entRe.lastIndex + close - 1), true);
+        if (close > 0) parameters = parseParameters(body.slice(open + 1, close - 1), expressions.slice(entRe.lastIndex + open + 1, entRe.lastIndex + close - 1), true, false, offset => lineAt(lineStarts, entRe.lastIndex + open + 1 + offset));
       }
       const portKw = /\bport\s*\(/i.exec(body);
       if (portKw) {
         const open = portKw.index + portKw[0].length - 1;
         const close = skipBalanced(body, open);
-        if (close > 0) ports = parseVhdlPorts(body.slice(open + 1, close - 1));
+        if (close > 0) ports = parseVhdlPorts(body.slice(open + 1, close - 1), lineStarts, entRe.lastIndex + open + 1);
       }
     }
 

@@ -4,9 +4,10 @@ export interface PortInfo {
   name: string;
   direction?: string;
   width?: string;
+  line?: number;
 }
 
-export interface ParameterInfo { name: string; defaultValue?: string; typeDeclaration?:string }
+export interface ParameterInfo { name: string; defaultValue?: string; typeDeclaration?:string; line?: number }
 
 export interface PortConnection {
   /** 命名连接的端口名；位置连接无此字段 */

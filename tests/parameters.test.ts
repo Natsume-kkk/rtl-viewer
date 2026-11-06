@@ -3,7 +3,7 @@ import { parseFile, parseFileDetail } from "../src/parser";
 
 it("Verilog parameter 默认表达式按顶层逗号分隔，不把 localparam 当例化参数", () => {
   const mod = parseFile('module child #(parameter W=8, DEPTH=(1 << W), parameter MODE="FAST") (input clk); localparam X=0; endmodule', "child.v")[0];
-  expect(mod.parameters).toEqual([{ name: "W", defaultValue: "8" }, { name: "DEPTH", defaultValue: "(1 << W)" }, { name: "MODE", defaultValue: '"FAST"' }]);
+  expect(mod.parameters).toEqual([{ line: 1, name: "W", defaultValue: "8" }, { line: 1, name: "DEPTH", defaultValue: "(1 << W)" }, { line: 1, name: "MODE", defaultValue: '"FAST"' }]);
 });
 it("连接与参数中的字符串常量不丢失，注释不进入补全默认值", () => {
   const v = parseFileDetail('module t; child u(.MODE("a,b"), .a(x /* comment */)); endmodule', "t.v")[0];
@@ -15,5 +15,5 @@ it("连接与参数中的字符串常量不丢失，注释不进入补全默认�
 });
 it("VHDL generic 提取名字与默认值，保留无默认值的必填项", () => {
   const mod = parseFile('entity child is generic (W, H : integer := 8; MODE : string := "FAST"; REQUIRED : integer); port (clk : in bit); end child;', "child.vhd")[0];
-  expect(mod.parameters).toEqual([{ name: "W", typeDeclaration: "integer", defaultValue: "8" }, { name: "H", typeDeclaration: "integer", defaultValue: "8" }, { name: "MODE", typeDeclaration: "string", defaultValue: '"FAST"' }, { name: "REQUIRED", typeDeclaration: "integer" }]);
+  expect(mod.parameters).toEqual([{ line: 1, name: "W", typeDeclaration: "integer", defaultValue: "8" }, { line: 1, name: "H", typeDeclaration: "integer", defaultValue: "8" }, { line: 1, name: "MODE", typeDeclaration: "string", defaultValue: '"FAST"' }, { line: 1, name: "REQUIRED", typeDeclaration: "integer" }]);
 });

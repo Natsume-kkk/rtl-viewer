@@ -176,6 +176,7 @@ export class StatsPanel {
     tree.className = "stats-topology";
     tree.append(topologyHeader());
     for (const node of view.topology ?? []) tree.append(this.topologyNode(node, 0, facts, issueCounts));
+    tree.append(topologyTotal(view));
     this.table.append(tree);
   }
 
@@ -324,7 +325,12 @@ export class StatsPanel {
       line.append(issues);
       body.append(line);
     }
-    table.append(header, body);
+    const totals = statsTotals(view);
+    const footer = document.createElement("tfoot");
+    const totalRow = document.createElement("tr");
+    totalRow.append(textCell("合计"), textCell(totals.codeLines), textCell(totals.commentRatio), textCell(totals.processes), textCell(totals.instances), textCell(totals.issues));
+    footer.append(totalRow);
+    table.append(header, body, footer);
     this.table.append(table);
   }
 }
@@ -342,10 +348,36 @@ function shortFileName(file: string): string {
   return file.split(/[\\/]/).pop() ?? file;
 }
 
+function statsTotals(view: StatsView) {
+  const commentLines = view.facts.reduce((sum, item) => sum + item.statistics.commentOnlyLines + item.statistics.inlineCommentLines, 0);
+  const commentDenominator = view.facts.reduce((sum, item) => sum + item.statistics.codeLines + item.statistics.commentOnlyLines + item.statistics.inlineCommentLines, 0);
+  return {
+    codeLines: view.facts.reduce((sum, item) => sum + item.statistics.codeLines, 0),
+    commentRatio: `${commentDenominator ? Math.round(commentLines / commentDenominator * 100) : 0}%`,
+    processes: view.facts.reduce((sum, item) => sum + item.processes.length, 0),
+    instances: view.facts.reduce((sum, item) => sum + item.instanceCount, 0),
+    issues: view.diagnostics.length,
+  };
+}
+
+function topologyTotal(view: StatsView): HTMLElement {
+  const totals = statsTotals(view);
+  const total = document.createElement("div");
+  total.className = "stats-topology-row stats-topology-total";
+  total.title = "按当前范围内的 HDL 文件汇总，不因模块重复例化重复计数";
+  const label = document.createElement("span");
+  label.className = "stats-topology-label";
+  label.textContent = "合计";
+  total.append(document.createElement("span"), label, metric(totals.codeLines), metric(totals.commentRatio), metric(totals.processes), metric(totals.instances), metric(totals.issues), document.createElement("span"));
+  return total;
+}
+
 function topologyHeader(): HTMLElement {
   const header = document.createElement("div");
   header.className = "stats-topology-row stats-topology-head";
-  header.append(document.createElement("span"), metric("代码行"), metric("注释"), metric("过程"), metric("例化"), metric("问题"));
+  const label = document.createElement("span");
+  label.textContent = "模块／实例";
+  header.append(document.createElement("span"), label, metric("代码行"), metric("注释"), metric("过程"), metric("例化"), metric("问题"));
   const locate = document.createElement("span");
   locate.textContent = "定位";
   header.append(locate);

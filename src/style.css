@@ -1244,9 +1244,11 @@ body.resizing {
 .stats-warning { color: var(--sem-warning); }
 .stats-info { color: var(--accent); }
 .stats-view-mode { height: 28px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface-editor); color: var(--fg); font: var(--fs-caption) var(--font-ui); }
-.stats-topology-row { display: grid; grid-template-columns: minmax(180px, 1.6fr) 64px 64px 56px 56px 56px 30px; gap: 6px; align-items: center; min-height: 28px; padding: 2px 4px; border-radius: var(--radius-control); }
+.stats-topology-row { display: grid; grid-template-columns: 16px minmax(180px, 1.6fr) 64px 64px 56px 56px 56px 30px; gap: 6px; align-items: center; min-height: 28px; padding: 2px 4px; border-radius: var(--radius-control); }
 .stats-topology-row:hover { background: var(--surface-hover); }
 .stats-topology-head { position: sticky; top: 0; z-index: 1; background: var(--surface-app); color: var(--fg-secondary); font-size: var(--fs-caption); }
+.stats-topology-total { border-top: 1px solid var(--border-strong); font-weight: 600; }
+.stats-table tfoot td { background: var(--surface-app); color: var(--fg); font-weight: 600; }
 .stats-topology-label { min-width: 0; padding-left: calc(var(--stats-depth) * 14px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sem-module); font-family: var(--font-mono); }
 .stats-topology-metric { text-align: right; color: var(--fg-secondary); font-variant-numeric: tabular-nums; }
 .stats-topology-issues { border: 0; background: transparent; color: var(--sem-module); text-align: right; font: var(--fs-body) var(--font-mono); cursor: pointer; }

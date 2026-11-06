@@ -118,26 +118,28 @@ function computeLineStarts(s: string): number[] {
   return starts;
 }
 
-function parsePortList(portListSrc: string): PortInfo[] {
+function parsePortList(portListSrc: string, lineStarts?: number[], baseOffset = 0): PortInfo[] {
   const ports: PortInfo[] = [];
-  const entries: string[] = [];
-  let depth = 0, cur = "";
-  for (const ch of portListSrc) {
+  const entries: { text: string; start: number }[] = [];
+  let depth = 0, cur = "", curStart = 0;
+  for (let index = 0; index < portListSrc.length; index++) {
+    const ch = portListSrc[index];
     if (ch === "(" || ch === "[") depth++;
     if (ch === ")" || ch === "]") depth--;
     if (ch === "," && depth === 0) {
-      entries.push(cur);
+      entries.push({ text: cur, start: curStart });
       cur = "";
+      curStart = index + 1;
     } else {
       cur += ch;
     }
   }
-  if (cur.trim()) entries.push(cur);
+  if (cur.trim()) entries.push({ text: cur, start: curStart });
   // ANSI 端口允许逗号连写省略方向：`input [7:0] a, b`。无方向项继承最近一个
   // 显式方向项的方向与宽度；显式方向项重新开始（`input a, output b` 的 b 不继承宽度）。
   let lastDir: string | undefined;
   let lastWidth: string | undefined;
-  for (const entry of entries) {
+  for (const { text: entry, start } of entries) {
     const dirMatch = /\b(input|output|inout)\b/.exec(entry);
     const widthMatch = /\[[^\]]*\]/.exec(entry);
     const idents = entry.match(/[A-Za-z_]\w*/g) ?? [];
@@ -152,7 +154,7 @@ function parsePortList(portListSrc: string): PortInfo[] {
       direction = lastDir;
       width = width ?? lastWidth;
     }
-    ports.push({ name, direction, width });
+    ports.push({ name, direction, width, line: lineStarts ? lineAt(lineStarts, baseOffset + start + entry.lastIndexOf(name)) : undefined });
   }
   return ports;
 }
@@ -280,7 +282,7 @@ export function parseVerilog(src: string, file: string, withPorts = true, withCo
       i = skipWs(stripped, i + 1);
       if (stripped[i] === "(") {
         const j = skipBalanced(stripped, i);
-        if (withPorts && j > 0) parameters = parseParameters(stripped.slice(i + 1, j - 1), expressions.slice(i + 1, j - 1), false);
+        if (withPorts && j > 0) parameters = parseParameters(stripped.slice(i + 1, j - 1), expressions.slice(i + 1, j - 1), false, false, offset => lineAt(lineStarts, i + 1 + offset));
         i = j < 0 ? i : skipWs(stripped, j);
       }
       i = skipAttrs(stripped, i);
@@ -290,7 +292,7 @@ export function parseVerilog(src: string, file: string, withPorts = true, withCo
     if (stripped[i] === "(") {
       const j = skipBalanced(stripped, i);
       if (j > 0) {
-        if (withPorts) ports = parsePortList(stripped.slice(i + 1, j - 1));
+        if (withPorts) ports = parsePortList(stripped.slice(i + 1, j - 1), lineStarts, i + 1);
         headerEnd = j;
       }
     }

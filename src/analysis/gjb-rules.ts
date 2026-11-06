@@ -317,8 +317,8 @@ function allNames(facts: FileFacts): { name: string; line: number }[] {
   return [
     ...facts.definitions.filter(item => item.kind !== "architecture").map(item => ({ name: item.name, line: item.line })),
     ...facts.declarations.map(item => ({ name: item.name, line: item.line })),
-    ...facts.ports.map(item => ({ name: item.name, line: 1 })),
-    ...facts.parameters.map(item => ({ name: item.name, line: 1 })),
+    ...facts.ports.map(item => ({ name: item.name, line: item.line ?? 1 })),
+    ...facts.parameters.map(item => ({ name: item.name, line: item.line ?? 1 })),
   ];
 }
 

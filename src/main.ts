@@ -288,7 +288,6 @@ const problemPanel = new ProblemPanel(document.getElementById("problem-root")!, 
   onExport: format => void exportSyntaxReport(format),
   onOpen: diagnostic => { bottomPanels.restoreEditor(); void navigateTo(diagnostic.file, diagnostic.line, diagnostic.column); },
   onClose: () => { setProblemsVisible(false); activeGroup().editor.focus(); },
-  displayPath,
 });
 
 function refreshProblemMarkers(): void {

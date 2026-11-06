@@ -212,6 +212,38 @@ end;`;
   expect(unused[0].message).toContain("unused");
 });
 
+it("命名诊断使用端口和参数的真实声明行", () => {
+  const vhdl = `entity design_1_wrapper is
+  generic (WIDTH : integer := 8);
+  port (
+    DDR3_0_addr : out std_logic_vector(13 downto 0);
+    q : out std_logic
+  );
+end;`;
+  const vhdlDiagnostics = runGjb9765Rules(analyzeFileFacts("design_1_wrapper.vhd", vhdl)).filter(item => item.ruleId === "9765-4.5-f");
+  expect(vhdlDiagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ line: 2, message: expect.stringContaining("WIDTH") }),
+    expect.objectContaining({ line: 4, message: expect.stringContaining("DDR3_0_addr") }),
+  ]));
+  expect(vhdlDiagnostics).not.toEqual(expect.arrayContaining([expect.objectContaining({ line: 1, message: expect.stringContaining("DDR3_0_addr") })]));
+
+  const verilog = `module demo #(
+  parameter BAD_ = 8
+) (
+  input VDD,
+  output q
+);
+endmodule`;
+  const facts = analyzeFileFacts("demo.sv", verilog);
+  expect(facts.parameters[0].line).toBe(2);
+  expect(facts.ports[0].line).toBe(4);
+  const verilogDiagnostics = runGjb10157Rules(facts);
+  expect(verilogDiagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ ruleId: "10157-R-2-2", line: 2 }),
+    expect.objectContaining({ ruleId: "10157-R-2-4", line: 4 }),
+  ]));
+});
+
 it("完整标准目录保持 110＋81 条，自动检查不冒充完整合规", () => {
   expect(gjbCoverage(GJB10157_RULES)).toEqual({ automatic: 81, total: 110, manual: 29 });
   expect(gjbCoverage(GJB9765_RULES)).toEqual({ automatic: 56, total: 81, manual: 25 });

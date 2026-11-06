@@ -26,7 +26,7 @@ function builtin(ruleId: string, category: RuleDiagnostic["category"]): RuleDiag
 function setup() {
   const root = document.createElement("section");
   document.body.append(root);
-  const callbacks = { onRun: vi.fn(), onConfigure: vi.fn(), onCancel: vi.fn(), onScopeChange: vi.fn(), onExport: vi.fn(), onOpen: vi.fn(), onClose: vi.fn(), displayPath: (file: string) => file.replace("D:/project/", "") };
+  const callbacks = { onRun: vi.fn(), onConfigure: vi.fn(), onCancel: vi.fn(), onScopeChange: vi.fn(), onExport: vi.fn(), onOpen: vi.fn(), onClose: vi.fn() };
   const panel = new ProblemPanel(root, callbacks);
   return { root, panel, callbacks };
 }
@@ -97,6 +97,11 @@ it("提示按规则折叠，黑盒提示独立折叠且错误仍直接显示", (
   panel.finish(external);
   const infoGroup = root.querySelector<HTMLDetailsElement>(".problem-info-group")!;
   const stubGroup = root.querySelector<HTMLDetailsElement>(".problem-stub-group")!;
+  expect(infoGroup.querySelector("summary")!.textContent).toContain("a.sv");
+  expect(infoGroup.querySelector("summary")!.textContent).not.toContain("D:/project");
+  expect(infoGroup.title).toBe("D:/project/a.sv");
+  expect(root.querySelector(".problem-location")!.textContent).toBe("a.sv:8:3");
+  expect([...root.querySelectorAll('select[aria-label="文件筛选"] option')].map(option => option.textContent)).not.toContain("D:/project/a.sv");
   expect(infoGroup.open).toBe(false);
   infoGroup.querySelector<HTMLButtonElement>(".problem-group-jump")!.click();
   expect(callbacks.onOpen).toHaveBeenCalledWith(expect.objectContaining({ file: "D:/project/a.sv", line: 3, column: 1 }));

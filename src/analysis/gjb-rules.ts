@@ -10,6 +10,8 @@ export function runGjb10157Rules(facts: FileFacts): RuleDiagnostic[] {
   const names = allNames(facts);
   const clockNames = new Set(facts.processes.flatMap(process => process.clocks));
   const resetNames = new Set(facts.processes.flatMap(process => process.resets));
+  const registerDriven = new Set(facts.processes.filter(process => process.sequential).flatMap(process => process.assignments.map(assignment => assignment.target)));
+  const hasIdentifier = (expression: string, name: string) => containsIdentifier(expression, name, false);
   for (const { name, line } of names) {
     if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) emit("R-2-1", line, 1, `名称“${name}”必须以字母开始，且只能包含字母、数字和下划线。`);
     if (KEYWORDS.has(name) || ["sdffile", "edif", "config", "cell", "library", "entity", "architecture"].includes(name.toLowerCase())) emit("R-2-3", line, 1, `名称“${name}”与保留关键字同名。`);
@@ -41,12 +43,8 @@ export function runGjb10157Rules(facts: FileFacts): RuleDiagnostic[] {
   }
   const modules = facts.definitions.filter(item => item.kind === "module");
   if (modules.length > 1) emit("R-2-5", modules[1].line, 1, "同一文件中出现第二个 module，每个文件只允许一个。");
-  if (facts.instanceCount === 0 && facts.processes.length) {
-    emit("A-3-1", modules[0]?.line ?? 1, 1, "顶层模块包含直接逻辑描述，建议仅保留指定单元和子模块例化。");
-    emit("A-3-2", modules[0]?.line ?? 1, 1, "上层模块包含直接逻辑描述，建议仅包含子模块例化。");
-  }
   for (const assignment of facts.processes.flatMap(process => process.assignments)) {
-    if (facts.ports.some(port => port.direction === "out" && port.name === assignment.target && assignment.processIndex >= 0 && !facts.processes[assignment.processIndex].sequential)) {
+    if (facts.ports.some(port => (port.direction === "out" || port.direction === "output") && port.name === assignment.target && assignment.processIndex >= 0 && !facts.processes[assignment.processIndex].sequential)) {
       emit("A-3-3", assignment.line, 1, `输出端口“${assignment.target}”由组合逻辑直接驱动，建议改为寄存器输出。`);
     }
   }
@@ -56,14 +54,14 @@ export function runGjb10157Rules(facts: FileFacts): RuleDiagnostic[] {
     for (const assignment of process.assignments) {
       if (process.combinational && assignment.operator === "<=") emit("R-10-3", assignment.line, 1, `组合逻辑对“${assignment.target}”使用非阻塞赋值。`);
       if (process.sequential && assignment.operator === "=") emit("R-10-4", assignment.line, 1, `时序逻辑对“${assignment.target}”使用阻塞赋值。`);
-      if (process.combinational && containsIdentifier(assignment.expression, assignment.target)) emit("R-13-7", assignment.line, 1, `组合逻辑中“${assignment.target}”的赋值表达式包含自身，形成反馈。`);
+      if (process.combinational && selfFeedback(assignment, false)) emit("R-13-7", assignment.line, 1, `组合逻辑中“${assignment.target}”的赋值表达式包含自身，形成反馈。`);
       const assignmentKey = `${assignment.targetText}|${assignment.conditions.join("|")}`;
       if (seenAssignments.has(assignmentKey)) emit("R-10-5", assignment.line, 1, `同一条件下对“${assignment.target}”重复赋值。`);
       seenAssignments.add(assignmentKey);
     }
     if (process.sequential && !process.hasResetBranch) {
       emit("R-6-2", process.startLine, 1, "时序 always 未识别到规则所定义的复位初始化分支。");
-      if (facts.caseCount) emit("R-14-3", process.startLine, 1, "状态机过程未识别到初始状态复位或初始化。");
+      if (process.caseCount) emit("R-14-3", process.startLine, 1, "状态机过程未识别到初始状态复位或初始化。");
     }
     if (process.hasResetBranch && process.assignments.some(assignment => assignment.conditions.some(condition => /rst|reset/i.test(condition))) && process.assignments.some(assignment => !assignment.conditions.some(condition => /rst|reset/i.test(condition)))) {
       emit("R-6-1", process.startLine, 1, "同一 always 中混用了有复位和无复位的触发器。");
@@ -86,6 +84,7 @@ export function runGjb10157Rules(facts: FileFacts): RuleDiagnostic[] {
   for (const signature of facts.signatures) {
     switch (signature.kind) {
       case "zLiteral":
+        if (isTopLevelTriState(facts, signature.text)) break;
         emit("R-8-2", signature.line, signature.column, "检测到三态字面值 z，内部逻辑禁止使用。");
         if (/[&|^~]/.test(signature.text)) emit("R-8-1", signature.line, signature.column, "三态缓冲器使能端包含组合逻辑输出。");
         break;
@@ -98,7 +97,10 @@ export function runGjb10157Rules(facts: FileFacts): RuleDiagnostic[] {
       case "sensitivityPipe": emit("R-11-5", signature.line, signature.column, "敏感列表使用了 | 或 ||，请改用 or 或逗号。"); break;
       case "emptyDefault": emit("R-14-2", signature.line, signature.column, "default 分支为空，请指定明确的恢复状态。"); break;
       case "absoluteInclude": emit("R-2-7", signature.line, signature.column, "文件引用使用绝对路径，请改用相对路径。"); break;
-      case "forbiddenType": emit("R-2-8", signature.line, signature.column, "检测到规定范围之外的数据类型。"); emit("R-3-2", signature.line, signature.column, "端口使用了非 reg／wire 类型，请核对顶层端口约束。"); break;
+      case "forbiddenType":
+        emit("R-2-8", signature.line, signature.column, "检测到规定范围之外的数据类型。");
+        if (/\b(?:input|output|inout)\b/.test(signature.text)) emit("R-3-2", signature.line, signature.column, "端口使用了非 reg／wire 类型，请核对顶层端口约束。");
+        break;
       case "fullCase": emit("A-16-1", signature.line, signature.column, "检测到 full_case 属性，建议避免使用。"); break;
       case "repeatVariable": emit("A-12-1", signature.line, signature.column, "repeat 表达式使用变量，建议改用常量。"); break;
       case "multiStatement": emit("A-1-6", signature.line, signature.column, "一行包含多个赋值语句，请分行描述。"); break;
@@ -119,7 +121,7 @@ export function runGjb10157Rules(facts: FileFacts): RuleDiagnostic[] {
   for (const line of facts.multiDeclarationLines) emit("A-1-7", line, 1, "一行包含多个声明，请每行只说明一个 I/O 端口或对象。");
   for (const line of facts.lines) if (line.length >= 80) emit("A-1-4", line.line, 80, `本行包含 ${line.length} 个字符，GJB 10157 建议少于 80。`);
   if (facts.statistics.commentRatio < 0.2) emit("A-1-8", 1, 1, `注释比例为 ${Math.round(facts.statistics.commentRatio * 100)}%，低于建议的 20%。`);
-  const fileBase = facts.file.split("/").pop()?.replace(/\.[^.]+$/, "");
+  const fileBase = facts.file.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "");
   if (modules[0] && fileBase && fileBase !== modules[0].name) emit("A-2-1", modules[0].line, 1, `模块名“${modules[0].name}”与文件名“${fileBase}”不一致。`);
   const edges = new Set(facts.signatures.filter(item => item.kind === "posedge" || item.kind === "negedge").map(item => item.kind));
   if (edges.size > 1) {
@@ -127,32 +129,35 @@ export function runGjb10157Rules(facts: FileFacts): RuleDiagnostic[] {
     emit("A-4-1", line, 1, "同一文件同时使用了 posedge 和 negedge，建议避免混用时钟边沿。");
   }
   for (const assignment of [...facts.processes.flatMap(process => process.assignments), ...facts.concurrentAssignments]) {
-    if (clockNames.has(assignment.target) && /^[A-Za-z_]\w*$/.test(assignment.expression.trim())) emit("R-4-1", assignment.line, 1, `时钟“${assignment.target}”直接来自寄存器输出，请避免行波时钟。`);
+    const clockSource = assignment.expression.trim();
+    if (clockNames.has(assignment.target) && /^[A-Za-z_]\w*$/.test(clockSource) && registerDriven.has(clockSource)) {
+      emit("R-4-1", assignment.line, 1, `时钟“${assignment.target}”直接由另一信号驱动，请核对是否形成行波时钟。`);
+    }
     for (const clock of clockNames) {
-      if (clock !== assignment.target && containsIdentifier(assignment.expression, clock)) emit("R-4-2", assignment.line, 1, `时钟“${clock}”参与了非时钟用途的赋值，请核对连接。`);
+      if (clock !== assignment.target && hasIdentifier(assignment.expression, clock)) emit("R-4-2", assignment.line, 1, `时钟“${clock}”参与了非时钟用途的赋值，请核对连接。`);
     }
     if (facts.processes.some(process => process.resets.includes(assignment.target.toLowerCase()))) {
       if (/[&|^~]/.test(assignment.expression)) {
         emit("R-5-3", assignment.line, 1, `复位“${assignment.target}”由组合逻辑产生，存在竞争冒险风险。`);
         if (modules.length > 1) emit("A-5-1", assignment.line, 1, "复位产生电路宜放在独立模块中。");
         emit("A-5-3", assignment.line, 1, "内部生成信号被用作异步复位，建议避免。");
+        emit("A-5-2", assignment.line, 1, `复位“${assignment.target}”的赋值包含逻辑操作，请核对异步复位线路。`);
       }
-      emit("A-5-2", assignment.line, 1, `复位“${assignment.target}”的赋值包含逻辑操作，请核对异步复位线路。`);
     }
     for (const reset of resetNames) {
-      if (containsIdentifier(assignment.expression, reset)) emit("R-5-1", assignment.line, 1, `复位“${reset}”被用于普通数据逻辑，请核对是否误接到非复位端。`);
+      if (hasIdentifier(assignment.expression, reset)) emit("R-5-1", assignment.line, 1, `复位“${reset}”被用于普通数据逻辑，请核对是否误接到非复位端。`);
     }
-    for (const port of facts.ports.filter(port => port.width)) {
-      if (/&&|\|\||!(?!=)/.test(assignment.expression)) emit("A-9-1", assignment.line, 1, `向量端口“${port.name}”参与逻辑运算，建议使用位宽明确的布尔表达式。`);
-      if (assignment.conditions.length) emit("A-11-4", assignment.line, 1, `向量端口“${port.name}”参与条件表达式，建议改用单位宽条件。`);
-    }
+    const logicalVector = facts.ports.find(port => port.width && hasIdentifier(assignment.expression, port.name));
+    if (logicalVector && /&&|\|\||!(?!=)/.test(assignment.expression)) emit("A-9-1", assignment.line, 1, `向量端口“${logicalVector.name}”参与逻辑运算，建议使用位宽明确的布尔表达式。`);
+    const conditionVector = facts.ports.find(port => port.width && assignment.conditions.some(condition => hasIdentifier(condition, port.name)));
+    if (conditionVector) emit("A-11-4", assignment.line, 1, `向量端口“${conditionVector.name}”参与条件表达式，建议改用单位宽条件。`);
     if (facts.processes.some(process => process.clocks.includes(assignment.target)) && /[&|^~]/.test(assignment.expression)) {
       emit("R-4-3", assignment.line, 1, `时钟“${assignment.target}”由组合逻辑产生。`);
       emit("A-4-3", assignment.line, 1, `时钟“${assignment.target}”由组合逻辑产生，建议避免门控时钟。`);
     }
     if (literalWidthMismatch(assignment.expression)) emit("R-9-6", assignment.line, 1, "数值的声明位宽与实际位宽不一致。");
     if (/^\d+$/.test(assignment.expression.trim())) emit("A-9-2", assignment.line, 1, "常量或 parameter 未显式指定进制和位宽。");
-    if (assignment.processIndex === -1 && containsIdentifier(assignment.expression, assignment.target)) {
+    if (assignment.processIndex === -1 && selfFeedback(assignment, false)) {
       emit("R-7-2", assignment.line, 1, `并发赋值中“${assignment.target}”由自身反馈形成锁存结构。`);
       emit("R-7-1", assignment.line, 1, `并发赋值中“${assignment.target}”由自身反馈，可能形成锁存器环路。`);
     }
@@ -166,7 +171,7 @@ export function runGjb9765Rules(facts: FileFacts): RuleDiagnostic[] {
   if (facts.language !== "vhdl") return [];
   const diagnostics: RuleDiagnostic[] = [];
   const emit = emitter(diagnostics, facts, "gjb9765", GJB9765_RULES);
-  if (!facts.ports.length) emit("4.2-a", facts.definitions[0]?.line ?? 1, 1, "模块／单元未识别到输入／输出端口。");
+  if (facts.definitions.some(definition => definition.kind === "entity") && !facts.ports.length) emit("4.2-a", facts.definitions[0]?.line ?? 1, 1, "模块／单元未识别到输入／输出端口。");
   const names = allNames(facts);
   const declarationKinds = new Map<string, string>();
   for (const { name, line } of names) {
@@ -184,7 +189,6 @@ export function runGjb9765Rules(facts: FileFacts): RuleDiagnostic[] {
     if (previous && previous.name !== item.name) emit("4.5-d", item.line, 1, `标识符“${previous.name}”和“${item.name}”仅大小写不同。`);
     else caseNames.set(key, item);
   }
-  if (facts.instanceCount === 0 && facts.processes.length) emit("4.2-d", facts.definitions[0]?.line ?? 1, 1, "顶层模块包含直接逻辑描述，建议仅进行模块例化。");
   const usedNames = usageNames(facts);
   for (const declaration of facts.declarations.filter(item => item.kind === "other")) {
     if (!usedNames.has(declaration.name)) emit("4.4-b", declaration.line, 1, `信号“${declaration.name}”声明后未被使用，可能为多余信号。`);
@@ -196,14 +200,15 @@ export function runGjb9765Rules(facts: FileFacts): RuleDiagnostic[] {
       if (!/^clk/i.test(clock)) emit("4.5-e", process.startLine, 1, `时钟“${clock}”建议与时钟用途相区别的名称（如 clk 前缀）。`);
     }
     if (process.resets.length > 1) emit("4.6-g", process.startLine, 1, "同一信号源驱动多个异步控制端，建议检查复位结构。");
-    if (process.sequential && facts.caseCount && !process.hasResetBranch) emit("4.11-c", process.startLine, 1, "状态机过程未识别到合法初始状态。");
+    if (process.sequential && process.caseCount && !process.hasResetBranch) emit("4.11-c", process.startLine, 1, "状态机过程未识别到合法初始状态。");
     if (process.eventCount > 1) emit("4.4-d", process.startLine, 1, `进程包含 ${process.eventCount} 个事件控制，只允许一个。`);
     if (process.missingElse) emit("4.8-d", process.startLine, 1, "组合逻辑进程中的 if 语句缺少 else 分支。");
     if (new Set(process.clocks).size > 1) emit("4.9-d", process.startLine, 1, `进程使用了 ${new Set(process.clocks).size} 个不同的时钟信号。`);
     reportSensitivity(facts, process, emit, "4.3-a");
   }
-  if (facts.caseCount && facts.processes.length !== 3) emit("4.11-d", facts.processes[0]?.startLine ?? 1, 1, "状态机建议使用三段式描述。");
-  if (facts.caseCount && !facts.signatures.some(signature => signature.kind === "enum")) emit("4.11-e", facts.processes[0]?.startLine ?? 1, 1, "状态机建议使用枚举类型声明状态。");
+  const stateMachine = facts.processes.some(process => process.sequential && process.caseCount);
+  if (stateMachine && facts.processes.length !== 3) emit("4.11-d", facts.processes[0]?.startLine ?? 1, 1, "状态机建议使用三段式描述。");
+  if (stateMachine && !facts.signatures.some(signature => signature.kind === "enum")) emit("4.11-e", facts.processes[0]?.startLine ?? 1, 1, "状态机建议使用枚举类型声明状态。");
   for (const item of facts.cases) {
     if (!item.hasDefault) emit("4.8-c", item.startLine, 1, "case 语句缺少 when others 分支（未完整覆盖时必须添加）。");
     if (item.labels.length > 40) emit("4.11-f", item.startLine, 1, "状态数量或编码方式需要按复杂度、速度和资源综合评估。");
@@ -212,8 +217,8 @@ export function runGjb9765Rules(facts: FileFacts): RuleDiagnostic[] {
   }
   for (const signature of facts.signatures) {
     switch (signature.kind) {
-      case "openMapping": emit("4.1-b", signature.line, signature.column, "端口映射为 open，请核对其中的输入端口不得悬空。"); break;
       case "zLiteral":
+        if (isTopLevelTriState(facts, signature.text)) break;
         emit("4.2-c", signature.line, signature.column, "检测到三态值 Z，请避免在内部逻辑中使用。");
         if (/\b(?:and|or|not|xor|nand|nor)\b/i.test(signature.text)) emit("4.6-i", signature.line, signature.column, "三态使能端包含组合逻辑，建议避免。");
         break;
@@ -236,7 +241,7 @@ export function runGjb9765Rules(facts: FileFacts): RuleDiagnostic[] {
     }
   }
   for (const assignment of [...facts.processes.flatMap(process => process.assignments), ...facts.concurrentAssignments]) {
-    for (const port of facts.ports.filter(port => port.direction === "out")) {
+    for (const port of facts.ports.filter(port => (port.direction === "out" || port.direction === "output"))) {
       if (containsIdentifier(assignment.expression, port.name) || assignment.conditions.some(condition => containsIdentifier(condition, port.name))) {
         emit("4.2-b", assignment.line, 1, `读取输出端口“${port.name}”参与模块内部逻辑，请使用中间信号。`);
       }
@@ -266,17 +271,23 @@ export function runGjb9765Rules(facts: FileFacts): RuleDiagnostic[] {
     if (target !== assignment.target || !/^[A-Za-z_]\w*$/.test(target)) continue;
     const key = target.toLowerCase();
     const first = drivers.get(key);
-    if (first && first.processIndex !== assignment.processIndex && !reported.has(key)) {
+    if (first && (first.processIndex !== assignment.processIndex || first.processIndex === -1) && !reported.has(key)) {
       reported.add(key);
       emit("4.6-f", assignment.line, 1, `信号“${target}”还由第 ${first.line} 行的过程或并发语句驱动。`);
     } else if (!first) drivers.set(key, assignment);
   }
   const useBeforeDriver = new Set<string>();
-  for (const assignment of [...facts.processes.flatMap(process => process.assignments), ...facts.concurrentAssignments]) {
-    for (const read of assignment.reads) {
-      const driver = drivers.get(read.toLowerCase());
-      if (driver && driver.line > assignment.line && useBeforeDriver.add(`${read}|${assignment.line}`)) {
-        emit("4.6-a", assignment.line, 1, `信号“${read}”在第 ${driver.line} 行赋值前被使用。`);
+  for (const process of facts.processes) {
+    const localVariables = new Set(process.localVariables);
+    const localDrivers = new Map<string, AssignmentFacts>();
+    for (const assignment of process.assignments) if (!localDrivers.has(assignment.target.toLowerCase())) localDrivers.set(assignment.target.toLowerCase(), assignment);
+    for (const assignment of process.assignments) {
+      for (const read of assignment.reads) {
+        const name = read.toLowerCase();
+        const driver = localDrivers.get(name);
+        if (localVariables.has(name) && driver && driver.line > assignment.line && useBeforeDriver.add(`${process.startLine}|${name}|${assignment.line}`)) {
+          emit("4.6-a", assignment.line, 1, `局部变量“${read}”在第 ${driver.line} 行赋值前被使用。`);
+        }
       }
     }
   }
@@ -336,16 +347,35 @@ function reportSensitivity(facts: FileFacts, process: ProcessFacts, emit: (id: s
 }
 
 function literalWidthMismatch(expression: string): boolean {
-  for (const match of expression.matchAll(/\b(\d+)'([bBoOdDhH])([0-9a-fA-FxXzZ_]+)/g)) {
+  for (const match of expression.matchAll(/\b(\d+)'\s*[sS]?([bBoOdDhH])([0-9a-fA-FxXzZ_?]+)/g)) {
     const declared = Number(match[1]);
     const digits = match[3].replaceAll("_", "");
     const base = match[2].toLowerCase();
-    const actual = base === "b" ? digits.length : base === "o" ? digits.length * 3 : base === "h" ? digits.length * 4 : Math.max(1, Number.parseInt(digits || "0", 10).toString(2).length);
-    if (declared !== actual) return true;
+    if (declared < 1 || base === "b" && !/^[01xz?]+$/i.test(digits) || base === "o" && !/^[0-7xz?]+$/i.test(digits) || base === "h" && !/^[0-9a-fxz?]+$/i.test(digits) || base === "d" && !/^[0-9xz?]+$/i.test(digits)) return true;
+    if (/[xz?]/i.test(digits)) continue;
+    const value = base === "b" ? BigInt(`0b${digits || "0"}`) : base === "o" ? BigInt(`0o${digits || "0"}`) : base === "h" ? BigInt(`0x${digits || "0"}`) : BigInt(digits || "0");
+    if (declared < value.toString(2).length) return true;
   }
   return false;
 }
 
-function containsIdentifier(expression: string, name: string): boolean {
-  return new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(expression);
+function selfFeedback(assignment: AssignmentFacts, ignoreCase: boolean): boolean {
+  const targetText = assignment.targetText.trim();
+  if (targetText !== assignment.target) {
+    const normalize = (text: string) => {
+      const compact = text.replace(/\s+/g, "");
+      return ignoreCase ? compact.toLowerCase() : compact;
+    };
+    return normalize(assignment.expression).includes(normalize(targetText));
+  }
+  return containsIdentifier(assignment.expression, assignment.target, ignoreCase);
+}
+
+function isTopLevelTriState(facts: FileFacts, text: string): boolean {
+  const target = (/\bassign\s+([A-Za-z_]\w*)\s*=/.exec(text) ?? /^\s*([A-Za-z_]\w*)\s*<=/.exec(text))?.[1];
+  return !!target && facts.ports.some(port => port.direction === "inout" && port.name === target);
+}
+
+function containsIdentifier(expression: string, name: string, ignoreCase = true): boolean {
+  return new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, ignoreCase ? "i" : "").test(expression);
 }

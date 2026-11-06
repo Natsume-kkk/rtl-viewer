@@ -26,28 +26,36 @@ function builtin(ruleId: string, category: RuleDiagnostic["category"]): RuleDiag
 function setup() {
   const root = document.createElement("section");
   document.body.append(root);
-  const callbacks = { onRun: vi.fn(), onConfigure: vi.fn(), onCancel: vi.fn(), onScopeChange: vi.fn(), onExport: vi.fn(), onOpen: vi.fn(), onClose: vi.fn() };
+  const callbacks = { onConfigure: vi.fn(), onCancel: vi.fn(), onScopeChange: vi.fn(), onExport: vi.fn(), onOpen: vi.fn(), onClose: vi.fn() };
   const panel = new ProblemPanel(root, callbacks);
   return { root, panel, callbacks };
 }
 
-it("运行、取消、定位和过期状态共用同一份诊断结果", () => {
+it("后台进度、取消、定位和过期状态共用同一份诊断结果", () => {
   const { root, panel, callbacks } = setup();
-  const run = [...root.querySelectorAll("button")].find(button => button.textContent === "检查")!;
-  run.click();
-  expect(callbacks.onRun).toHaveBeenCalledOnce();
+  expect([...root.querySelectorAll("button")].some(button => button.textContent === "检查")).toBe(false);
+  const progress = root.querySelector<HTMLProgressElement>(".problem-progress")!;
+  const cancel = [...root.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "取消")!;
+  expect(progress.hidden).toBe(true);
+  expect(cancel.hidden).toBe(true);
   panel.start();
-  expect(run.disabled).toBe(true);
+  expect(progress.hidden).toBe(false);
+  expect(cancel.hidden).toBe(false);
+  expect(root.querySelector(".problem-summary")!.textContent).toContain("后台检查准备中");
+  panel.update({ stage: "ghdl", file: "D:/project/b.sv", completed: 1, total: 2 });
+  expect(progress.max).toBe(2);
+  expect(progress.value).toBe(1);
+  expect(root.querySelector(".problem-summary")!.textContent).toContain("GHDL 1/2");
   panel.finish(result());
-  expect(run.disabled).toBe(false);
+  expect(progress.hidden).toBe(true);
+  expect(cancel.hidden).toBe(true);
   expect(root.querySelectorAll(".problem-row")).toHaveLength(2);
   expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 2/2 条");
   (root.querySelector(".problem-row") as HTMLButtonElement).click();
   expect(callbacks.onOpen).toHaveBeenCalledWith(expect.objectContaining({ file: "D:/project/a.sv", line: 8 }));
   panel.markStale();
-  expect(root.querySelector(".problem-summary")!.textContent).toContain("上次快照");
+  expect(root.querySelector(".problem-summary")!.textContent).toContain("等待自动复查");
   panel.start();
-  const cancel = [...root.querySelectorAll("button")].find(button => button.textContent === "取消")!;
   cancel.click();
   expect(cancel.disabled).toBe(true);
   panel.finish({ ...result(), cancelled: true });
@@ -55,7 +63,7 @@ it("运行、取消、定位和过期状态共用同一份诊断结果", () => {
   panel.start();
   panel.fail(new Error("backend unavailable"));
   expect(root.querySelector(".problem-summary")!.textContent).toContain("backend unavailable");
-  expect(run.disabled).toBe(false);
+  expect(progress.hidden).toBe(true);
 });
 
 it("多选、文件和文本筛选只改变显示，清除后恢复全部诊断", () => {

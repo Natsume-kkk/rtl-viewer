@@ -4,6 +4,8 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -13,6 +15,8 @@ use tauri::{AppHandle, Manager, State};
 const MAX_DIAGNOSTICS: usize = 5000;
 const VERILATOR_TIMEOUT: Duration = Duration::from_secs(120);
 const GHDL_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -544,6 +548,8 @@ fn read_stream(mut stream: impl Read) -> String {
 }
 
 fn configure_tools(command: &mut Command, tools: &Path) {
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
     let verilator_bin = tools.join("verilator/bin");
     let ghdl_bin = tools.join("ghdl/bin");
     let path = std::env::var_os("PATH").unwrap_or_default();

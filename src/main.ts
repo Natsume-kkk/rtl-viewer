@@ -140,10 +140,11 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   statsBtn.id = "stats-action";
   statsBtn.title = "工程代码、结构与检查统计";
   statsBtn.setAttribute("aria-expanded", "false");
-  const checkBtn = action("检查", "check", () => void runProjectSyntaxCheck());
-  checkBtn.id = "syntax-check-action";
-  checkBtn.title = "使用 Verilator／GHDL 检查当前工程";
-  end.append(searchBtn, splitBtn, flowBtn, statsBtn, checkBtn);
+  const problemBtn = action("问题", "check", () => setProblemsVisible(document.getElementById("problem-root")!.hidden));
+  problemBtn.id = "problems-action";
+  problemBtn.title = "查看自动检查问题与后台进度";
+  problemBtn.setAttribute("aria-expanded", "false");
+  end.append(searchBtn, splitBtn, flowBtn, statsBtn, problemBtn);
   bar.append(openWrap, newBtn, saveBtn, editBtn, end);
   const progress = document.createElement("div");
   progress.id = "progress";
@@ -204,6 +205,7 @@ const tree = new HierarchyTree(treeRootEl, {
     factsDone = factsTotal = 0;
     refreshFactsViews();
     void factsScheduler.start();
+    scheduleProjectSyntaxCheck();
   },
   onOpenFile: (path) => void navigateTo(path),
   onFindInstances: (name) => {
@@ -280,8 +282,8 @@ let syntaxSerial = 0;
 let runningSyntaxRequest = 0;
 let lastSyntaxResult: SyntaxCheckResult | undefined;
 let syntaxOptions = { ...emptySyntaxCheckOptions };
+let syntaxRefreshTimer: number | undefined;
 const problemPanel = new ProblemPanel(document.getElementById("problem-root")!, {
-  onRun: () => void runProjectSyntaxCheck(),
   onConfigure: () => void configureSyntaxCheck(),
   onCancel: () => { if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest); },
   onScopeChange: setAnalysisScope,
@@ -316,6 +318,7 @@ async function configureSyntaxCheck(): Promise<void> {
   saveSyntaxOptions(state.folder, next);
   problemPanel.markStale();
   refreshFactsViews();
+  scheduleProjectSyntaxCheck();
 }
 
 function configurationPath(file: string | null): string | undefined {
@@ -327,15 +330,24 @@ function configurationPath(file: string | null): string | undefined {
 
 let syntaxChangedWhileRunning = false;
 
+function scheduleProjectSyntaxCheck(delay = 0): void {
+  window.clearTimeout(syntaxRefreshTimer);
+  if (!state.folder || !projectReady) return;
+  syntaxRefreshTimer = window.setTimeout(() => {
+    syntaxRefreshTimer = undefined;
+    void runProjectSyntaxCheck();
+  }, delay);
+}
+
 async function runProjectSyntaxCheck(): Promise<boolean> {
+  window.clearTimeout(syntaxRefreshTimer);
+  syntaxRefreshTimer = undefined;
   const folder = state.folder;
-  if (!folder || !projectReady) {
-    statusbar.hint(projectReady ? "请先打开工程" : "工程仍在载入，请稍后运行语法检查");
-    return false;
-  }
+  if (!folder || !projectReady) return false;
   const optionErrors = validateSyntaxOptions(syntaxOptions);
   if (optionErrors.length) {
-    await appAlert(`语法检查配置无效：\n\n${optionErrors.join("\n")}`);
+    problemPanel.fail(`检查配置无效：${optionErrors.join("；")}`);
+    refreshFactsViews();
     return false;
   }
   const snapshots = new Map<string, { file: string; content: string; encoding: string }>();
@@ -357,7 +369,6 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
   runningSyntaxRequest = request;
   syntaxChangedWhileRunning = false;
   problemPanel.start();
-  setProblemsVisible(true);
   refreshFactsViews();
   try {
     const scopedIps = analysisScope === "project" ? state.ips : state.ips.filter(ip => activeTopModules.has(ip.name.toLowerCase()));
@@ -401,6 +412,8 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
 }
 
 function cancelProjectSyntaxCheck(): void {
+  window.clearTimeout(syntaxRefreshTimer);
+  syntaxRefreshTimer = undefined;
   syntaxSerial++;
   if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest);
   runningSyntaxRequest = 0;
@@ -460,6 +473,7 @@ const bottomPanels = new BottomPanels(document.getElementById("bottom-panels")!,
   document.getElementById("search-action")!.setAttribute("aria-expanded", String(searchVisible));
   document.getElementById("flow-action")!.setAttribute("aria-expanded", String(bottomPanels.isVisible("flow")));
   document.getElementById("stats-action")!.setAttribute("aria-expanded", String(bottomPanels.isVisible("stats")));
+  document.getElementById("problems-action")!.setAttribute("aria-expanded", String(bottomPanels.isVisible("problems")));
 });
 
 function setSearchVisible(visible: boolean, focus = true): void {
@@ -705,7 +719,10 @@ const workspace = createEditorWorkspace([editor, editor2], {
     if (state.contents.get(path)?.content !== content) markResultsStale();
     state.contents.set(path, { content, encoding, mtime });
     updateStructure(path, content);
-    if (inAnalysisScope(path)) void factsScheduler.refresh(path, content);
+    if (inAnalysisScope(path)) {
+      void factsScheduler.refresh(path, content);
+      scheduleProjectSyntaxCheck(2000);
+    }
   },
   onActiveChange: group => {
     bottomPanels.restoreEditor();
@@ -716,7 +733,7 @@ const workspace = createEditorWorkspace([editor, editor2], {
     refreshOutline();
     refreshProblemMarkers();
   },
-  onContentChange: active => { markResultsStale(); if (active) { refreshOutline(); scheduleFactsRefresh(); } },
+  onContentChange: active => { markResultsStale(); if (active) { refreshOutline(); scheduleFactsRefresh(); scheduleProjectSyntaxCheck(2000); } },
   onCursorChange: line => {
     statusbar.setBreadcrumb(breadcrumbAt(currentOutline, line));
     outline.highlightLine(line);
@@ -760,6 +777,7 @@ function setAnalysisScope(scope: "top" | "project"): void {
   factsDone = factsTotal = 0;
   refreshFactsViews();
   void factsScheduler.start();
+  scheduleProjectSyntaxCheck();
 }
 
 function inAnalysisScope(file: string): boolean {
@@ -933,6 +951,7 @@ async function openFolder(folder: string): Promise<void> {
   try { if (!(await workspace.closeAll())) return; }
   finally { preparingProject = false; }
   watcher.stop();
+  window.clearTimeout(syntaxRefreshTimer);
   cancelProjectSyntaxCheck();
   window.clearTimeout(factsRefreshTimer);
   factsScheduler.clear();
@@ -1013,6 +1032,7 @@ const projectScanner = createProjectScanner({
     rebuildIndex(); renderTree(); watcher.start();
     setProgress(issues.length ? `部分载入：${issues.length} 项失败` : "");
     void factsScheduler.start();
+    scheduleProjectSyntaxCheck();
     if (issues.length) {
       const details = issues.slice(0, 20).map(issue => `${issue.file}\n${issue.reason}`).join("\n\n");
       void appAlert(`工程已部分载入，${issues.length} 个文件或目录未能读取。已载入的文件仍可使用。\n\n${details}${issues.length > 20 ? `\n\n另有 ${issues.length - 20} 项失败。` : ""}`);

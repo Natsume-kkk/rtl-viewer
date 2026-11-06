@@ -71,7 +71,7 @@ begin
 end;${" ".repeat(80)}`;
   const ids = new Set(runGjb9765Rules(analyzeFileFacts("bad_name.vhd", source)).map(item => item.ruleId));
   for (const id of [
-    "9765-4.1-a", "9765-4.1-b", "9765-4.2-b", "9765-4.2-c", "9765-4.3-a", "9765-4.4-c", "9765-4.4-d",
+    "9765-4.1-a", "9765-4.2-b", "9765-4.2-c", "9765-4.3-a", "9765-4.4-c", "9765-4.4-d",
     "9765-4.5-c", "9765-4.5-d", "9765-4.6-f", "9765-4.8-c", "9765-4.8-d", "9765-4.9-c", "9765-4.9-d",
     "9765-4.10-e", "9765-4.11-a", "9765-4.12-c", "9765-4.13-a", "9765-4.14-b", "9765-4.14-d",
   ]) expect(ids, id).toContain(id);
@@ -86,7 +86,7 @@ wire unused;
 wire clk;
 wire clk2;
 wire rst;
-logic b;
+input logic b;
 assign clk = a & b;
 assign a = 4'h1f;
 assign a = 2;
@@ -245,6 +245,6 @@ endmodule`;
 });
 
 it("完整标准目录保持 110＋81 条，自动检查不冒充完整合规", () => {
-  expect(gjbCoverage(GJB10157_RULES)).toEqual({ automatic: 81, total: 110, manual: 29 });
-  expect(gjbCoverage(GJB9765_RULES)).toEqual({ automatic: 56, total: 81, manual: 25 });
+  expect(gjbCoverage(GJB10157_RULES)).toEqual({ automatic: 79, total: 110, manual: 31 });
+  expect(gjbCoverage(GJB9765_RULES)).toEqual({ automatic: 54, total: 81, manual: 27 });
 });

@@ -174,9 +174,8 @@ export class StatsPanel {
     this.table.textContent = "";
     const tree = document.createElement("div");
     tree.className = "stats-topology";
-    tree.append(topologyHeader());
+    tree.append(topologyHeader(), topologyTotal(view));
     for (const node of view.topology ?? []) tree.append(this.topologyNode(node, 0, facts, issueCounts));
-    tree.append(topologyTotal(view));
     this.table.append(tree);
   }
 
@@ -294,6 +293,11 @@ export class StatsPanel {
     }
     header.append(headerRow);
     const body = document.createElement("tbody");
+    const totals = statsTotals(view);
+    const totalRow = document.createElement("tr");
+    totalRow.className = "stats-total-row";
+    totalRow.append(textCell("合计"), textCell(totals.codeLines), textCell(totals.commentRatio), textCell(totals.processes), textCell(totals.instances), textCell(totals.issues));
+    body.append(totalRow);
     for (const row of rows) {
       const line = document.createElement("tr");
       const file = document.createElement("td");
@@ -325,12 +329,7 @@ export class StatsPanel {
       line.append(issues);
       body.append(line);
     }
-    const totals = statsTotals(view);
-    const footer = document.createElement("tfoot");
-    const totalRow = document.createElement("tr");
-    totalRow.append(textCell("合计"), textCell(totals.codeLines), textCell(totals.commentRatio), textCell(totals.processes), textCell(totals.instances), textCell(totals.issues));
-    footer.append(totalRow);
-    table.append(header, body, footer);
+    table.append(header, body);
     this.table.append(table);
   }
 }

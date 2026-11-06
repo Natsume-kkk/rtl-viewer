@@ -74,7 +74,7 @@ it("模块内停止原因直接可见，不能只留在 title",()=>{
   expect(body.querySelector('[data-node="q"]')?.textContent).not.toContain("分析边界");
 });
 it("未知方向不提供穿透入口，两个视图都显示原因",async()=>{
-  const source="module top(input a); wire q=a; child u(.i(q)); endmodule module child(i); input i; endmodule";
+  const source="module top(input a); wire q=a; child u(.i(q)); endmodule module child(i); endmodule";
   const body=logic(source);
   const card=body.querySelector('[data-node="child:u:i"]');
   expect(card?.querySelector(".flow-reason")?.textContent).toContain("端口方向未知");expect(card?.querySelector(".logic-enter")).toBeNull();

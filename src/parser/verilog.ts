@@ -159,6 +159,21 @@ function parsePortList(portListSrc: string, lineStarts?: number[], baseOffset = 
   return ports;
 }
 
+function completeNonAnsiPorts(ports: PortInfo[], body: string, bodyStart: number, lineStarts: number[]): void {
+  for (const match of body.matchAll(/\b(input|output|inout)\b([^;]+);/g)) {
+    const width = /\[[^\]]*\]/.exec(match[2])?.[0];
+    for (const segment of match[2].split(",")) {
+      const name = (segment.match(/[A-Za-z_]\w*/g) ?? []).filter(name => !KEYWORDS.has(name)).at(-1);
+      if (!name) continue;
+      const port = ports.find(item => item.name === name);
+      if (!port) continue;
+      port.direction = match[1];
+      if (width) port.width = width;
+      port.line = lineAt(lineStarts, bodyStart + match.index! + match[0].lastIndexOf(name));
+    }
+  }
+}
+
 /** 解析例化端口连接表：`.name(expr)` 命名连接或位置连接，按顶层逗号切分。 */
 function parseConnections(
   src: string,
@@ -298,6 +313,7 @@ export function parseVerilog(src: string, file: string, withPorts = true, withCo
     }
     const semi = stripped.indexOf(";", headerEnd);
     const bodyStart = semi > 0 && semi < bodyEnd ? semi + 1 : headerEnd;
+    if (withPorts) completeNonAnsiPorts(ports, stripped.slice(bodyStart, bodyEnd), bodyStart, lineStarts);
 
     modules.push({
       name,

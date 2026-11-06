@@ -3,7 +3,6 @@ import type { RuleDiagnostic } from "../analysis/general-rules";
 import { setIcon, type IconName } from "./icons";
 
 interface ProblemPanelCallbacks {
-  onRun(): void;
   onConfigure(): void;
   onCancel(): void;
   onScopeChange(scope: "top" | "project"): void;
@@ -45,7 +44,7 @@ export class ProblemPanel {
   private readonly list: HTMLElement;
   private readonly fileFilter: HTMLSelectElement;
   private readonly queryFilter: HTMLInputElement;
-  private readonly runButton: HTMLButtonElement;
+  private readonly progressBar: HTMLProgressElement;
   private readonly cancelButton: HTMLButtonElement;
   private readonly exportButtons: HTMLButtonElement[] = [];
   private readonly scopeFilter: HTMLSelectElement;
@@ -55,8 +54,6 @@ export class ProblemPanel {
     root.className = "problem-panel";
     const bar = document.createElement("div");
     bar.className = "problem-bar";
-    this.runButton = button("检查", () => callbacks.onRun(), "check");
-    this.runButton.className = "btn btn-primary";
     this.cancelButton = button("取消", () => {
       this.cancelling = true;
       this.cancelButton.disabled = true;
@@ -95,7 +92,7 @@ export class ProblemPanel {
     close.title = "收起问题";
     close.setAttribute("aria-label", "收起问题");
     setIcon(close, "close");
-    bar.append(this.runButton, this.cancelButton, this.scopeFilter, filterToggle, this.configureButton, ...this.exportButtons, close);
+    bar.append(this.cancelButton, this.scopeFilter, filterToggle, this.configureButton, ...this.exportButtons, close);
 
     filters.append(
       filterGroup("程度", SEVERITIES, SEVERITY_LABELS, this.severities, () => this.renderResults()),
@@ -131,7 +128,11 @@ export class ProblemPanel {
     this.backends.className = "problem-backends";
     this.list = document.createElement("div");
     this.list.className = "problem-list";
-    root.append(bar, filters, this.summary, this.backends, this.list);
+    this.progressBar = document.createElement("progress");
+    this.progressBar.className = "problem-progress";
+    this.progressBar.hidden = true;
+    this.progressBar.setAttribute("aria-label", "后台检查进度");
+    root.append(bar, this.progressBar, filters, this.summary, this.backends, this.list);
     if (window.matchMedia?.("(max-width: 1100px)").matches) setFiltersVisible(false);
     this.renderResults();
   }
@@ -234,17 +235,24 @@ export class ProblemPanel {
   }
 
   private renderSummary(): void {
-    this.runButton.disabled = this.running;
+    this.cancelButton.hidden = !this.running;
     this.cancelButton.disabled = !this.running || this.cancelling;
     this.cancelButton.textContent = this.cancelling ? "正在取消…" : "取消";
+    this.progressBar.hidden = !this.running;
     this.exportButtons.forEach(button => { button.disabled = !this.hasResults || this.running; });
     if (this.running) {
       const current = this.progress;
       const stage = current?.stage === "ghdl" ? "GHDL" : "Verilator";
       const location = current?.file ? ` · ${fileName(current.file)}` : "";
+      if (current?.total) {
+        this.progressBar.max = current.total;
+        this.progressBar.value = current.completed;
+      } else {
+        this.progressBar.removeAttribute("value");
+      }
       this.summary.textContent = current
-        ? `${stage} 检查中 ${current.completed}/${current.total}${location}${this.result ? " · 下方为上次结果" : ""}`
-        : `准备检查工具与工程文件…${this.result ? " · 下方为上次结果" : ""}`;
+        ? `后台检查 · ${stage} ${current.completed}/${current.total}${location}${this.result ? " · 下方为上次结果" : ""}`
+        : `后台检查准备中…${this.result ? " · 下方为上次结果" : ""}`;
       return;
     }
     if (this.error) {
@@ -252,14 +260,14 @@ export class ProblemPanel {
       return;
     }
     if (!this.hasResults) {
-      this.summary.textContent = "点击“检查”运行全部自动检查，使用当前编辑缓冲区的隔离快照。";
+      this.summary.textContent = "工程载入后自动执行全部检查；编辑停顿后自动复查。";
       return;
     }
     const all = this.allDiagnostics();
     const counts = severityCounts(all);
     const filtered = this.filteredDiagnostics();
     const status = this.result ? this.result.cancelled ? "已取消，结果可能不完整" : `已检查 ${this.result.checkedFiles} 个文件` : "内置分析";
-    const stale = this.stale ? " · 外部结果为上次快照，待重新检查" : "";
+    const stale = this.stale ? " · 外部结果为上次快照，等待自动复查" : "";
     this.summary.textContent = `${status} · ${counts.error} 错误 · ${counts.warning} 警告 · ${counts.info} 提示 · 显示 ${filtered.length}/${all.length} 条${stale}`;
   }
 

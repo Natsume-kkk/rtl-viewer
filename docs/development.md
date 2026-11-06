@@ -87,9 +87,9 @@ npm run dev
 
 `tools/windows-x64/` 保存随应用发布的 Verilator 5.050、GHDL 6.0.0 及其运行库，`tools/licenses/` 保存对应许可。开发构建直接调用该目录；`scripts/Build-Release.ps1` 通过 `bundled-tools` 特性让 `src-tauri/build.rs` 将运行文件嵌入单 exe，首次检查时按内容修订号释放到应用数据目录，不写入用户源码工程。更新工具后需通过正式入口重建并核对版本，不能用裸 `cargo build` 验收发布行为。
 
-`src-tauri/src/syntax.rs` 管理检查请求、进程、超时与取消。Verilator 使用响应文件传入当前范围内 Verilog／SystemVerilog 编译单元、配置的 include 与宏，以及按 IP／VHDL 端口和参数接口生成的临时黑盒，默认范围为当前顶层可达模块，可切换全部工程；顶层按配置覆盖、手动选择、`autoTop` 顺序确定。`src/app/syntax-stubs.ts` 负责黑盒转换，保留输入输出方向和常见位宽，不编译 IP 内部实现。GHDL 根据 library 与 package 定义及引用进行稳定拓扑排序，逐文件分析，并将所有相关 library 工作目录加入 `-P` 搜索路径。`src/app/syntax-options.ts` 按工程保存宏、include、library 映射和附加参数，路径在传参前解析，参数不经过 shell。Verilator 超时为 120 秒，GHDL 单文件超时为 60 秒，切换工程或退出会取消任务。
+`src-tauri/src/syntax.rs` 管理检查请求、进程、超时与取消。Verilator 使用响应文件传入当前范围内 Verilog／SystemVerilog 编译单元、配置的 include 与宏，以及按 IP／VHDL 端口和参数接口生成的临时黑盒，默认范围为当前顶层可达模块，可切换全部工程；顶层按配置覆盖、手动选择、`autoTop` 顺序确定。`src/app/syntax-stubs.ts` 负责黑盒转换，保留输入输出方向和常见位宽，不编译 IP 内部实现。GHDL 根据 library 与 package 定义及引用进行稳定拓扑排序，逐文件分析，并将所有相关 library 工作目录加入 `-P` 搜索路径。`src/app/syntax-options.ts` 按工程保存宏、include、library 映射和附加参数，路径在传参前解析，参数不经过 shell。Verilator 超时为 120 秒，GHDL 单文件超时为 60 秒，切换工程或退出会取消任务。Windows 下版本查询和实际检查统一使用 `CREATE_NO_WINDOW`，不能只隐藏主检查进程而遗漏逐文件 GHDL 或版本查询。
 
-外部检查通过隔离工作区读取工程内已打开文件的未保存快照，不写回原工程；未打开文件仍读取磁盘。前端统一诊断位于 `src/ipc.ts`，`src/ui/problems.ts` 负责显示筛选、分组折叠与运行状态，`src/app/problem-markers.ts` 管理 Monaco 标记，`src/app/syntax-report.ts` 生成包含内置与外部诊断的 HTML／CSV。筛选只改变显示，报告始终包含当前顶层或全部工程范围内的全部诊断、实际配置、统计和后端状态。首次运行也会跟踪编辑版本，源码或配置变化使外部旧结果失效；面板最多显示 500 条过滤结果，单文件 Monaco 标记最多 500 条，后端最多保留 5000 条诊断。
+工程载入、顶层／范围切换及配置保存会自动调度外部检查，连续编辑在停顿 2 秒后复查；启动检查不展开问题面板，顶部“问题”只控制面板显示。外部检查通过隔离工作区读取工程内已打开文件的未保存快照，不写回原工程；未打开文件仍读取磁盘。前端统一诊断位于 `src/ipc.ts`，`src/ui/problems.ts` 负责显示筛选、分组折叠、进度条与取消状态，`src/app/problem-markers.ts` 管理 Monaco 标记，`src/app/syntax-report.ts` 生成包含内置与外部诊断的 HTML／CSV。筛选只改变显示，报告始终包含当前顶层或全部工程范围内的全部诊断、实际配置、统计和后端状态。运行期间继续编辑会将旧结果标为等待自动复查；面板最多显示 500 条过滤结果，单文件 Monaco 标记最多 500 条，后端最多保留 5000 条诊断。
 
 常规 Rust 测试不启动外部工具。以下命令分别显式运行开发目录和内嵌资源的真实后端检查，均覆盖 Verilog include、VHDL 标准库及诊断返回：
 
@@ -102,23 +102,23 @@ pwsh -NoProfile -Command "& './scripts/Invoke-Cargo.ps1' -CargoArgs 'test','--lo
 
 ## 检查事实与后台调度
 
-`src/analysis/facts.ts` 统一生成轻量文件事实：物理行、代码行、纯注释行、行内注释行、空白行、注释比例、行宽／Tab／行尾空白、定义、过程、敏感列表、赋值、分支、例化端口连接和检查边界。解析器为 Verilog／VHDL 端口和参数保留真实声明行，命名规则不得再回退写死为文件第 1 行。`instanceReads` 复用 `parseFileDetail` 的端口连接，冗余声明判断同时纳入连接、敏感列表和条件使用，避免 Wrapper 误报。过程范围与赋值分析复用 `src/model/signal-flow.ts` 和 `src/parser/procedural.ts`，不再由每条规则独立猜测。注释比例按“纯注释行＋行内注释行”除以“代码行＋纯注释行＋行内注释行”计算，混合行同时计入代码和注释；工程总比例分别累加分子与分母，不平均各文件百分比。
+`src/analysis/facts.ts` 统一生成轻量文件事实：物理行、代码行、纯注释行、行内注释行、空白行、注释比例、行宽／Tab／行尾空白、定义、过程、敏感列表、赋值、分支、例化端口连接和检查边界。解析器为 Verilog／VHDL 端口和参数保留真实声明行，非 ANSI 端口还会从模块体声明补齐方向和位宽，命名规则不得再回退写死为文件第 1 行。`case` 事实支持单行写法、常量参数、VHDL `=>` 标签及枚举值；连续赋值保留 RHS 引用，SystemVerilog `logic` 纳入声明。复位只从条件与敏感列表中的完整标识符识别，不按赋值文本中的名称子串猜测。`instanceReads` 复用 `parseFileDetail` 的端口连接，冗余声明判断同时纳入连接、敏感列表和条件使用，避免 Wrapper 误报。过程范围与赋值分析复用 `src/model/signal-flow.ts` 和 `src/parser/procedural.ts`，不再由每条规则独立猜测。注释比例按“纯注释行＋行内注释行”除以“代码行＋纯注释行＋行内注释行”计算，混合行同时计入代码和注释；工程总比例分别累加分子与分母，不平均各文件百分比。
 
 `src/app/facts-scheduler.ts` 在工程结构载入后按文件调度，当前文件优先。`src/analysis/facts-worker.ts` 在独立 Worker 中计算内容摘要、文件事实、通用／GJB 规则和去重，前台只接收结果并渲染；编辑刷新、取消、切换工程或退出会终止旧 Worker，避免旧任务继续占用资源。统计、诊断和外部检查默认限定当前顶层可达模块，切换顶层或全部工程会同步更新队列和旧结果状态。结果不保存整份源码或语法树，只保留结构事实、诊断与内容摘要。相关回归为 `tests/facts.test.ts` 与 `tests/facts-scheduler.test.ts`，构建需确认独立 `facts-worker` 产物。
 
 ## 通用规则与统计
 
-`src/analysis/general-rules.ts` 消费共享事实，输出统一 `RuleDiagnostic`。当前实现 Verilog／VHDL 各 7 条风格规则和 9 条可综合性规则，全部随事实队列执行。多驱动只比较完整简单标识符，位选和局部对象不按模块级完整信号合并；条件覆盖只报告“存在未覆盖的条件赋值路径且未检测到无条件默认赋值”，复位只识别定义的条件分支，不把名称搜索当作完整语义证明。
+`src/analysis/general-rules.ts` 消费共享事实，输出统一 `RuleDiagnostic`。当前实现 Verilog／VHDL 各 7 条风格规则和 9 条可综合性规则，全部随事实队列执行。多驱动比较过程与连续赋值中的完整简单标识符，位选和局部对象不按模块级完整信号合并；条件覆盖只报告“存在未覆盖的条件赋值路径且未检测到无条件默认赋值”，复位只识别定义的条件分支，不把名称搜索当作完整语义证明。
 
-`src/ui/stats.ts` 复用事实及内置／外部诊断生成工程汇总、结构统计与文件明细，支持当前顶层／全部工程范围、模块拓扑展开、简短文件列表排序、定义行定位和按严重程度或文件进入显示筛选；拓扑保留展开状态，长路径仅在悬停提示中显示，未分析文件明确标记待分析。`src/ui/problems.ts` 合并诊断并提供程度、来源、文件和文本显示筛选，提示与 Stub 分组折叠，筛选不改变检查集合。对应回归为 `tests/general-rules.test.ts`、`tests/stats.test.ts`、`tests/problems.test.ts` 和 `tests/bottom-panels.test.ts`。
+`src/ui/stats.ts` 复用事实及内置／外部诊断生成工程汇总、结构统计与文件明细，合计固定在表头下、明细前，支持当前顶层／全部工程范围、模块拓扑展开、简短文件列表排序、定义行定位和按严重程度或文件进入显示筛选；拓扑保留展开状态，长路径仅在悬停提示中显示，未分析文件明确标记待分析。`src/ui/problems.ts` 合并诊断并提供程度、来源、文件和文本显示筛选，提示与 Stub 分组折叠，筛选不改变检查集合。对应回归为 `tests/general-rules.test.ts`、`tests/stats.test.ts`、`tests/problems.test.ts` 和 `tests/bottom-panels.test.ts`。
 
-`src/analysis/gjb-catalog.ts` 收录 GJB 10157 全部 110 条与 GJB 9765 全部 81 条作为规则依据；`src/analysis/gjb-rules.ts` 当前分别自动检查 81 和 56 条，按语言全部执行。未实现的条款不显示为人工任务，也不计算合规率。`src/analysis/rule-preferences.ts` 使用固定全量配置和空格 Tab 约定合并通用与 GJB 重复问题，不再提供规则执行配置。相关回归为 `tests/gjb-rules.test.ts` 和 `tests/rule-preferences.test.ts`。
+`src/analysis/gjb-catalog.ts` 收录 GJB 10157 全部 110 条与 GJB 9765 全部 81 条作为规则依据；`src/analysis/gjb-rules.ts` 当前分别自动检查 79 和 54 条，按语言全部执行。字面量只检查非法数字或可能截断，反馈区分 Verilog 大小写和真实位选，函数区分局部与全局赋值且递归只检查实现体，状态机规则先要求时序 `case` 证据；异步复位边沿不计入时钟集合，行波时钟只在来源由时序过程驱动时报警。VHDL 并发语句不按文本行号判断先后，只有过程局部变量检查首次赋值前使用。顶层约束和缺少端口方向的输入悬空不再冒充单文件自动检查。未实现的条款不显示为人工任务，也不计算合规率。`src/analysis/rule-preferences.ts` 使用固定全量配置和空格 Tab 约定合并通用与 GJB 重复问题，不再提供规则执行配置。相关回归为 `tests/gjb-rules.test.ts`、`tests/rule-regressions.test.ts` 和 `tests/rule-preferences.test.ts`。
 
 ## CLI
 
 `vite.cli.config.ts` 将 `scripts/rtl-lint.ts` 构建为 `dist-cli/rtl-lint.mjs`，`npm run build:cli` 可单独执行。正式 `scripts/Build-Release.ps1` 同时复制 `release/rtl-lint.mjs` 和 `release/tools/windows-x64`，CLI 优先从自身目录定位工具，也可用 `RTL_VIEWER_TOOLS` 覆盖。
 
-`src/app/node-syntax.ts` 在 Node 进程直接调用相同版本的 Verilator／GHDL，CLI 与桌面共用 `src/analysis/facts.ts`、通用／GJB 规则、诊断去重及 `src/app/syntax-report.ts`，默认执行全部自动规则。`--no-external` 可只运行内置规则，退出码 1 表示 Error，2 表示参数或导出失败。`tests/node-syntax.test.ts` 覆盖未保存快照，真实 CLI 样例同时验证 IP 排除和 HTML／CSV。
+`src/app/node-syntax.ts` 在 Node 进程直接调用相同版本的 Verilator／GHDL，CLI 与桌面共用 `src/analysis/facts.ts`、通用／GJB 规则、诊断去重及 `src/app/syntax-report.ts`，默认执行全部自动规则。全工程 GJB 诊断逐项追加，不能用一次扩展推入突破调用栈上限；文件名规则同时接受 Windows 与 POSIX 路径。`--no-external` 可只运行内置规则，退出码 1 表示 Error，2 表示参数或导出失败。`tests/node-syntax.test.ts` 覆盖未保存快照，真实 CLI 样例同时验证 IP 排除和 HTML／CSV。
 
 ## 架构与目录
 

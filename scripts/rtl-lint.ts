@@ -49,8 +49,10 @@ function main(argv: string[]): number {
   }) : { requestId: 1, diagnostics: [], checkedFiles: 0, backends: [], cancelled: false };
   const facts = files.map(file => analyzeFileFacts(file, fs.readFileSync(file, "utf8")));
   const builtin = facts.flatMap(fact => runGeneralRules(fact, true));
-  builtin.push(...facts.filter(fact => fact.language === "verilog").flatMap(runGjb10157Rules));
-  builtin.push(...facts.filter(fact => fact.language === "vhdl").flatMap(runGjb9765Rules));
+  for (const fact of facts) {
+    const diagnostics = fact.language === "verilog" ? runGjb10157Rules(fact) : runGjb9765Rules(fact);
+    for (const diagnostic of diagnostics) builtin.push(diagnostic);
+  }
   const diagnostics = applyRulePreferences([...external.diagnostics, ...builtin], ALL_RULE_PREFERENCES);
   const result: SyntaxCheckResult = { ...external, diagnostics };
   for (const diagnostic of diagnostics) {

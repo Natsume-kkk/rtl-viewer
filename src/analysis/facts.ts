@@ -1,7 +1,7 @@
 import { parseFileDetail, type HdlLang, type ModuleInfo, type ParameterInfo, type PortInfo } from "../parser";
 import { stripComments } from "../parser/verilog";
 import { stripVhdlComments } from "../parser/vhdl";
-import { parseVerilogProcess, parseVhdlProcess } from "../parser/procedural";
+import { analyzeExpression, parseVerilogProcess, parseVhdlProcess } from "../parser/procedural";
 import { processRanges } from "../model/signal-flow";
 
 export interface CodeStatistics {
@@ -68,6 +68,8 @@ export interface ProcessFacts {
   missingElse: boolean;
   clocks: string[];
   eventCount: number;
+  caseCount: number;
+  localVariables: string[];
   assignments: AssignmentFacts[];
   issues: string[];
 }
@@ -150,11 +152,11 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
     const elseCount = (text.match(/\belse\b/gi) ?? []).length;
     const incompleteConditionalAssignment = combinational && ifCount > elseCount && !assignments.some(assignment => assignment.conditions.length === 0);
     const missingElse = ifCount > elseCount;
-    const clocks = language === "vhdl"
+    const resets = resetSignals(text, language);
+    const clocks = (language === "vhdl"
       ? [...text.matchAll(/(?:rising_edge|falling_edge)\s*\(\s*([A-Za-z_]\w*)|([A-Za-z_]\w*)\s*'\s*event/gi)].map(match => (match[1] ?? match[2]).toLowerCase())
-      : [...head.matchAll(/\b(?:posedge|negedge)\s+([A-Za-z_]\w*)/g)].map(match => match[1]);
+      : [...head.matchAll(/\b(?:posedge|negedge)\s+([A-Za-z_]\w*)/g)].map(match => match[1])).filter(clock => !resets.includes(clock.toLowerCase()));
     const eventCount = language === "vhdl" ? (text.match(/rising_edge|falling_edge|'\s*event/gi) ?? []).length : clocks.length;
-    const resets = [...new Set((text.match(/\w*(?:rst|reset)\w*/gi) ?? []).map(name => name.toLowerCase()))];
     processes.push({
       kind: language === "vhdl" ? "process" : "always",
       startLine,
@@ -169,6 +171,8 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
       missingElse,
       clocks,
       eventCount,
+      caseCount: (text.match(language === "vhdl" ? /\bcase\b[^;]*\bis\b/gi : /\b(?:case|casex|casez)\s*\(/g) ?? []).length,
+      localVariables: parsed.locals ?? [],
       assignments,
       issues: parsed.boundaries.map(boundary => boundary.reason),
     });
@@ -179,9 +183,13 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
   const generateCount = (clean.match(/\bgenerate\b/gi) ?? []).length;
   const instanceCount = modules.reduce((count, module) => count + module.instances.length, 0);
   const declarations = declarationFacts(clean, language, starts);
+  const constants = new Set([
+    ...declarations.filter(item => item.kind !== "other").map(item => item.name),
+    ...modules.flatMap(module => (module.parameters ?? []).map(parameter => parameter.name)),
+  ]);
   const multiDeclarationLines = multipleDeclarationLines(clean, language, starts);
-  const cases = caseFacts(clean, language, starts);
-  const signatures = [...sourceSignatures(clean, language, starts), ...absoluteIncludeSignatures(content, starts), ...advancedSignatures(clean, starts, language)];
+  const cases = caseFacts(clean, language, starts, constants);
+  const signatures = [...sourceSignatures(clean, language, starts), ...absoluteIncludeSignatures(language === "verilog" ? stripComments(content, false) : clean, starts), ...advancedSignatures(clean, starts, language, constants)];
   const positionalInstanceLines = positionalInstances(clean, language, starts);
   const concurrentAssignments = continuousAssignments(clean, language, starts, ranges);
   return {
@@ -213,36 +221,60 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
   };
 }
 
-function advancedSignatures(clean: string, starts: number[], language: HdlLang): SourceSignature[] {
+function advancedSignatures(clean: string, starts: number[], language: HdlLang, constants: Set<string>): SourceSignature[] {
   const result: SourceSignature[] = [];
   const add = (kind: SourceSignature["kind"], index: number, text: string) => result.push({ kind, line: lineAt(starts, index), column: 1, text: text.slice(0, 200) });
   for (const match of clean.matchAll(/\bfor\s*\(([^)]*)\)([\s\S]*?)(?=\bfor\b|\bfunction\b|\btask\b|\balways|\binitial|\bendmodule\b|$)/g)) {
     const header = match[1], body = match[2];
-    for (const match of clean.matchAll(/\bfor\s*\(([^)]*)\)/g)) {
-      const [initial, condition] = match[1].split(";");
-      if (!/\d/.test(initial) || !/\d/.test(condition)) add("forNonconstant", match.index!, match[1]);
+    const [initial = "", condition = ""] = header.split(";");
+    const loopVariable = /^\s*([A-Za-z_]\w*)\s*=.*/.exec(initial)?.[1];
+    if (!constantExpression(initial, constants, language, loopVariable) || !constantExpression(condition, constants, language, loopVariable)) add("forNonconstant", match.index!, header);
+    for (const assignment of body.matchAll(/\b([A-Za-z_]\w*)\s*(?:\+\+|--|=(?!=)|\+=|-=|\*=|\/=)/g)) {
+      if (assignment[1] === loopVariable) add("forNonconstant", match.index!, assignment[0]);
+      else add("forOtherArithmetic", match.index!, assignment[0]);
     }
-    if (/\b(?:i|j|k)\s*(?:\+\+|--|=(?!=))/.test(body)) add("forOtherArithmetic", match.index!, body);
     if (/rst|reset/i.test(body)) add("forReset", match.index!, body);
     if (/\b\w+\s*=\s*0\s*;\s*\w+\s*<\s*0\b/.test(header)) add("zeroLoop", match.index!, header);
   }
   if (language === "vhdl") {
-    for (const match of clean.matchAll(/\bfor\s+\w+\s+in\s+([^;]+?)\s+loop\b([\s\S]*?)\bend\s+loop\b/gi)) {
-      const [initial, condition] = match[1].split(";");
-      if (!/\d/.test(initial) || !/\d/.test(condition)) add("forNonconstant", match.index!, match[1]);
-      if (/\b\w+\s*:=/.test(match[2])) add("forOtherArithmetic", match.index!, match[2]);
-      if (/rst|reset/i.test(match[2])) add("forReset", match.index!, match[2]);
+    for (const match of clean.matchAll(/\bfor\s+([A-Za-z_]\w*)\s+in\s+([^;]+?)\s+loop\b([\s\S]*?)\bend\s+loop\b/gi)) {
+      if (!constantExpression(match[2], constants, language)) add("forNonconstant", match.index!, match[2]);
+      if (new RegExp(`\\b${match[1]}\\s*:=`, "i").test(match[3])) add("forOtherArithmetic", match.index!, match[3]);
+      if (/rst|reset/i.test(match[3])) add("forReset", match.index!, match[3]);
     }
   }
   for (const match of clean.matchAll(/\b(function|task)\b([\s\S]*?)\bend\1\b/g)) {
-    const kind = match[1], body = match[2], name = /\b([A-Za-z_]\w*)\s*\(/.exec(body)?.[1];
+    const kind = match[1], body = match[2], name = /\b([A-Za-z_]\w*)\s*(?:\(|;)/.exec(body)?.[1];
+    const locals = new Set(name ? [name] : []);
+    for (const declaration of body.matchAll(/\b(?:input|output|inout|reg|integer|logic|bit)\b([^;]+);/g)) {
+      for (const segment of declaration[1].split(",")) {
+        const local = (segment.replace(/\[[^\]]*\]/g, " ").match(/[A-Za-z_]\w*/g) ?? []).filter(name => !/^(?:input|output|inout|reg|integer|logic|bit|signed|unsigned)$/.test(name)).at(-1);
+        if (local) locals.add(local);
+      }
+    }
     if (kind === "task" && /#\s*\d|@\s*\(/.test(body)) add("taskTiming", match.index!, body);
-    if (kind === "function" && /<=\s*/.test(body)) add("functionNonblocking", match.index!, body);
-    if (kind === "function" && /\b[A-Za-z_]\w*(?:\s*\[[^\]]*\])?\s*(?:<=|=(?!=))/.test(body)) add("functionGlobalAssign", match.index!, body);
-    if (name && new RegExp(`\\b${name}\\s*\\(`).test(body)) add("recursiveFunction", match.index!, name);
+    if (kind === "function") {
+      for (const assignment of body.matchAll(/(?:^|[;)]|\bbegin\b)\s*([A-Za-z_]\w*)(?:\s*\[[^\]]*\])?\s*(<=|=(?!=))/g)) {
+        if (assignment[2] === "<=") add("functionNonblocking", match.index!, assignment[0]);
+        if (!locals.has(assignment[1])) add("functionGlobalAssign", match.index!, assignment[0]);
+      }
+      const implementation = body.includes(";") ? body.slice(body.indexOf(";") + 1) : body;
+      if (name && new RegExp(`\\b${name}\\s*\\(`).test(implementation)) add("recursiveFunction", match.index!, name);
+    }
   }
-  for (const match of clean.matchAll(/\[[^\]]*[+*/-][^\]]*\]/g)) add("arrayExpression", match.index!, match[0]);
+  for (const match of clean.matchAll(/\b[A-Za-z_]\w*\[[^\]]*[+*/-][^\]]*\]/g)) {
+    if (!match[0].includes(":") && !/^(?:wire|reg|logic|bit|signal|variable|input|output|inout|parameter|localparam)\b/.test(match[0])) add("arrayExpression", match.index!, match[0]);
+  }
   return result;
+}
+
+function constantExpression(text: string, constants: Set<string>, language: HdlLang, loopVariable?: string): boolean {
+  const withoutLiterals = text.replace(/\d+\s*'\s*[sS]?[bBoOdDhH][0-9a-fA-FxXzZ_]+/g, " ");
+  return (withoutLiterals.match(/[A-Za-z_]\w*/g) ?? []).every(name => {
+    if (name === loopVariable || /^(?:clog2|bits|size|len|ceil|floor|pow|min|max|abs|integer|int|to|downto)$/i.test(name)) return true;
+    if (language === "vhdl") return [...constants].some(constant => constant.toLowerCase() === name.toLowerCase());
+    return constants.has(name);
+  });
 }
 
 function absoluteIncludeSignatures(content: string, starts: number[]): SourceSignature[] {
@@ -253,27 +285,30 @@ function absoluteIncludeSignatures(content: string, starts: number[]): SourceSig
   return result;
 }
 
-function caseFacts(clean: string, language: HdlLang, starts: number[]): CaseFacts[] {
+function caseFacts(clean: string, language: HdlLang, starts: number[], constants: Set<string>): CaseFacts[] {
   const result: CaseFacts[] = [];
-  let current: CaseFacts | undefined;
-  let offset = 0;
-  for (const line of clean.split("\n")) {
-    if (!current) {
-      const control = language === "vhdl" ? /\bcase\s+(.+?)\s+is\b/i.exec(line) : /\bcasex?\s*\(([^)]*)\)|\bcasez\s*\(([^)]*)\)/.exec(line);
-      if (control) current = { startLine: lineAt(starts, offset), hasDefault: false, controlConstant: language === "vhdl" ? /^\s*'/.test(control[1] ?? "") : /^\s*(?:\d+'|\d)/.test(control[1] ?? control[2] ?? ""), nonconstantLabel: false, emptyDefault: false, defaultHasX: false, labels: [] };
-    } else {
-      if (language === "vhdl" ? /\bwhen\s+others\b/i.test(line) : /\bdefault\b/.test(line)) current.hasDefault = true;
-      if (language === "vhdl" ? /\bwhen\s+others\s*=>\s*null\b/i.test(line) : /\bdefault\s*:\s*;/.test(line)) current.emptyDefault = true;
-      if (language === "vhdl" ? /\bwhen\s+others\b/i.test(line) : /\bdefault\b/.test(line)) current.defaultHasX ||= /'[hdboHDBO]?[0-9a-fA-FxXzZ_]*[xX]/.test(line);
-      const label = /^\s*([^:;]+):/.exec(line);
-      if (label && !/default/i.test(line)) current.labels.push(label[1].trim());
-      if (label && !/default/i.test(line) && /[A-Za-z_]\w*\s*$|[-+*/|&]/.test(label[1].trim()) && !/^\s*(?:\d+'|\d)/.test(label[1].trim())) current.nonconstantLabel = true;
-      if (language === "vhdl" ? /\bend\s+case\b/i.test(line) : /\bendcase\b/.test(line)) {
-        result.push(current);
-        current = undefined;
-      }
+  const constantNames = new Set(constants);
+  if (language === "vhdl") {
+    for (const match of clean.matchAll(/\btype\s+[A-Za-z_]\w*\s+is\s*\(([^)]*)\)/gi)) {
+      for (const name of match[1].split(",")) constantNames.add(name.trim());
     }
-    offset += line.length + 1;
+  }
+  const pattern = language === "vhdl" ? /\bcase\s+([\s\S]*?)\s+is\b([\s\S]*?)\bend\s+case\b/gi : /\b(?:case|casex|casez)\s*\(([^)]*)\)([\s\S]*?)\bendcase\b/g;
+  for (const match of clean.matchAll(pattern)) {
+    const control = match[1], body = match[2];
+    const labels = language === "vhdl"
+      ? [...body.matchAll(/\bwhen\s+([\s\S]*?)=>/gi)].map(label => label[1].trim()).filter(label => !/^others\b/i.test(label)).flatMap(label => label.split("|").map(item => item.trim()))
+      : [...body.matchAll(/(?:^|[;\n])\s*([^:;]+?)\s*:/g)].map(label => label[1].trim()).filter(label => !/^default\b/i.test(label) && !/[?<=]/.test(label));
+    const defaultText = language === "vhdl" ? /\bwhen\s+others\b([\s\S]*)/i.exec(body)?.[1] ?? "" : /\bdefault\b([\s\S]*)/.exec(body)?.[1] ?? "";
+    result.push({
+      startLine: lineAt(starts, match.index!),
+      hasDefault: language === "vhdl" ? /\bwhen\s+others\b/i.test(body) : /\bdefault\b/.test(body),
+      controlConstant: language === "vhdl" ? /^\s*'/.test(control) : /^\s*(?:\d+'|\d)/.test(control),
+      nonconstantLabel: labels.some(label => !constantExpression(label, constantNames, language)),
+      emptyDefault: language === "vhdl" ? /\bwhen\s+others\s*=>\s*null\b/i.test(body) : /\bdefault\s*:\s*;/.test(body),
+      defaultHasX: /'[hdboHDBO]?[0-9a-fA-FxXzZ_]*[xX]/.test(defaultText),
+      labels,
+    });
   }
   return result;
 }
@@ -301,14 +336,14 @@ function sourceSignatures(clean: string, language: HdlLang, starts: number[]): S
     if (xz && /[+*/-]/.test(line)) add("xzArithmetic");
     if (/\binclude\s+"(?:\/|[A-Za-z]:)/.test(line)) add("absoluteInclude");
     if (/full_case/i.test(line)) add("fullCase");
-    if (/\benum\b/i.test(line)) add("enum");
+    if (/\benum\b/i.test(line) || language === "vhdl" && /\btype\s+[A-Za-z_]\w*\s+is\s*\(/i.test(line)) add("enum");
     if (/\b(?:logic|bit|byte|shortint|longint|real|realtime|time|typedef|struct|enum|interface|class)\b/.test(line)) add("forbiddenType");
     if (/\brepeat\s*\(\s*[A-Za-z_]\w*\s*\)/.test(line)) add("repeatVariable");
     if (/\b(?:signal|variable)\b[^:]*:\s*(?:std_logic_vector|std_ulogic_vector)\s*(?:;|:=)/i.test(line)) add("missingWidth");
     if (/\bwhile\s+(?:true|false|\d+)\b/i.test(line)) add("whileConstant");
     if (/\bnull\s*;|\bbegin\s+end\b/i.test(line)) add("emptyStatement");
     if (/\S(?:<=|:=)\S|\s(?:<=|:=)\S|\S(?:<=|:=)\s/.test(line)) add("spacing");
-    if ((line.match(/;/g) ?? []).length >= 2 && /<=|:=|=(?!=)/.test(line)) add("multiStatement");
+    if ((line.match(/;/g) ?? []).length >= 2 && /<=|:=|=(?!=)/.test(line) && !/\bfor\s*\(/.test(line)) add("multiStatement");
     if (/\balways\b/.test(line) && line.includes("|")) add("sensitivityPipe");
     if (/\bposedge\b|\brising_edge\b/i.test(line)) add("posedge");
     if (/\bnegedge\b|\bfalling_edge\b/i.test(line)) add("negedge");
@@ -344,8 +379,9 @@ function continuousAssignments(clean: string, language: HdlLang, starts: number[
   const pattern = language === "vhdl" ? /^\s*([A-Za-z_]\w*)\s*<=\s*([^;]+);/gm : /\bassign\s+([A-Za-z_]\w*)\s*=\s*([^;]+);/g;
   for (const match of clean.matchAll(pattern)) {
     if (ranges.some(range => match.index! >= range.index && match.index! < range.index + range.text.length)) continue;
+    const expression = analyzeExpression(match[2], language === "vhdl");
     result.push({
-      target: match[1], targetText: match[1], operator: language === "vhdl" ? "<=" : "=", line: lineAt(starts, match.index!), processIndex: -1, conditions: [], reads: [], expression: match[2],
+      target: match[1], targetText: match[1], operator: language === "vhdl" ? "<=" : "=", line: lineAt(starts, match.index!), processIndex: -1, conditions: [], reads: [...expression.reads, ...expression.blockedReads], expression: match[2],
     });
   }
   return result;
@@ -361,11 +397,11 @@ function declarationFacts(clean: string, language: HdlLang, starts: number[]): D
       }
     }
   } else {
-    for (const match of clean.matchAll(/\b(?:reg|wire|integer|parameter|localparam|input|output|inout)\b([^;]+);/g)) {
+    for (const match of clean.matchAll(/\b(?:reg|wire|integer|parameter|localparam|input|output|inout|logic|bit)\b([^;]+);/g)) {
       const kind = /^\s*(?:parameter|localparam)\b/.test(match[0]) ? "parameter" : "other";
       for (const segment of match[1].split(",")) {
-        const name = segment.replace(/\[[^\]]*\]/g, " ").replace(/=.*$/s, "").trim().match(/[A-Za-z_]\w*/)?.[0];
-        if (name && !/^(?:reg|wire|integer|parameter|localparam|input|output|inout|signed|unsigned|logic|bit)$/.test(name)) result.push({ name, kind, line: lineAt(starts, match.index!) });
+        const name = (segment.replace(/\[[^\]]*\]/g, " ").replace(/=.*$/s, "").match(/[A-Za-z_]\w*/g) ?? []).filter(name => !/^(?:reg|wire|integer|parameter|localparam|input|output|inout|signed|unsigned|logic|bit)$/.test(name)).at(-1);
+        if (name) result.push({ name, kind, line: lineAt(starts, match.index!) });
       }
     }
   }
@@ -390,11 +426,30 @@ function multipleDeclarationLines(clean: string, language: HdlLang, starts: numb
   return result;
 }
 
+function resetSignals(text: string, language: HdlLang): string[] {
+  const conditions = resetConditions(text, language);
+  return [...new Set(conditions.flatMap(condition => condition.match(/[A-Za-z_]\w*/g) ?? []).filter(isResetIdentifier).map(name => name.toLowerCase()))];
+}
+
 function resetBranch(text: string, language: HdlLang): boolean {
   const conditions = language === "vhdl"
     ? [...text.matchAll(/\b(?:if|elsif)\s+([\s\S]*?)\bthen\b/gi)].map(match => match[1])
     : [...text.matchAll(/\bif\s*\(([^)]*)\)/g)].map(match => match[1]);
-  return conditions.some(condition => !/rising_edge|falling_edge|'\s*event/i.test(condition) && /(?:rst|reset)/i.test(condition));
+  return conditions.some(condition => !/rising_edge|falling_edge|'\s*event/i.test(condition) && (condition.match(/[A-Za-z_]\w*/g) ?? []).some(isResetIdentifier));
+}
+
+function resetConditions(text: string, language: HdlLang): string[] {
+  const conditions = language === "vhdl"
+    ? [...text.matchAll(/\b(?:if|elsif)\s+([\s\S]*?)\bthen\b/gi)].map(match => match[1])
+    : [...text.matchAll(/\bif\s*\(([^)]*)\)/g)].map(match => match[1]);
+  const sensitivity = language === "vhdl" ? /^process\s*\(([^)]*)\)/i.exec(text.trimStart())?.[1] : /always[^@]*@\s*\(([^)]*)\)/.exec(text.trimStart())?.[1];
+  if (sensitivity) conditions.push(sensitivity);
+  return conditions;
+}
+
+function isResetIdentifier(name: string): boolean {
+  const lower = name.toLowerCase();
+  return /^(?:rst|reset)(?:n|p)?(?:_|$)/.test(lower) || /_(?:rst|reset)(?:n|p)?(?:_|$)/.test(lower) || /^(?:clear|preset)(?:n|p)?$/.test(lower);
 }
 
 function definitionFacts(module: ModuleInfo): DefinitionFacts[] {

@@ -7,7 +7,7 @@ vi.mock("../src/editor/actions", () => ({ registerEditorAction: vi.fn() }));
 beforeEach(() => document.body.replaceChildren());
 function setup() {
   let version = 1;
-  const model = { getLinesContent: () => ["abc", "def"], getOptions: () => ({ tabSize: 4 }), getVersionId: () => version, isDisposed: () => false };
+  const model = { getLineCount: vi.fn(() => 2), getLineContent: vi.fn((line: number) => ["abc", "def"][line - 1]), getLinesContent: vi.fn(() => ["abc", "def"]), getOptions: () => ({ tabSize: 4 }), getVersionId: () => version, isDisposed: () => false };
   const editor = { getModel: () => model, getSelections: () => [{ startLineNumber: 1, endLineNumber: 1, startColumn: 1, endColumn: 1, isEmpty: () => true }], getOption: () => false, focus: vi.fn(), pushUndoStop: vi.fn(), executeEdits: vi.fn(() => true) };
   return { editor, change: () => version++, open: () => openColumnEditor(editor as unknown as Parameters<typeof openColumnEditor>[0]) };
 }
@@ -17,7 +17,7 @@ const submit = () => document.querySelector("form")!.dispatchEvent(new Event("su
 describe("column editor dialog", () => {
   it("处数超过上限时不开面板，提示后确认关闭并归还焦点", async () => {
     const { editor, open } = setup();
-    editor.getModel().getLinesContent = () => Array(10_001).fill("x");
+    editor.getModel().getLineCount.mockReturnValue(10_001);
     const pending = open();
     await Promise.resolve();
     expect(document.querySelector(".column-editor")).toBeNull();
@@ -31,6 +31,7 @@ describe("column editor dialog", () => {
   it("提交前不改源码，取消归还焦点", async () => {
     const { editor, open } = setup(); await open();
     expect(document.querySelector(".column-scope")?.textContent).toContain("2 行");
+    expect(editor.getModel().getLinesContent).not.toHaveBeenCalled();
     fill("initial", "14"); expect(editor.executeEdits).not.toHaveBeenCalled();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(document.querySelector("form")).toBeNull(); expect(editor.focus).toHaveBeenCalled();

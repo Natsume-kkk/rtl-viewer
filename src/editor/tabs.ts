@@ -580,8 +580,8 @@ export class TabManager {
     this.events.onFileSaved(path, content, encoding, mtime);
     // 另存为只保存新路径，仍查看旧路径的分屏缓冲区保留未保存状态。
     if (sameFilePath(path, tab.path)) this.syncPeers(tab);
-    else if (!tab.dirty) {
-      // 未命名文档首次保存时，两侧仍是同一文档；普通另存为保留旧路径视图。
+    else {
+      // 写入成功后始终迁移；保存期间的新编辑只保留脏标记，不把文档留在旧路径。
       const peers = tab.path ? [] : [...TabManager.managers].flatMap(manager =>
         manager.tabs.filter(other => other !== tab && other.model === model).map(other => ({ manager, tab: other })));
       if (!tab.path) this.syncPeers(tab);

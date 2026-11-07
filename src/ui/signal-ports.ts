@@ -1,4 +1,4 @@
-import type { TraceNode } from "../model/signal-flow";
+import type { TraceNode } from "../analysis/signal-flow";
 import { CardWidths, columnPositions, element as el, cardHeader, appendSource, signalCode, makeWires, drawWires, CANVAS_TOP, type CardWidthState, type CardEdge, type CardPosition } from "./signal-canvas";
 
 type Side = "up" | "down";

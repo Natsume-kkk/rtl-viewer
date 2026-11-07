@@ -87,7 +87,7 @@ npm run dev
 
 `tools/windows-x64/` 保存随应用发布的 Verilator 5.050、GHDL 6.0.0 及其运行库，`tools/licenses/` 保存对应许可。开发构建直接调用该目录；`scripts/Build-Release.ps1` 通过 `bundled-tools` 特性让 `src-tauri/build.rs` 将运行文件嵌入单 exe，首次检查时按内容修订号释放到应用数据目录，不写入用户源码工程。更新工具后需通过正式入口重建并核对版本，不能用裸 `cargo build` 验收发布行为。
 
-`src-tauri/src/syntax.rs` 管理检查请求、进程、超时与取消。Verilator 使用响应文件传入当前范围内 Verilog／SystemVerilog 编译单元、配置的 include 与宏，以及按 IP／VHDL 端口和参数接口生成的临时黑盒，默认范围为当前顶层可达模块，可切换全部工程；顶层按配置覆盖、手动选择、`autoTop` 顺序确定。`src/app/syntax-stubs.ts` 负责 Verilog／VHDL 黑盒转换，保留输入输出方向和常见位宽，不编译 IP 内部实现；`vhdlStubs` 独立传给 GHDL，避免与 Verilator 的 `stubs` 混用。GHDL 根据 library、package、entity 定义及 `entity work.xxx`／component 引用进行稳定拓扑排序，循环依赖保持原顺序兜底；先分析 IP 接口声明，再逐文件分析真实源码，Stub 不计入检查文件数，并将所有相关 library 工作目录加入 `-P` 搜索路径。`src/app/syntax-options.ts` 按工程保存宏、include、library 映射和附加参数，路径在传参前解析，参数不经过 shell。Verilator 的 `PINCONNECTEMPTY` 统一降为提示，其他端口规则保持原程度；超时为 120 秒，GHDL 单文件超时为 60 秒，切换工程或退出会取消任务。Windows 下版本查询和实际检查统一使用 `CREATE_NO_WINDOW`，不能只隐藏主检查进程而遗漏逐文件 GHDL 或版本查询。
+`src-tauri/src/syntax.rs` 管理检查请求、进程、超时与取消。Verilator 使用响应文件传入当前范围内 Verilog／SystemVerilog 编译单元、配置的 include 与宏，以及按 IP／VHDL 端口和参数接口生成的临时黑盒，默认范围为当前顶层可达模块，可切换全部工程；顶层按配置覆盖、手动选择、`autoTop` 顺序确定。`src/app/syntax-stubs.ts` 负责 Verilog／VHDL 黑盒转换，保留输入输出方向和常见位宽，不编译 IP 内部实现；`vhdlStubs` 独立传给 GHDL，避免与 Verilator 的 `stubs` 混用。GHDL 根据 library、package、entity 定义及 `entity work.xxx`／component 引用进行稳定拓扑排序，循环依赖保持原顺序兜底；先分析 IP 接口声明，再逐文件分析真实源码，Stub 不计入检查文件数，并将所有相关 library 工作目录加入 `-P` 搜索路径。`src/app/syntax-options.ts` 按工程保存宏、include、library 映射和附加参数，路径在传参前解析，参数不经过 shell。Verilator 的 `PINCONNECTEMPTY` 统一降为提示，其他端口规则保持原程度；版本查询超时为 10 秒，Verilator 超时为 120 秒，GHDL 单文件超时为 60 秒；版本查询与实际检查共用取消入口，执行前到达的取消同样有效，切换工程或退出会取消任务。Windows 下版本查询和实际检查统一使用 `CREATE_NO_WINDOW`，不能只隐藏主检查进程而遗漏逐文件 GHDL 或版本查询。
 
 工程载入、顶层／范围切换及配置保存会自动调度外部检查，连续编辑在停顿 2 秒后复查；启动检查不展开问题面板，顶部“问题”只控制面板显示。外部检查通过隔离工作区读取工程内已打开文件的未保存快照，不写回原工程；未打开文件仍读取磁盘。前端统一诊断位于 `src/ipc.ts`，`src/ui/problems.ts` 负责显示筛选、分组折叠、进度条与取消状态，`src/app/problem-markers.ts` 管理 Monaco 标记，`src/app/syntax-report.ts` 生成包含内置与外部诊断的 HTML／CSV。筛选只改变显示，报告始终包含当前顶层或全部工程范围内的全部诊断、实际配置、统计和后端状态。错误、警告和提示统一按文件＋规则分组并默认折叠，依赖缺失、重复定义和 Stub 另标为分析环境；常见 Verilator 规则在组标题显示中文摘要，原始英文和规则 ID 保留在明细、悬停与报告中。重名文件只增加最短区分目录。分组按诊断指纹协调更新，未变化组复用 DOM，变化组才更新明细；自动复查保留展开状态、滚动位置和焦点。大组展开按 500 条一批生成，滚动到末尾自动继续直到全部结果，不使用结果截断提示。单文件 Monaco 标记最多 500 条，后端最多保留 5000 条诊断。
 
@@ -102,9 +102,9 @@ pwsh -NoProfile -Command "& './scripts/Invoke-Cargo.ps1' -CargoArgs 'test','--lo
 
 ## 检查事实与后台调度
 
-`src/analysis/facts.ts` 统一生成轻量文件事实：物理行、代码行、纯注释行、行内注释行、空白行、注释比例、行宽／Tab／行尾空白、定义、过程、敏感列表、赋值、分支、例化端口连接和检查边界。解析器为 Verilog／VHDL 端口和参数保留真实声明行，非 ANSI 端口还会从模块体声明补齐方向和位宽，命名规则不得再回退写死为文件第 1 行。`case` 事实支持单行写法、常量参数与表达式、`begin...end` 和嵌套分支后的标签边界、VHDL `=>` 标签及枚举值；连续赋值保留 RHS 引用，SystemVerilog `logic` 纳入声明。复位只从条件与敏感列表中的完整标识符识别，不按赋值文本中的名称子串猜测。`instanceReads` 复用 `parseFileDetail` 的端口连接，冗余声明判断同时纳入连接、敏感列表和条件使用，避免 Wrapper 误报。过程范围与赋值分析复用 `src/model/signal-flow.ts` 和 `src/parser/procedural.ts`，不再由每条规则独立猜测。注释比例按“纯注释行＋行内注释行”除以“代码行＋纯注释行＋行内注释行”计算，混合行同时计入代码和注释；工程总比例分别累加分子与分母，不平均各文件百分比。
+`src/analysis/facts.ts` 统一生成轻量文件事实：物理行、代码行、纯注释行、行内注释行、空白行、注释比例、行宽／Tab／行尾空白、定义、过程、敏感列表、赋值、分支、例化端口连接和检查边界。解析器为 Verilog／VHDL 端口和参数保留真实声明行，非 ANSI 端口还会从模块体声明补齐方向和位宽，命名规则不得再回退写死为文件第 1 行。`case` 事实支持单行写法、常量参数与表达式、`begin...end` 和嵌套分支后的标签边界、VHDL `=>` 标签及枚举值；连续赋值保留 RHS 引用，SystemVerilog `logic` 纳入声明。复位只从条件与敏感列表中的完整标识符识别，不按赋值文本中的名称子串猜测。`instanceReads` 复用 `parseFileDetail` 的端口连接，冗余声明判断同时纳入连接、敏感列表和条件使用，避免 Wrapper 误报。过程范围与轻量赋值扫描统一复用 `src/parser/procedural.ts`，复杂更新值推导由 `src/analysis/process.ts` 负责，不再由每条规则独立猜测；`src/analysis/facts.ts` 不依赖跨层信号流。注释比例按“纯注释行＋行内注释行”除以“代码行＋纯注释行＋行内注释行”计算，混合行同时计入代码和注释；工程总比例分别累加分子与分母，不平均各文件百分比。
 
-`src/app/facts-scheduler.ts` 在工程结构载入后按文件调度，当前文件优先。`src/analysis/facts-worker.ts` 在独立 Worker 中计算内容摘要、文件事实、通用／GJB 规则和去重，前台只接收结果并渲染；编辑刷新、取消、切换工程或退出会终止旧 Worker，避免旧任务继续占用资源。统计、诊断和外部检查默认限定当前顶层可达模块，切换顶层或全部工程会同步更新队列和旧结果状态。结果不保存整份源码或语法树，只保留结构事实、诊断与内容摘要。相关回归为 `tests/facts.test.ts` 与 `tests/facts-scheduler.test.ts`，构建需确认独立 `facts-worker` 产物。
+`src/app/facts-scheduler.ts` 在工程结构载入后按文件调度，当前文件优先。`src/analysis/facts-worker.ts` 在独立 Worker 中计算内容摘要、文件事实、通用／GJB 规则和去重，前台只接收结果，按动画帧合并刷新；隐藏面板不重建 DOM，统计孙级节点仅在展开时物化。编辑刷新、取消、切换工程或退出会终止旧 Worker，避免旧任务继续占用资源。统计、诊断和外部检查默认限定当前顶层可达模块，切换顶层或全部工程会同步更新队列和旧结果状态。结果不保存整份源码或语法树，只保留结构事实、诊断与内容摘要。相关回归为 `tests/facts.test.ts` 与 `tests/facts-scheduler.test.ts`，构建需确认独立 `facts-worker` 产物。
 
 ## 通用规则与统计
 
@@ -118,7 +118,7 @@ pwsh -NoProfile -Command "& './scripts/Invoke-Cargo.ps1' -CargoArgs 'test','--lo
 
 `vite.cli.config.ts` 将 `scripts/rtl-lint.ts` 构建为 `dist-cli/rtl-lint.mjs`，`npm run build:cli` 可单独执行。正式 `scripts/Build-Release.ps1` 同时复制 `release/rtl-lint.mjs` 和 `release/tools/windows-x64`，CLI 优先从自身目录定位工具，也可用 `RTL_VIEWER_TOOLS` 覆盖。
 
-`src/app/node-syntax.ts` 在 Node 进程直接调用相同版本的 Verilator／GHDL，CLI 与桌面共用 `src/analysis/facts.ts`、通用／GJB 规则、诊断去重及 `src/app/syntax-report.ts`，默认执行全部自动规则。全工程 GJB 诊断逐项追加，不能用一次扩展推入突破调用栈上限；文件名规则同时接受 Windows 与 POSIX 路径。`--no-external` 可只运行内置规则，退出码 1 表示 Error，2 表示参数或导出失败。`tests/node-syntax.test.ts` 覆盖未保存快照，真实 CLI 样例同时验证 IP 排除和 HTML／CSV。
+`src/app/node-syntax.ts` 在 Node 进程直接调用相同版本的 Verilator／GHDL，`src/app/syntax-order.ts` 统一 Verilog package 与 VHDL 依赖排序，`src/app/node-source.ts` 按 BOM、严格 UTF-8、GBK 兜底读取磁盘源码；内部快照接口仅接受 UTF-8、UTF-8 BOM、UTF-16 LE／BE，其他编码显式拒绝。CLI 与桌面共用 `src/analysis/facts.ts`、通用／GJB 规则、诊断去重及 `src/app/syntax-report.ts`，默认执行全部自动规则；后端无法启动或完成时返回系统 Error 和 `failed`，不增加已检查文件数。全工程 GJB 诊断逐项追加，不能用一次扩展推入突破调用栈上限；文件名规则同时接受 Windows 与 POSIX 路径。`--no-external` 可只运行内置规则，退出码 1 表示 Error，2 表示参数、读取或导出失败。`tests/node-syntax.test.ts` 覆盖未保存快照、package 顺序与启动失败，`tests/cli-contract.test.ts` 覆盖目录过滤和解码，真实 CLI 样例同时验证 IP 排除和 HTML／CSV。
 
 ## 架构与目录
 
@@ -138,7 +138,7 @@ release/     便携 exe、CLI 与检查工具交付物（Build-Release.ps1 生�
 
 [图标评审预览](icon-review.html) 保留透明线构图标的设计对照，默认选中已采用的紧凑交织及功能图标。页面包含参考截图、桌面场景、透明棋盘格、深浅底色和实际尺寸；旧版图标仅供对照。正式应用资源以 `src-tauri/icons/` 与 `src/ui/icons.ts` 为准。
 
-信号链保持两类边界：端口由 `src/model/signal-flow.ts` 跨层追到赋值位置，`src/ui/signal-ports.ts` 直接显示已可见端口的赋值终点；内部信号由 `src/analysis/local.ts` 在当前模块内分析，子模块端口通过 `loadPortSites` 附带有界的第一层源码预览（`stopAtAssignments` + `descendOnly`），沿纯端口转接向下查找到第一处实际赋值／使用，保留预算和递归例化截止，不向父模块回溯，不合并子模块依赖图。入口分类、快照与取消由 `src/app/signal-controller.ts` 管理，两个视图均在原链路显示终点源码，不强制切换到模块内模式；对应回归见 `tests/signal-analysis.test.ts`、`tests/signal-endpoints.test.ts`、`tests/signal-flow-ui.test.ts` 和 `tests/signal-controller.test.ts`。
+信号链保持两类边界：端口由 `src/analysis/signal-flow.ts` 跨层追到赋值位置，`src/ui/signal-ports.ts` 直接显示已可见端口的赋值终点；内部信号由 `src/analysis/local.ts` 在当前模块内分析，子模块端口通过 `loadPortSites` 附带有界的第一层源码预览（`stopAtAssignments` + `descendOnly`），沿纯端口转接向下查找到第一处实际赋值／使用，保留预算和递归例化截止，不向父模块回溯，不合并子模块依赖图。入口分类与快照由 `src/app/signal-controller.ts` 管理；依赖图、端口终点和上下游追踪由 `src/analysis/signal-trace.ts` 在独立 Worker 中计算，切换目标、刷新或换工程会终止旧 Worker，两个视图均在原链路显示终点源码，不强制切换到模块内模式。对应回归见 `tests/signal-analysis.test.ts`、`tests/signal-endpoints.test.ts`、`tests/signal-flow-ui.test.ts`、`tests/signal-trace-task.test.ts` 和 `tests/signal-controller.test.ts`，构建需确认独立 `signal-trace-worker` 产物。
 
 卡片宽度与连线计算共用 `src/ui/signal-canvas.ts`：无手动覆盖的卡片按内容 max-content 自适应，夹在 236–560 px；手动拖宽（上限 1200 px）覆盖自适应，随当前追踪的视图状态保存，双击或 Home 恢复自适应。列位置按同列最大宽度累加，保留 40 px 列间距；连线和画布使用实际卡片宽度。两种视图以及懒创建的分支卡片均接入边缘拖动，销毁时释放指针捕获。控制器仅在文件、信号、实例与过程作用域相同的刷新中沿用宽度，不沿用旧分析的分支展开状态。回归入口为 `tests/signal-card-width.test.ts` 和 `tests/signal-controller.test.ts`；jsdom 无布局，自适应测量在测试中 mock `offsetWidth`，拖动命中、代码换行与滚动位置仍需浏览器／桌面实际交互检查。
 
@@ -213,7 +213,7 @@ Rust 扫描结果可携带 `issues`，目录读取失败和深度上限都显式
 
 `src/file-path.ts` 统一 Windows 路径身份，标签、共享模型、索引查找与保存队列使用相同规则，展示保留原路径。保存按目标文件和共享模型串行，模型迁移属于保存操作；关闭等待保存完成，失败保留标签。watcher 回填前检查缓存基准和保存状态，显式重载另检查模型版本与保存修订，模块元数据缓存同时检查模型身份和版本。回归入口为 `tests/tabs.test.ts`、`tests/watcher.test.ts`、`tests/definition-models.test.ts` 和 `tests/module-metadata.test.ts`。
 
-`TabManager.openContent` 返回 Promise，目标正在写入时等待保存队列并重新读取；工作区必须等待它完成后再定位，关闭代际使等待中的打开失效。排队的另存为在实际写入前再次核对目标占用。编码选择是待保存的文档状态，影响脏标记和重载修订；写入后的清洁状态同时比较模型版本与编码，不能清除保存期间发生的新修改。
+`TabManager.openContent` 返回 Promise，目标正在写入时等待保存队列并重新读取；工作区必须等待它完成后再定位，关闭代际使等待中的打开失效。排队的另存为在实际写入前再次核对目标占用，写入成功后始终迁移到目标路径，期间的新编辑只保留脏标记。编码选择是待保存的文档状态，影响脏标记和重载修订；写入后的清洁状态同时比较模型版本与编码，不能清除保存期间发生的新修改。
 
 ### 编码边界
 
@@ -227,7 +227,7 @@ Rust 扫描结果可携带 `issues`，目录读取失败和深度上限都显式
 
 ### Monaco 与主题
 
-[Monaco 入口](../src/editor/monaco.ts) 使用按需导入，保留编辑器贡献，排除无关语言服务与 LSP。升级版本时核对以下内容：
+[Monaco 入口](../src/editor/monaco.ts) 使用按需导入，保留编辑器贡献，排除无关语言服务与 LSP；`vite.config.ts` 将 `node_modules/monaco-editor` 独立为 `monaco` chunk，与业务入口分开缓存。升级版本时核对以下内容：
 
 - 导入清单与目标版本 `editor.main.js` 的编辑器贡献部分对应，不改为 `import "monaco-editor"` 整包入口。
 - `monaco-editor/nls/lang/zh-cn` 必须先于编辑器及贡献模块加载，菜单和命令标签在模块初始化时生成；沿用同版本自带语言包，不另装中文化插件。升级后检查右键菜单、查找替换、命令面板及双视图的中文显示。

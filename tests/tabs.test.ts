@@ -1012,3 +1012,24 @@ describe("保存顺序与文件身份", () => {
     expect(mocks.writeFile).toHaveBeenCalledWith("D:/Project/Top.v","unsaved","utf8");
   });
 });
+
+
+it("另存为写入期间继续编辑仍迁移路径并保留未保存内容", async () => {
+  const { make, mocks } = await setup(); const tm = make();
+  tm.openContent("D:/p/source.v", "old", "utf8", 100);
+  const tab = tm.activeTab!;
+  tab.model.setValue("snapshot");
+  mocks.saveFileDialog.mockResolvedValue("D:/p/copy.v");
+  let finish!: (mtime: number) => void;
+  mocks.writeFile.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const saving = tm.saveAs();
+  await vi.waitFor(() => expect(mocks.writeFile).toHaveBeenCalledWith("D:/p/copy.v", "snapshot", "utf8"));
+  tab.model.setValue("newer edit");
+  finish(500);
+  await expect(saving).resolves.toBe(false);
+  expect(tab.path).toBe("D:/p/copy.v");
+  expect(tab.uriKey).toBe("file:///D:/p/copy.v");
+  expect(tab.model.getValue()).toBe("newer edit");
+  expect(tab.dirty).toBe(true);
+  expect(tab.mtime).toBe(500);
+});

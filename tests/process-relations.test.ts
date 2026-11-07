@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyzeProcess, processTargetSource } from "../src/analysis/process";
 import { parseVerilogProcess, parseVhdlProcess } from "../src/parser/procedural";
-import { SignalProject } from "../src/model/signal-flow";
+import { SignalProject } from "../src/analysis/signal-flow";
 import { ComputationProject } from "../src/analysis/project";
 import { localLogic } from "../src/analysis/local";
 

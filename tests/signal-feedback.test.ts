@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { localLogic, type LogicGraph } from "../src/analysis/local";
 import { ComputationProject } from "../src/analysis/project";
-import { SignalProject } from "../src/model/signal-flow";
+import { SignalProject } from "../src/analysis/signal-flow";
 
 function graph(source: string, signal: string, vhdl = false): LogicGraph {
   const files = new Map([[vhdl ? "top.vhd" : "top.v", source]]);

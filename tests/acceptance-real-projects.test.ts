@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseXci, scanStructure } from "../src/parser";
 import { ModuleIndex } from "../src/model";
 import { buildHierarchy, type Hierarchy, type TreeNode } from "../src/model/hierarchy";
-import { SignalProject, traceSignal, type TraceNode } from "../src/model/signal-flow";
+import { SignalProject, traceSignal, type TraceNode } from "../src/analysis/signal-flow";
 import { decode, walk } from "./helpers/fs-scan";
 import { acceptanceRoot } from "./helpers/acceptance-root";
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SignalProject, traceSignal } from "../src/model/signal-flow";
+import { SignalProject, traceSignal } from "../src/analysis/signal-flow";
 import { parseFileDetail } from "../src/parser";
 import { evaluateConstant } from "../src/parser/static-generate";
 

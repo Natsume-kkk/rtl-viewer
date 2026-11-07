@@ -352,6 +352,7 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
     refreshFactsViews();
     return false;
   }
+  moduleMetadataLoader.invalidateIps();
   const snapshots = new Map<string, { file: string; content: string; encoding: string }>();
   for (const group of groups) for (const tab of group.tabs.allTabs) {
     if (tab.dirty && tab.path && state.contents.has(indexedFilePath(state.contents, tab.path))) {
@@ -490,13 +491,17 @@ function setSearchVisible(visible: boolean, focus = true): void {
 }
 
 function setProblemsVisible(visible: boolean): void {
-  if (visible) bottomPanels.show("problems");
-  else bottomPanels.hide("problems");
+  if (visible) {
+    bottomPanels.show("problems");
+    problemPanel.refresh();
+  } else bottomPanels.hide("problems");
 }
 
 function setStatsVisible(visible: boolean): void {
-  if (visible) bottomPanels.show("stats");
-  else bottomPanels.hide("stats");
+  if (visible) {
+    bottomPanels.show("stats");
+    statsPanel.refresh();
+  } else bottomPanels.hide("stats");
 }
 
 // ---------- 按需模块元数据（补全与 IP stub） ----------
@@ -754,7 +759,12 @@ const workspace = createEditorWorkspace([editor, editor2], {
 });
 const { groups, activeGroup, focusGroup, navigateTo, navBack, navForward,
   openInOtherGroup, openFile: openProjectFile } = workspace;
+let factsViewFrame = 0;
 function refreshFactsViews(): void {
+  if (factsViewFrame) {
+    cancelAnimationFrame(factsViewFrame);
+    factsViewFrame = 0;
+  }
   const files = analysisHdlFiles();
   const facts = factsScheduler.values().filter(item => inAnalysisScope(item.file));
   const diagnostics = factsScheduler.diagnosticValues().filter(item => inAnalysisScope(item.file));
@@ -774,6 +784,14 @@ function refreshFactsViews(): void {
     topology: activeTopology,
   });
   refreshProblemMarkers();
+}
+
+function queueFactsViewsRefresh(): void {
+  if (factsViewFrame) return;
+  factsViewFrame = requestAnimationFrame(() => {
+    factsViewFrame = 0;
+    refreshFactsViews();
+  });
 }
 
 function setAnalysisScope(scope: "top" | "project"): void {
@@ -802,8 +820,8 @@ function projectHdlFiles(): string[] {
 const factsScheduler = createFactsScheduler({
   files: () => analysisHdlFiles().map(file => ({ file, content: fileContent(file) ?? state.contents.get(file)!.content })),
   priorityFile: () => activeGroup().tabs.activeTab?.path,
-  result: refreshFactsViews,
-  progress: (done, total) => { factsDone = done; factsTotal = total; refreshFactsViews(); },
+  result: queueFactsViewsRefresh,
+  progress: (done, total) => { factsDone = done; factsTotal = total; queueFactsViewsRefresh(); },
   complete: () => undefined,
 });
 let factsRefreshTimer: number | undefined;
@@ -880,12 +898,8 @@ function renderTree(): void {
     pending.push(...node.children);
   }
   activeTopFiles = new Set<string>();
-  for (const [file, modules] of state.structures) {
-    if (modules.some(module => {
-      if (!activeTopModules.has(module.name.toLowerCase())) return false;
-      const definition = state.index.resolve(module.name);
-      return definition?.vhdl || filePathKey(definition?.file ?? "") === filePathKey(file);
-    })) activeTopFiles.add(filePathKey(file));
+  for (const name of activeTopModules) {
+    for (const definition of state.index.bindingFiles(name)) activeTopFiles.add(filePathKey(definition.file));
   }
   tree.render(h, state.constraints);
 }
@@ -1052,7 +1066,11 @@ const watcher = createExternalWatcher({
   contents: state.contents,
   structures: state.structures,
   ips: () => state.ips,
-  setIps: (ips) => { state.ips = ips; },
+  setIps: (ips) => {
+    const changed = ips.length !== state.ips.length || ips.some((ip, index) => ip.name !== state.ips[index]?.name || ip.file !== state.ips[index]?.file);
+    state.ips = ips;
+    if (changed) moduleMetadataLoader.invalidateIps();
+  },
   constraints: () => state.constraints,
   setConstraints: (constraints) => { state.constraints = constraints; },
   tabs: groups.map((g) => g.tabs),
@@ -1087,7 +1105,7 @@ const projectScanner = createProjectScanner({
     await appAlert(`打开工程失败：${String(error)}`);
   },
 });
-window.addEventListener("pagehide", () => { projectScanner.cancel(); watcher.stop(); cancelProjectSyntaxCheck(); factsScheduler.dispose(); }, { once: true });
+window.addEventListener("pagehide", () => { cancelAnimationFrame(factsViewFrame); projectScanner.cancel(); watcher.stop(); cancelProjectSyntaxCheck(); factsScheduler.dispose(); }, { once: true });
 
 // ---------- 树节点打开 ----------
 

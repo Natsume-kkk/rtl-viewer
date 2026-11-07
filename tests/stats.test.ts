@@ -92,3 +92,25 @@ it("模块拓扑按需展开，定位按钮打开定义行且不显示长目录"
   root.querySelector<HTMLSelectElement>(".stats-view-mode")!.dispatchEvent(new Event("change"));
   expect(root.querySelector(".stats-table table")).not.toBeNull();
 });
+
+
+it("隐藏统计不渲染，恢复后刷新且孙级节点仅在展开时物化", async () => {
+  const root = document.createElement("section");
+  root.hidden = true;
+  document.body.append(root);
+  const panel = new StatsPanel(root, { displayPath: file => file, onOpenFile: vi.fn(), onOpenProblems: vi.fn(), onScopeChange: vi.fn(), onClose: vi.fn() });
+  let grandchildReads = 0;
+  const grandchild = { key: "a/u/u_g", label: "u_g", moduleName: "g", children: [] };
+  Object.defineProperty(grandchild, "children", { get: () => { grandchildReads++; return []; } });
+  const child = { key: "a/u", label: "u", moduleName: "u", children: [grandchild] };
+  const view = { facts: [], files: [], diagnostics: [], done: 0, total: 0, running: false, stale: false, scope: "top" as const, topology: [{ key: "a", label: "a", moduleName: "a", children: [child] }] };
+  panel.render(view);
+  expect(root.querySelector(".stats-topology")).toBeNull();
+  root.hidden = false;
+  panel.refresh();
+  expect(grandchildReads).toBe(0);
+  const childNode = root.querySelector<HTMLDetailsElement>(".stats-topology-node .stats-topology-node")!;
+  childNode.open = true;
+  childNode.dispatchEvent(new Event("toggle"));
+  await vi.waitFor(() => expect(grandchildReads).toBe(1));
+});

@@ -133,6 +133,96 @@ export function analyzeExpression(expression: string, vhdl = false): ExprAnalysi
   return { reads, blockedReads, hasCall };
 }
 
+function skipParens(body: string, i: number): number {
+  let depth = 0;
+  for (; i < body.length; i++) {
+    if (body[i] === "(") depth++;
+    else if (body[i] === ")") {
+      depth--;
+      if (!depth) return i + 1;
+    }
+  }
+  return i;
+}
+
+function stmtEnd(body: string, from: number): number {
+  let i = from;
+  while (i < body.length && /\s/.test(body[i])) i++;
+  const kw = /^[A-Za-z_]\w*/.exec(body.slice(i))?.[0] ?? "";
+  if (kw === "begin") {
+    const tokens = /\b(begin|end)\b/g;
+    tokens.lastIndex = i;
+    let depth = 0, token: RegExpExecArray | null;
+    while ((token = tokens.exec(body))) {
+      depth += token[1] === "begin" ? 1 : -1;
+      if (depth === 0) return tokens.lastIndex;
+    }
+    return body.length;
+  }
+  if (/^(case|casex|casez)$/.test(kw)) {
+    const tokens = /\b(case|casex|casez|endcase)\b/g;
+    tokens.lastIndex = i;
+    let depth = 0, token: RegExpExecArray | null;
+    while ((token = tokens.exec(body))) {
+      depth += token[1] === "endcase" ? -1 : 1;
+      if (depth === 0) return tokens.lastIndex;
+    }
+    return body.length;
+  }
+  if (kw === "if") {
+    let j = skipParens(body, i + kw.length);
+    while (/\s/.test(body[j])) j++;
+    const thenEnd = stmtEnd(body, j);
+    const elseMatch = /^\s*else\b/.exec(body.slice(thenEnd));
+    if (!elseMatch) return thenEnd;
+    return stmtEnd(body, thenEnd + elseMatch[0].length);
+  }
+  if (/^(for|while|repeat)$/.test(kw)) {
+    let j = i + kw.length;
+    while (/\s/.test(body[j])) j++;
+    if (body[j] === "(") j = skipParens(body, j);
+    return stmtEnd(body, j);
+  }
+  if (kw === "forever") return stmtEnd(body, i + kw.length);
+  let depth = 0;
+  for (let k = i; k < body.length; k++) {
+    const c = body[k];
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (c === ";" && depth === 0) return k + 1;
+  }
+  return body.length;
+}
+
+export function processRanges(body: string, vhdl: boolean): { index: number; text: string }[] {
+  const result: { index: number; text: string }[] = [];
+  const starts = vhdl ? /\b(process|function|procedure)\b/gi : /\b(always(?:_ff|_comb|_latch)?|initial|function|task)\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = starts.exec(body))) {
+    if (vhdl && /\bend\s*$/i.test(body.slice(Math.max(0, match.index - 12), match.index))) continue;
+    let end = body.length;
+    if (vhdl) {
+      end = scanVhdlRegion(body, match.index).end;
+    } else if (/^(function|task)$/.test(match[1])) {
+      const closing = new RegExp(`\\bend${match[1]}\\b`, "i").exec(body.slice(starts.lastIndex));
+      if (closing) end = starts.lastIndex + closing.index + closing[0].length;
+    } else {
+      let stmt = starts.lastIndex;
+      while (stmt < body.length && /\s/.test(body[stmt])) stmt++;
+      if (body[stmt] === "@") {
+        stmt++;
+        while (stmt < body.length && /\s/.test(body[stmt])) stmt++;
+        if (body[stmt] === "(") stmt = skipParens(body, stmt);
+        else while (stmt < body.length && /[\w*]/.test(body[stmt])) stmt++;
+      }
+      end = stmtEnd(body, stmt);
+    }
+    result.push({ index: match.index, text: body.slice(match.index, end) });
+    starts.lastIndex = end;
+  }
+  return result;
+}
+
 export function parseVerilogProcess(text: string): ProcInfo {
   const info: ProcInfo = { assignments: [], boundaries: [], controlSignals: [], dataSignals: [], locals: [], localBindings: [] };
   const tokens = tokenize(maskLiterals(text, false));

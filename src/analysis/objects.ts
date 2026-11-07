@@ -1,5 +1,5 @@
 import { detectLang } from "../parser";
-import type { SignalModule } from "../model/signal-flow";
+import type { SignalModule } from "./signal-flow";
 import { sourceEntry } from "./source-cache";
 
 export interface SourceObject {

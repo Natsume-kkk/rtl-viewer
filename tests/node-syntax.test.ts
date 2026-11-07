@@ -61,3 +61,60 @@ it("Node CLI 按 entity 依赖排序并向 GHDL 提供 IP 黑盒", () => {
   expect(result.backends.find(backend => backend.name === "ghdl")?.files).toBe(3);
   expect(result.diagnostics.filter(item => item.severity === "error")).toEqual([]);
 });
+
+
+it("Node CLI 在 package 使用者之前编译定义", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rtl-node-package-"));
+  roots.push(root);
+  const consumer = path.join(root, "a_consumer.sv");
+  const provider = path.join(root, "z_package.sv");
+  fs.writeFileSync(consumer, "module top; import types::*; byte_t value; assign value = 8'h00; endmodule\n");
+  fs.writeFileSync(provider, "package types; typedef logic [7:0] byte_t; endpackage\n");
+  const result = runNodeSyntaxCheck({
+    requestId: 4,
+    root,
+    files: [consumer, provider],
+    stubs: [],
+    options: emptySyntaxCheckOptions,
+  });
+  expect(result.checkedFiles).toBe(2);
+  expect(result.diagnostics.filter(item => item.severity === "error")).toEqual([]);
+});
+
+it("Node CLI 后端启动失败返回 Error 和 failed，不冒充检查成功", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rtl-node-missing-tools-"));
+  roots.push(root);
+  const source = path.join(root, "top.sv");
+  fs.writeFileSync(source, "module top; endmodule\n");
+  const previous = process.env.RTL_VIEWER_TOOLS;
+  process.env.RTL_VIEWER_TOOLS = path.join(root, "missing-tools");
+  try {
+    const result = runNodeSyntaxCheck({ requestId: 5, root, files: [source], stubs: [], options: emptySyntaxCheckOptions });
+    expect(result.checkedFiles).toBe(0);
+    expect(result.backends[0]?.status).toBe("failed");
+    expect(result.diagnostics.some(item => item.severity === "error" && item.message.includes("Verilator"))).toBe(true);
+  } finally {
+    if (previous === undefined) delete process.env.RTL_VIEWER_TOOLS;
+    else process.env.RTL_VIEWER_TOOLS = previous;
+  }
+});
+
+
+it("Node CLI 依赖排序使用未保存快照中的定义", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rtl-node-snapshot-order-"));
+  roots.push(root);
+  const consumer = path.join(root, "consumer.vhd");
+  const provider = path.join(root, "provider.vhd");
+  fs.writeFileSync(consumer, "entity consumer is end; architecture rtl of consumer is begin u: entity work.provider; end;\n");
+  fs.writeFileSync(provider, "entity legacy is end;\n");
+  const result = runNodeSyntaxCheck({
+    requestId: 6,
+    root,
+    files: [consumer, provider],
+    stubs: [],
+    options: emptySyntaxCheckOptions,
+    snapshots: [{ file: provider, content: "entity provider is end;\n", encoding: "utf8" }],
+  });
+  expect(result.checkedFiles).toBe(2);
+  expect(result.diagnostics.filter(item => item.severity === "error")).toEqual([]);
+});

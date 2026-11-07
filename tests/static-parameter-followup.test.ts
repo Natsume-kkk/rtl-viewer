@@ -1,5 +1,5 @@
 import {expect,it} from "vitest";
-import {SignalProject,traceSignal} from "../src/model/signal-flow";
+import {SignalProject,traceSignal} from "../src/analysis/signal-flow";
 import {evaluateConstant} from "../src/parser/static-generate";
 
 const view=(source:string)=>new SignalProject(new Map([["p.v",source]])).moduleForContext({module:"top",path:"top"})!;

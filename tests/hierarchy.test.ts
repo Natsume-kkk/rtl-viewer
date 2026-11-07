@@ -337,3 +337,16 @@ it("entity 先扫描时，定义仍在 entity，例化定位保留 architecture 
   expect(h.tops[0].children[0].instFile).toBe("b_arch.vhd");
   expect(h.tops[0].children[0].instLine).toBe(3);
 });
+
+
+it("分析范围只包含选定 entity 与 architecture，冲突时保留全部候选", () => {
+  const index = new ModuleIndex();
+  for (const [file, source] of Object.entries({
+    "a.vhd": "architecture a of core is begin end a;",
+    "b.vhd": "architecture b of core is begin end b;",
+    "z.vhd": "entity core is end core;",
+  })) index.addStructure(scanStructure(source, file));
+  expect(index.bindingFiles("core").map(part => part.file)).toEqual(["a.vhd", "b.vhd", "z.vhd"]);
+  index.setPreferred("core", "b.vhd");
+  expect(index.bindingFiles("core").map(part => part.file)).toEqual(["z.vhd", "b.vhd"]);
+});

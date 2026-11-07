@@ -58,7 +58,7 @@ export class StatsPanel {
   private ascending = true;
   private viewMode: "topology" | "files" = "topology";
 
-  constructor(root: HTMLElement, private callbacks: StatsPanelCallbacks) {
+  constructor(private readonly root: HTMLElement, private callbacks: StatsPanelCallbacks) {
     root.className = "stats-panel";
     const bar = document.createElement("div");
     bar.className = "stats-bar";
@@ -109,8 +109,13 @@ export class StatsPanel {
 
   private currentView?: StatsView;
 
+  refresh(): void {
+    if (this.currentView) this.render(this.currentView);
+  }
+
   render(view: StatsView): void {
     this.currentView = view;
+    if (this.root.hidden) return;
     const { facts, files, done, total } = view;
     this.scopeFilter.value = view.scope;
     this.scopeFilter.title = view.scope === "top" ? `只统计当前顶层${view.topName ? `：${view.topName}` : ""}` : "统计全部工程文件";
@@ -179,8 +184,7 @@ export class StatsPanel {
   }
 
   private topologyNode(node: StatsTopologyNode, depth: number, facts: Map<string, FileFacts>, issueCounts: Map<string, number>): HTMLElement {
-    const children = node.children.map(child => this.topologyNode(child, depth + 1, facts, issueCounts));
-    const hasChildren = children.length > 0;
+    const hasChildren = node.children.length > 0;
     const container = hasChildren ? document.createElement("details") : document.createElement("div");
     container.className = "stats-topology-node";
     const row = hasChildren ? document.createElement("summary") : document.createElement("div");
@@ -227,13 +231,20 @@ export class StatsPanel {
       file.textContent = "IP";
       row.append(file);
     }
-    container.append(row, ...children);
+    container.append(row);
     if (hasChildren && container instanceof HTMLDetailsElement) {
+      const populate = () => {
+        if (container.dataset.populated) return;
+        container.dataset.populated = "true";
+        for (const child of node.children) container.append(this.topologyNode(child, depth + 1, facts, issueCounts));
+      };
       container.open = this.expanded.has(node.key) || depth === 0 && !this.collapsed.has(node.key);
+      if (container.open) populate();
       container.addEventListener("toggle", () => {
         if (container.open) {
           this.expanded.add(node.key);
           this.collapsed.delete(node.key);
+          populate();
         } else {
           this.expanded.delete(node.key);
           this.collapsed.add(node.key);

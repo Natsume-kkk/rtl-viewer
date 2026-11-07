@@ -61,6 +61,14 @@ export class ModuleIndex {
     return bindModuleParts(selectModuleParts(this.byName.get(key) ?? [], this.preferred.get(key))).definition;
   }
 
+  bindingFiles(name: string): ModuleDef[] {
+    const key = name.toLowerCase();
+    const parts = selectModuleParts(this.byName.get(key) ?? [], this.preferred.get(key));
+    const { definition, implementation, problem } = bindModuleParts(parts);
+    if (problem) return [...parts];
+    return [...new Map([definition, implementation].filter((part): part is ModuleDef => !!part && !part.isIp).map(part => [filePathKey(part.file), part])).values()];
+  }
+
   setPreferred(name: string, file: string): void {
     const key = name.toLowerCase();
     if ((this.byName.get(key) ?? []).some(part => filePathKey(part.file) === filePathKey(file))) this.preferred.set(key, filePathKey(file));

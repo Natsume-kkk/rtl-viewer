@@ -99,6 +99,7 @@ export interface SyntaxDiagnostic {
   ruleId: string;
   source: "verilator" | "ghdl" | "system" | string;
   message: string;
+  relatedRuleIds?: string[];
 }
 
 export interface BackendSummary {

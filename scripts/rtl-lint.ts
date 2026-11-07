@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { runNodeSyntaxCheck } from "../src/app/node-syntax";
 import { analyzeFileFacts } from "../src/analysis/facts";
 import { runGeneralRules } from "../src/analysis/general-rules";
@@ -11,6 +12,7 @@ import { parseFile, parseXci } from "../src/parser";
 import { verilogStub, vhdlStub } from "../src/app/syntax-stubs";
 import { syntaxReportCsv, syntaxReportHtml } from "../src/app/syntax-report";
 import { projectFiles } from "../src/app/project-files";
+import { readNodeSource } from "../src/app/node-source";
 
 interface CliOptions {
   root: string;
@@ -47,7 +49,7 @@ function main(argv: string[]): number {
     ...buildStubs(scanned),
     options: syntaxOptions(options),
   }) : { requestId: 1, diagnostics: [], checkedFiles: 0, backends: [], cancelled: false };
-  const facts = files.map(file => analyzeFileFacts(file, fs.readFileSync(file, "utf8")));
+  const facts = files.map(file => analyzeFileFacts(file, readNodeSource(file)));
   const builtin = facts.flatMap(fact => runGeneralRules(fact, true));
   for (const fact of facts) {
     const diagnostics = fact.language === "verilog" ? runGjb10157Rules(fact) : runGjb9765Rules(fact);
@@ -115,15 +117,18 @@ function parseArgs(argv: string[]): CliOptions {
   return options;
 }
 
-function collect(target: string): string[] {
+const GENERATED_DIR_SUFFIXES = [".runs", ".sim", ".cache", ".hw", ".gen", ".ip_user_files"];
+
+export function collect(target: string, depth = 0): string[] {
+  if (depth >= 64) throw new Error(`目录超过扫描深度上限：${target}`);
   const absolute = path.resolve(target);
   const stat = fs.statSync(absolute);
   if (stat.isFile()) return /\.(?:v|sv|vh|svh|vhd|vhdl|xci)$/i.test(absolute) ? [absolute] : [];
   const files: string[] = [];
   for (const entry of fs.readdirSync(absolute, { withFileTypes: true })) {
-    if (entry.name.startsWith(".") || ["node_modules", "target", "dist", "release"].includes(entry.name) || entry.name.endsWith(".runs") || entry.name.endsWith(".sim") || entry.name.endsWith(".gen") || entry.name.endsWith(".ip_user_files") || entry.isSymbolicLink()) continue;
+    if (entry.name.startsWith(".") || ["node_modules", "target", "dist", "release"].includes(entry.name) || GENERATED_DIR_SUFFIXES.some(suffix => entry.name.endsWith(suffix)) || entry.isSymbolicLink()) continue;
     const child = path.join(absolute, entry.name);
-    if (entry.isDirectory()) files.push(...collect(child));
+    if (entry.isDirectory()) files.push(...collect(child, depth + 1));
     else if (entry.isFile() && /\.(?:v|sv|vh|svh|vhd|vhdl|xci)$/i.test(entry.name)) files.push(child);
   }
   return files;
@@ -132,12 +137,12 @@ function collect(target: string): string[] {
 function buildStubs(files: string[]): { stubs: SyntaxStub[]; vhdlStubs: SyntaxStub[] } {
   const stubs: SyntaxStub[] = [], vhdlStubs: SyntaxStub[] = [];
   for (const file of files.filter(file => file.endsWith(".xci"))) {
-    const ip = parseXci(fs.readFileSync(file, "utf8"), file);
+    const ip = parseXci(readNodeSource(file), file);
     const base = file.replace(/\.xci$/i, "");
     const dir = path.dirname(file);
     for (const candidate of [`${base}.v`, `${dir}/synth/${ip.name}.v`, `${dir}/sim/${ip.name}.v`, `${base}.veo`]) {
       if (!fs.existsSync(candidate)) continue;
-      const modules = parseFile(fs.readFileSync(candidate, "utf8"), candidate);
+      const modules = parseFile(readNodeSource(candidate), candidate);
       const module = modules.find(item => item.name.toLowerCase() === ip.name.toLowerCase()) ?? modules[0];
       if (module?.ports.length) {
         stubs.push({ name: ip.name, source: verilogStub(ip.name, module.ports, module.parameters ?? []) });
@@ -147,7 +152,7 @@ function buildStubs(files: string[]): { stubs: SyntaxStub[]; vhdlStubs: SyntaxSt
     }
   }
   for (const file of files.filter(file => /\.(?:vhd|vhdl)$/i.test(file))) {
-    for (const module of parseFile(fs.readFileSync(file, "utf8"), file)) {
+    for (const module of parseFile(readNodeSource(file), file)) {
       stubs.push({ name: module.name, source: verilogStub(module.name, module.ports, module.parameters ?? []) });
     }
   }
@@ -158,9 +163,11 @@ function printHelp(): void {
   console.log(`Usage: rtl-lint [options] <file-or-directory> [...]\n\n  --root DIR          工程根目录，默认当前目录\n  --top NAME         顶层模块\n  --define NAME[=V]  添加 Verilog 宏\n  --include DIR      添加 include 目录\n  --library LIB=FILE 添加 VHDL library 映射\n  --verilator-arg X  添加 Verilator 参数\n  --ghdl-arg X       添加 GHDL 参数\n  --no-external      仅运行内置规则\n  --html FILE        导出 HTML 报告\n  --csv FILE         导出 CSV 报告\n\n默认执行全部已实现的自动规则。`);
 }
 
-try {
-  process.exitCode = main(process.argv.slice(2));
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 2;
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    process.exitCode = main(process.argv.slice(2));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 2;
+  }
 }

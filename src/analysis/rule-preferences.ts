@@ -1,4 +1,5 @@
 import type { RuleDiagnostic } from "./general-rules";
+import type { SyntaxDiagnostic } from "../ipc";
 import { filePathKey } from "../file-path";
 
 export interface RulePreferences {
@@ -13,14 +14,19 @@ export interface RulePreferences {
 
 export const ALL_RULE_PREFERENCES: RulePreferences = { style: true, gjb10157: true, gjb9765: true, tabPolicy: "spaces", disabledRules: [], severityOverrides: {}, excludes: [] };
 
-export function applyRulePreferences(diagnostics: RuleDiagnostic[], preferences: RulePreferences): RuleDiagnostic[] {
+type Diagnostic = RuleDiagnostic | SyntaxDiagnostic;
+const relatedIds = (diagnostic: Diagnostic) => "relatedRuleIds" in diagnostic ? diagnostic.relatedRuleIds : undefined;
+
+export function applyRulePreferences(diagnostics: RuleDiagnostic[], preferences: RulePreferences): RuleDiagnostic[];
+export function applyRulePreferences(diagnostics: Diagnostic[], preferences: RulePreferences): Diagnostic[];
+export function applyRulePreferences(diagnostics: Diagnostic[], preferences: RulePreferences): Diagnostic[] {
   const disabled = new Set(preferences.disabledRules);
   const excludes = preferences.excludes.map(filePathKey);
   const filtered = diagnostics.filter(diagnostic => {
     if (disabled.has(diagnostic.ruleId)) return false;
-    if (diagnostic.category === "style" && !preferences.style) return false;
-    if (diagnostic.category === "gjb10157" && !preferences.gjb10157) return false;
-    if (diagnostic.category === "gjb9765" && !preferences.gjb9765) return false;
+    if ("category" in diagnostic && diagnostic.category === "style" && !preferences.style) return false;
+    if ("category" in diagnostic && diagnostic.category === "gjb10157" && !preferences.gjb10157) return false;
+    if ("category" in diagnostic && diagnostic.category === "gjb9765" && !preferences.gjb9765) return false;
     if (preferences.tabPolicy === "tabs" && diagnostic.ruleId === "VHD-ST-002") return false;
     if (preferences.tabPolicy === "spaces" && diagnostic.ruleId === "9765-4.14-b") return false;
     const file = filePathKey(diagnostic.file);
@@ -29,17 +35,17 @@ export function applyRulePreferences(diagnostics: RuleDiagnostic[], preferences:
       return normalized && (file === normalized || file.startsWith(`${normalized}/`) || file.includes(`/${normalized}/`) || file.endsWith(`/${normalized}`));
     });
   });
-  const grouped = new Map<string, RuleDiagnostic>();
+  const grouped = new Map<string, Diagnostic>();
   for (const diagnostic of filtered) {
     const override = preferences.severityOverrides[diagnostic.ruleId];
     if (override) diagnostic.severity = override;
     const key = `${dedupeFamily(diagnostic.ruleId)}|${filePathKey(diagnostic.file)}|${diagnostic.line}|${diagnostic.column}`;
     const previous = grouped.get(key);
     if (!previous) {
-      grouped.set(key, { ...diagnostic, relatedRuleIds: diagnostic.relatedRuleIds ?? [diagnostic.ruleId] });
+      grouped.set(key, { ...diagnostic, relatedRuleIds: relatedIds(diagnostic) ?? [diagnostic.ruleId] });
       continue;
     }
-    const related = [...new Set([...previous.relatedRuleIds ?? [previous.ruleId], ...diagnostic.relatedRuleIds ?? [diagnostic.ruleId]])];
+    const related = [...new Set([...relatedIds(previous) ?? [previous.ruleId], ...relatedIds(diagnostic) ?? [diagnostic.ruleId]])];
     const first = widthRank(previous.ruleId) <= widthRank(diagnostic.ruleId) ? previous : diagnostic;
     grouped.set(key, {
       ...first,

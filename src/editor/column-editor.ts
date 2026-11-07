@@ -1,5 +1,5 @@
 import { monaco } from "./monaco";
-import { columnTargets, columnValues, type ColumnOptions } from "./column-edit";
+import { columnTargetsFromSource, columnValues, type ColumnOptions } from "./column-edit";
 import { appAlert } from "../ui/dialog";
 import { registerEditorAction } from "./actions";
 
@@ -9,7 +9,7 @@ export async function openColumnEditor(editor: monaco.editor.IStandaloneCodeEdit
   const model = editor.getModel(), selections = editor.getSelections();
   if (!model || !selections || editor.getOption(monaco.editor.EditorOption.readOnly) || document.querySelector(".choice-overlay")) return;
   let targets;
-  try { targets = columnTargets(model.getLinesContent(), selections, model.getOptions().tabSize); }
+  try { targets = columnTargetsFromSource({ lineCount: model.getLineCount(), getLineContent: line => model.getLineContent(line) }, selections, model.getOptions().tabSize); }
   catch (error) { await appAlert((error as Error).message); editor.focus(); return; }
   const version = model.getVersionId();
   const overlay = document.createElement("div"); overlay.className = "choice-overlay";

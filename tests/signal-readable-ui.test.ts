@@ -4,7 +4,7 @@ import { SignalFlowPanel } from "../src/ui/signal-flow";
 import type { LogicGraph } from "../src/analysis/local";
 import type { Driver } from "../src/analysis/project";
 import type { ProcessResult } from "../src/analysis/process";
-import { SignalProject } from "../src/model/signal-flow";
+import { SignalProject } from "../src/analysis/signal-flow";
 import { ComputationProject } from "../src/analysis/project";
 import { localLogic } from "../src/analysis/local";
 

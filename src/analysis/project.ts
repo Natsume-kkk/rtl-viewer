@@ -1,5 +1,5 @@
 import { detectLang, type HdlLang } from "../parser";
-import { SignalProject, type SignalContext, type SignalModule } from "../model/signal-flow";
+import { SignalProject, type SignalContext, type SignalModule } from "./signal-flow";
 import { formatExpr, parseExpression, refs, type Expr } from "./expression";
 import { analyzeProcess, type ProcessResult } from "./process";
 import { sourceEntry } from "./source-cache";

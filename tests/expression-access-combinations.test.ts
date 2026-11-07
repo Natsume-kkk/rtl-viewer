@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SignalProject } from "../src/model/signal-flow";
+import { SignalProject } from "../src/analysis/signal-flow";
 import { ComputationProject } from "../src/analysis/project";
 import { localLogic } from "../src/analysis/local";
 import { expressionRelations, parseExpression } from "../src/analysis/expression";

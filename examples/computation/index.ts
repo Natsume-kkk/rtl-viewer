@@ -1,5 +1,5 @@
 import { ComputationProject, type ComputationGraph, type SourceSpan } from "../../src/analysis/project";
-import { SignalProject, type SignalContext } from "../../src/model/signal-flow";
+import { SignalProject, type SignalContext } from "../../src/analysis/signal-flow";
 import { setIcon, type IconName } from "../../src/ui/icons";
 import { readingSteps, selectBranch, keepReadingPrefix, type ReadingStep } from "./reading";
 

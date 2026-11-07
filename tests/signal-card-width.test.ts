@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
 import { SignalFlowPanel } from "../src/ui/signal-flow";
-import { SignalProject, type TraceNode } from "../src/model/signal-flow";
+import { SignalProject, type TraceNode } from "../src/analysis/signal-flow";
 import { ComputationProject } from "../src/analysis/project";
 import { localLogic } from "../src/analysis/local";
 

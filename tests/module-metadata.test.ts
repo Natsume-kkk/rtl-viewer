@@ -78,3 +78,16 @@ describe("模块文件解析缓存", () => {
     expect((await loader.modulePorts("m")).map(port => port.name)).toEqual(["clk", "result"]);
   });
 });
+
+
+it("IP 缓存失效后重新读取最新接口", async () => {
+  vi.mocked(readFile)
+    .mockResolvedValueOnce({ content: "module core(input a); endmodule", encoding: "utf8", mtime: 1 })
+    .mockResolvedValueOnce({ content: "module core(input a, output q); endmodule", encoding: "utf8", mtime: 2 });
+  const index = new ModuleIndex();
+  index.addIp("core", "ip/core.xci");
+  const loader = createModuleMetadataLoader({ ips: () => [{ name: "core", file: "ip/core.xci" }], resolveModule: name => index.resolve(name), fileContent: () => undefined, fileToken: file => ({ identity: file, version: 1 }) });
+  expect((await loader.modulePorts("core")).map(port => port.name)).toEqual(["a"]);
+  loader.invalidateIps();
+  expect((await loader.modulePorts("core")).map(port => port.name)).toEqual(["a", "q"]);
+});

@@ -5,7 +5,7 @@ import { decode, walk } from "./helpers/fs-scan";
 import { parseFile, parseXci, scanStructure } from "../src/parser";
 import { ModuleIndex } from "../src/model";
 import { buildHierarchy } from "../src/model/hierarchy";
-import { SignalProject, traceSignal, type TraceNode } from "../src/model/signal-flow";
+import { SignalProject, traceSignal, type TraceNode } from "../src/analysis/signal-flow";
 
 it("仓库样例覆盖混合语言层级、IP 黑盒、约束与寄存器来源", async () => {
   const root = resolve("tests/samples/basic");

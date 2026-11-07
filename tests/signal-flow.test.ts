@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SignalProject, traceSignal, type TraceNode } from "../src/model/signal-flow";
+import { SignalProject, traceSignal, type TraceNode } from "../src/analysis/signal-flow";
 import { parseVhdlProcess } from "../src/parser/procedural";
 
 const flatten = (n: TraceNode): string => [n.label, n.reason ?? "", ...n.children.map(flatten)].join("\n");

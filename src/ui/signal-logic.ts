@@ -1,7 +1,7 @@
 import type { Expr } from "../analysis/expression";
 import type { LogicGraph } from "../analysis/local";
 import type { Driver } from "../analysis/project";
-import type { TraceNode } from "../model/signal-flow";
+import type { TraceNode } from "../analysis/signal-flow";
 import { CardWidths, columnPositions, cardHeader, appendSource, makeWires, drawWires, CANVAS_TOP, type CardWidthState, type CardPosition, type CardEdge } from "./signal-canvas";
 import { setIcon } from "./icons";
 

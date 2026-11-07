@@ -4,13 +4,14 @@ import { scanStructure, type ModuleInfo } from "../parser";
 import { findModuleSignalPosition } from "../model/signals";
 import { monaco } from "../editor/monaco";
 import { pathFromUri } from "../editor/file-path";
-import { SignalProject, traceSignal, type SignalContext } from "../model/signal-flow";
+import { SignalProject, type SignalContext } from "../analysis/signal-flow";
 import { SignalFlowPanel } from "../ui/signal-flow";
 import { ComputationProject } from "../analysis/project";
-import { localLogic, loadPortSites, signalMode } from "../analysis/local";
+import { signalMode } from "../analysis/local";
 import { sourceEntry } from "../analysis/source-cache";
 import { lookupSourceObject } from "../analysis/objects";
 import { sameFilePath } from "../file-path";
+import { runSignalTraceInWorker } from "./signal-trace";
 
 const IDENT_RE = /^[A-Za-z_]\w*$/;
 
@@ -32,11 +33,11 @@ export interface SignalControllerContext {
 export function createSignalController(root: HTMLElement, ctx: SignalControllerContext) {
   let flowRequest = 0;
   let flowReady = false;
-  let flowProject: { project: SignalProject; computation: ComputationProject; sources: Map<string,string>; top: string | undefined; files: Set<string> } | undefined;
-  const flowTokens = new WeakMap<monaco.editor.ITextModel, { version: number; lines: monaco.Token[][] }>();
-  interface FlowSelection { project: SignalProject; computation: ComputationProject; sources: Map<string,string>; signal: string; identity: string; contexts: SignalContext[]; targets: {name:string;scope:number;label:string}[]; note: string; file: string; line: number; column: number; scope: number }
+  let flowProject: { project: SignalProject; computation: ComputationProject; sources: Map<string,string>; structures: Map<string, ModuleInfo[]>; top: string | undefined; files: Set<string> } | undefined;
+  interface FlowSelection { project: SignalProject; computation: ComputationProject; sources: Map<string,string>; structures: Map<string, ModuleInfo[]>; signal: string; identity: string; contexts: SignalContext[]; targets: {name:string;scope:number;label:string}[]; note: string; file: string; line: number; column: number; scope: number }
   let flowSelection: FlowSelection | undefined;
   let flowContextPath: string | undefined;
+  let traceTask: { cancel(): void } | undefined;
   const flowPanel = new SignalFlowPanel(root, {
     close: () => ctx.close(),
     refresh: () => { if (flowSelection) void analyzeCurrentSignal(flowSelection); },
@@ -48,6 +49,8 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
 
   function cancelSignalAnalysis(): void {
     ++flowRequest;
+    traceTask?.cancel();
+    traceTask = undefined;
   }
 
   async function analyzeCurrentSignal(previous?: FlowSelection): Promise<void> {
@@ -58,13 +61,18 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
       const language = model.getLanguageId();
       if (language !== "verilog" && language !== "vhdl") word = undefined;
       else {
-        let tokens = flowTokens.get(model);
-        if (tokens?.version !== model.getVersionId()) {
-          tokens = { version: model.getVersionId(), lines: monaco.editor.tokenize(model.getValue(), language) };
-          flowTokens.set(model, tokens);
-        }
-        const token = tokens.lines[position.lineNumber - 1]?.filter(t => t.offset <= position.column - 1).at(-1);
-        if (!token || /comment|string|keyword|number|type/.test(token.type)) word = undefined;
+        const source = model.getValue();
+        const entry = sourceEntry(pathFromUri(model.uri), source);
+        const lineStart = entry.lineOffset(position.lineNumber);
+        const lineEnd = entry.lineOffset(position.lineNumber + 1);
+        const cursor = lineStart + position.column - 1;
+        let start = cursor, end = cursor;
+        while (start > lineStart && /[A-Za-z0-9_$]/.test(source[start - 1])) start--;
+        while (end < lineEnd && /[A-Za-z0-9_$]/.test(source[end] ?? "")) end++;
+        const token = monaco.editor.tokenize(source.slice(lineStart, lineEnd), language)[0]?.filter(t => t.offset <= position.column - 1).at(-1);
+        const selectedWord = word;
+        const sameWord = (value: string) => language === "vhdl" ? value.toLowerCase() === selectedWord.toLowerCase() : value === selectedWord;
+        if (!sameWord(source.slice(start, end)) || !sameWord(entry.text(true).slice(start, end)) || !token || /comment|string|keyword|number|type/.test(token.type)) word = undefined;
       }
     }
     if ((!previous && (!model || !position)) || !word || !IDENT_RE.test(word)) {
@@ -99,7 +107,7 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
         }
       }
       const project = new SignalProject(files, structures);
-      flowProject = { project, computation: new ComputationProject(files,project), sources:files, top: buildHierarchy(ctx.index(), structures, ctx.topName()).tops[0]?.moduleName, files: new Set(files.keys()) };
+      flowProject = { project, computation: new ComputationProject(files,project), sources:files, structures, top: buildHierarchy(ctx.index(), structures, ctx.topName()).tops[0]?.moduleName, files: new Set(files.keys()) };
     }
     const { project } = flowProject;
     const owner = project.owner(file, line, column);
@@ -129,7 +137,7 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
     const contexts = choices.map(choice=>choice.context), targets=choices.map(choice=>choice.target);
     if (!contexts.length) { flowPanel.hint("未找到当前模块定义，保留原链路。"); return; }
     const note = found.truncated ? "实例路径列表已截断。" : found.items.length ? "" : "未定位到当前顶层内的实例，仅分析本模块范围。";
-    const selection:FlowSelection = { project, computation:flowProject.computation, sources:flowProject.sources, signal: word, identity, contexts, targets, note, file, line, column, scope };
+    const selection:FlowSelection = { project, computation:flowProject.computation, sources:flowProject.sources, structures:flowProject.structures, signal: word, identity, contexts, targets, note, file, line, column, scope };
     const matching = contexts.findIndex((c,i) => c.path === preferredPath && (!previous || targets[i].name===previous.identity && (previous.scope<0 || targets[i].scope===previous.scope)));
     if(previous && previous.scope>=0 && (matching<0 || targets[matching].scope!==previous.scope)){
       flowPanel.hint("局部对象所在过程已变化，请重新右键追踪。");return;
@@ -146,7 +154,8 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
 
   async function runSignalTrace(index: number, selection = flowSelection): Promise<void> {
     if (!selection?.contexts[index]) return;
-    const request = ++flowRequest;
+    cancelSignalAnalysis();
+    const request = flowRequest;
     flowReady = false;
     flowPanel.hint(`正在分析 ${selection.signal}…`);
     try {
@@ -154,16 +163,14 @@ export function createSignalController(root: HTMLElement, ctx: SignalControllerC
       const target=selection.targets[index];
       const active={...selection,identity:target.name,scope:target.scope};
       selection=active;
-      const options = { cancelled: () => request !== flowRequest, source: selection, scope: selection.scope };
       const mode=signalMode(selection.project,context,target.name,selection.scope);
-      const localProject=mode==="logic"?selection.project.forSource(context.module,selection):selection.project;
-      const localComputation=localProject===selection.project?selection.computation:new ComputationProject(selection.sources,localProject);
-      const graph=mode==="logic" && selection.scope<0 ? localLogic(localComputation,localProject,context,target.name) : undefined;
-      if(graph)await loadPortSites(graph,localProject,options.cancelled);
-      if(graph){const root=graph.nodes.find(n=>n.id===graph.root);if(root){const start=sourceEntry(selection.file,selection.sources.get(selection.file)??"").lineOffset(selection.line);root.source={file:selection.file,start,end:start+1};}}
-      const up=graph?undefined:await traceSignal(selection.project,context,target.name,"upstream",{...options,stopAtAssignments:mode==="port",localOnly:mode==="logic"});
+      const task = runSignalTraceInWorker({
+        sources: [...selection.sources], structures: [...selection.structures], context, signal: target.name, scope: selection.scope, mode, source: selection,
+      }, () => request !== flowRequest);
+      traceTask = task;
+      const { graph, up, down } = await task.promise;
+      if (traceTask === task) traceTask = undefined;
       if(request!==flowRequest)return;
-      const down=graph?undefined:await traceSignal(selection.project,context,target.name,"downstream",{...options,stopAtAssignments:mode==="port",localOnly:mode==="logic"});
       if(request===flowRequest){
         const previousContext=flowSelection?.contexts.find(c=>c.path===flowContextPath);
         const sameName=/\.vhdl?$/i.test(selection.file)?flowSelection?.signal.toLowerCase()===selection.signal.toLowerCase():flowSelection?.signal===selection.signal;

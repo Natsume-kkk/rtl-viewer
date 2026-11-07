@@ -268,3 +268,15 @@ it("快捷严重程度筛选可切换，来源筛选默认折叠", () => {
   restore.click();
   expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 4/4 条");
 });
+
+
+it("隐藏问题面板不重建结果，恢复显示时刷新最新诊断", () => {
+  const { root, panel } = setup();
+  root.hidden = true;
+  panel.finish(result());
+  expect(root.querySelector(".problem-group")).toBeNull();
+  root.hidden = false;
+  panel.refresh();
+  expect(root.querySelector(".problem-summary")!.textContent).toContain("1 错误");
+  expect(root.querySelectorAll(".problem-group").length).toBeGreaterThan(0);
+});

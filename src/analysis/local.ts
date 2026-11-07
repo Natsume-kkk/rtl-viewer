@@ -1,5 +1,5 @@
 import { detectLang } from "../parser";
-import { boundaryAccess, traceSignal, type SignalProject, type SignalContext, type TraceNode } from "../model/signal-flow";
+import { boundaryAccess, traceSignal, type SignalProject, type SignalContext, type TraceNode } from "./signal-flow";
 import { type ComputationProject, type Driver, type SourceSpan, driverCount } from "./project";
 import { type Expr, parseExpression, expressionArgumentRole } from "./expression";
 import { findSignalDeclLine } from "../model/signals";

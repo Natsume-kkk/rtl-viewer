@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, it } from "vitest";
-import { SignalProject, traceSignal } from "../src/model/signal-flow";
+import { SignalProject, traceSignal } from "../src/analysis/signal-flow";
 import { ComputationProject } from "../src/analysis/project";
 import { localLogic, loadPortSites } from "../src/analysis/local";
 

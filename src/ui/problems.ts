@@ -78,7 +78,7 @@ export class ProblemPanel {
   private labels = new Map<string, string>();
   private empty?: HTMLElement;
 
-  constructor(root: HTMLElement, private callbacks: ProblemPanelCallbacks) {
+  constructor(private readonly root: HTMLElement, private callbacks: ProblemPanelCallbacks) {
     root.className = "problem-panel";
     const bar = document.createElement("div");
     bar.className = "problem-bar";
@@ -229,6 +229,10 @@ export class ProblemPanel {
     this.scopeFilter.title = scope === "top" ? `只分析当前顶层${topName ? `：${topName}` : ""}` : "分析全部工程文件";
   }
 
+  refresh(): void {
+    this.renderResults();
+  }
+
   setDisplayFilter(filter: ProblemDisplayFilter): void {
     this.severities.clear();
     for (const severity of filter.severity ? [filter.severity] : SEVERITIES) this.severities.add(severity);
@@ -319,6 +323,7 @@ export class ProblemPanel {
   }
 
   private renderResults(): void {
+    if (this.root.hidden) return;
     this.renderFileOptions();
     this.renderSummary();
     this.backends.textContent = "";
@@ -356,7 +361,9 @@ export class ProblemPanel {
     const nextGroups = new Map<string, Diagnostic[]>();
     for (const diagnostic of filtered.filter(item => !isStubHint(item))) {
       const key = `${isEnvironmentDiagnostic(diagnostic) ? "environment" : diagnostic.severity}|${diagnostic.file}|${diagnostic.ruleId}`;
-      nextGroups.set(key, [...nextGroups.get(key) ?? [], diagnostic]);
+      const group = nextGroups.get(key) ?? [];
+      group.push(diagnostic);
+      nextGroups.set(key, group);
     }
     const nextKeys = new Set(nextGroups.keys());
     if (filtered.some(isStubHint)) nextKeys.add("stubs");

@@ -40,3 +40,11 @@ it("VHDL 过程敏感列表和赋值使用同一事实结构", () => {
   expect(facts.processes[0].sequential).toBe(true);
   expect(facts.processes[0].assignments[0]).toMatchObject({ target: "q", operator: "<=" });
 });
+
+
+it("VHDL-2008 块注释不计入代码行且可作为文件头注释", () => {
+  const source = `/*\nthree\ncomment\nlines\n*/\nentity demo is\nend;`;
+  const stats = codeStatistics(source, "vhdl");
+  expect(stats).toMatchObject({ physicalLines: 7, codeLines: 2, commentOnlyLines: 5, inlineCommentLines: 0 });
+  expect(analyzeFileFacts("demo.vhd", source).firstNonEmptyComment).toBe(true);
+});

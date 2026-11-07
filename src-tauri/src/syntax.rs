@@ -264,7 +264,19 @@ fn execute_check(
     jobs: &Arc<SyntaxJobState>,
     progress: &dyn Fn(SyntaxProgress),
 ) -> Result<SyntaxCheckResult, String> {
-    jobs.cancelled.lock().unwrap().remove(&request.request_id);
+    let request_id = request.request_id;
+    let result = execute_check_inner(request, tools, work, jobs, progress);
+    jobs.cancelled.lock().unwrap().remove(&request_id);
+    result
+}
+
+fn execute_check_inner(
+    request: SyntaxCheckRequest,
+    tools: &Path,
+    work: &Path,
+    jobs: &Arc<SyntaxJobState>,
+    progress: &dyn Fn(SyntaxProgress),
+) -> Result<SyntaxCheckResult, String> {
     let root = fs::canonicalize(&request.root).map_err(|error| format!("读取工程目录失败：{error}"))?;
     let snapshot_files = prepare_snapshots(&request.snapshots, &root, work)?;
     let mut diagnostics = Vec::new();
@@ -314,13 +326,13 @@ fn execute_check(
         let (ordered, mut read_errors) = order_verilog(verilogs);
         diagnostics.append(&mut read_errors);
         let count = ordered.len();
-        let version = tool_version(&verilator, tools);
+        let version = tool_version(&verilator, tools, &root, request.request_id, jobs);
         let mut status = "completed".to_owned();
         match run_verilator(&verilator, tools, &root, work, &ordered, &include_dirs, &request.stubs, &request.options, request.top.as_deref(), request.request_id, jobs) {
             Ok(outcome) => {
                 parse_verilator_output(&outcome.stdout, &root, &mut diagnostics);
                 parse_verilator_output(&outcome.stderr, &root, &mut diagnostics);
-                if !outcome.success && diagnostics.is_empty() {
+                if !outcome.success && !outcome.cancelled && !outcome.timed_out && diagnostics.is_empty() {
                     diagnostics.push(system_diagnostic("", &format!("Verilator 检查失败：{}", output_summary(&outcome.stdout, &outcome.stderr))));
                 }
                 if outcome.cancelled || is_cancelled(jobs, request.request_id) {
@@ -342,7 +354,7 @@ fn execute_check(
 
     if !vhdls.is_empty() && !is_cancelled(jobs, request.request_id) {
         let count = vhdls.len();
-        let version = tool_version(&ghdl, tools);
+        let version = tool_version(&ghdl, tools, &root, request.request_id, jobs);
         let mut status = "completed".to_owned();
         let ghdl_work = work.join("ghdl");
         let stub_directory = ghdl_work.join("stubs");
@@ -384,7 +396,7 @@ fn execute_check(
                     let before = diagnostics.len();
                     parse_ghdl_output(&outcome.stdout, &root, &mut diagnostics);
                     parse_ghdl_output(&outcome.stderr, &root, &mut diagnostics);
-                    if !outcome.success && diagnostics.len() == before {
+                    if !outcome.success && !outcome.cancelled && !outcome.timed_out && diagnostics.len() == before {
                         diagnostics.push(system_diagnostic(&file.display, &format!("GHDL 分析失败：{}", output_summary(&outcome.stdout, &outcome.stderr))));
                     }
                     if outcome.cancelled || is_cancelled(jobs, request.request_id) {
@@ -408,7 +420,6 @@ fn execute_check(
         backends.push(BackendSummary { name: "ghdl".into(), version, files: count, status });
     }
 
-    jobs.cancelled.lock().unwrap().remove(&request.request_id);
     let cancelled = backends.iter().any(|backend| backend.status == "cancelled");
     for diagnostic in &mut diagnostics {
         if let Some(original) = snapshot_files.originals.get(&diagnostic.file) {
@@ -576,12 +587,12 @@ fn configure_tools(command: &mut Command, tools: &Path) {
     command.env("TERM", "dumb");
 }
 
-fn tool_version(program: &Path, tools: &Path) -> String {
-    let mut command = Command::new(program);
-    command.arg("--version").stdout(Stdio::piped()).stderr(Stdio::piped());
-    configure_tools(&mut command, tools);
-    command.output().ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("未知版本").trim().to_owned())
+fn tool_version(program: &Path, tools: &Path, root: &Path, request_id: u64, jobs: &Arc<SyntaxJobState>) -> String {
+    run_external(program, tools, &["--version".into()], root, request_id, Duration::from_secs(10), jobs).ok()
+        .map(|outcome| {
+            let output = if outcome.stdout.trim().is_empty() { outcome.stderr } else { outcome.stdout };
+            output.lines().next().unwrap_or("未知版本").trim().to_owned()
+        })
         .filter(|version| !version.is_empty())
         .unwrap_or_else(|| "未知版本".into())
 }
@@ -650,7 +661,7 @@ fn reported_path(root: &Path, file: &str) -> String {
 }
 
 fn push_diagnostic(diagnostics: &mut Vec<SyntaxDiagnostic>, diagnostic: SyntaxDiagnostic) {
-    if diagnostics.len() < MAX_DIAGNOSTICS * 4 && !diagnostics.contains(&diagnostic) {
+    if diagnostics.len() < MAX_DIAGNOSTICS * 4 {
         diagnostics.push(diagnostic);
     }
 }
@@ -919,6 +930,28 @@ mod tests {
         assert_eq!(diagnostics[0].severity, "error");
         assert_eq!(diagnostics[0].file, "D:/project/error.sv");
         assert!(diagnostics.last().unwrap().message.contains("其余结果已省略"));
+    }
+
+    #[test]
+    fn cancellation_before_execution_is_preserved_and_cleaned_up() {
+        let root = std::env::temp_dir().join(format!("rtl-viewer-cancel-before-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("top.sv");
+        fs::write(&source, "module top; endmodule\n").unwrap();
+        let work = root.join("work");
+        fs::create_dir_all(&work).unwrap();
+        let jobs = Arc::new(SyntaxJobState::default());
+        cancel_job(&jobs, 96);
+        let result = execute_check(
+            SyntaxCheckRequest { request_id: 96, root: crate::normalize(&root), files: vec![crate::normalize(&source)], ..Default::default() },
+            &root.join("missing-tools"), &work, &jobs, &|_| {},
+        ).unwrap();
+        assert!(result.cancelled);
+        assert!(result.backends.iter().all(|backend| backend.status == "cancelled"));
+        assert!(result.diagnostics.iter().all(|diagnostic| diagnostic.severity != "error"));
+        assert!(!jobs.cancelled.lock().unwrap().contains(&96));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

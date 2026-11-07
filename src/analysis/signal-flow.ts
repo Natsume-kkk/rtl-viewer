@@ -1,13 +1,13 @@
 import { detectLang, parseFileDetail, scanStructure, type InstanceInfo, type ModuleInfo } from "../parser";
-import { analyzeExpression, parseVerilogProcess, parseVhdlProcess, scanVhdlRegion } from "../parser/procedural";
+import { analyzeExpression, parseVerilogProcess, parseVhdlProcess, processRanges } from "../parser/procedural";
 import { stripComments } from "../parser/verilog";
 import { stripVhdlComments } from "../parser/vhdl";
-import { processTargetSource } from "../analysis/process";
-import { sourceEntry } from "../analysis/source-cache";
+import { processTargetSource } from "./process";
+import { sourceEntry } from "./source-cache";
 import { cloneConstants, expandStaticGenerate, setConstant, specializeText, type ConstantValues, type SourceView } from "../parser/static-generate";
 import { parseParameters } from "../parser/parameters";
 import { mappingAccess } from "../parser/port-mapping";
-import { bindModuleParts } from "./index";
+import { bindModuleParts } from "../model/index";
 
 interface Assignment {
   /** 连续赋值 RHS 在原文件中的精确偏移。 */
@@ -99,66 +99,6 @@ export function boundaryAccess(boundary:Boundary,name:string,direction:TraceDire
   return processAccess(text,lexical(name),boundary.file,direction);
 }
 
-/** 跳过配对的括号，返回右括号之后的位置。 */
-function skipParens(body: string, i: number): number {
-  let depth = 0;
-  for (; i < body.length; i++) {
-    if (body[i] === "(") depth++;
-    else if (body[i] === ")") { depth--; if (!depth) return i + 1; }
-  }
-  return i;
-}
-
-/** 无 begin 包裹的语句的结尾位置：普通语句取括号深度为 0 的分号，if 扩展 else 链，case 取 endcase，循环扩展到循环体。 */
-function stmtEnd(body: string, from: number): number {
-  let i = from;
-  while (i < body.length && /\s/.test(body[i])) i++;
-  const kw = /^[A-Za-z_]\w*/.exec(body.slice(i))?.[0] ?? "";
-  if (kw === "begin") {
-    const tokens = /\b(begin|end)\b/g;
-    tokens.lastIndex = i;
-    let depth = 0, token: RegExpExecArray | null;
-    while ((token = tokens.exec(body))) {
-      depth += token[1] === "begin" ? 1 : -1;
-      if (depth === 0) return tokens.lastIndex;
-    }
-    return body.length;
-  }
-  if (/^(case|casex|casez)$/.test(kw)) {
-    const tokens = /\b(case|casex|casez|endcase)\b/g;
-    tokens.lastIndex = i;
-    let depth = 0, token: RegExpExecArray | null;
-    while ((token = tokens.exec(body))) {
-      depth += token[1] === "endcase" ? -1 : 1;
-      if (depth === 0) return tokens.lastIndex;
-    }
-    return body.length;
-  }
-  if (kw === "if") {
-    let j = skipParens(body, i + kw.length);
-    while (/\s/.test(body[j])) j++;
-    const thenEnd = stmtEnd(body, j);
-    const elseMatch = /^\s*else\b/.exec(body.slice(thenEnd));
-    if (!elseMatch) return thenEnd;
-    return stmtEnd(body, thenEnd + elseMatch[0].length);
-  }
-  if (/^(for|while|repeat)$/.test(kw)) {
-    let j = i + kw.length;
-    while (/\s/.test(body[j])) j++;
-    if (body[j] === "(") j = skipParens(body, j);
-    return stmtEnd(body, j);
-  }
-  if (kw === "forever") return stmtEnd(body, i + kw.length);
-  let depth = 0;
-  for (let k = i; k < body.length; k++) {
-    const c = body[k];
-    if (c === "(") depth++;
-    else if (c === ")") depth--;
-    else if (c === ";" && depth === 0) return k + 1;
-  }
-  return body.length;
-}
-
 /** VHDL 并发条件赋值拆分：`a when c else b` —— when 段作条件标注，其余段作数据候选。
     when 段含顶层逗号时是 with...select 选择赋值，标记 selected 由调用方产出边界，不硬拆。
     expression 为字符串已遮蔽的副本，display 为索引对齐的原文（条件展示用）。 */
@@ -180,36 +120,6 @@ function splitVhdlWhen(expression: string, display = expression): { valueText: s
     valueText: spans.filter((_, idx) => idx % 2 === 0).map(([s, e]) => expression.slice(s, e)).join("; "),
     conditions: spans.filter((_, idx) => idx % 2 === 1).map(([s, e]) => display.slice(s, e).trim()).filter(Boolean),
   };
-}
-
-export function processRanges(body: string, vhdl: boolean): { index: number; text: string }[] {
-  const result: { index: number; text: string }[] = [];
-  const starts = vhdl ? /\b(process|function|procedure)\b/gi : /\b(always(?:_ff|_comb|_latch)?|initial|function|task)\b/g;
-  let match: RegExpExecArray | null;
-  while ((match = starts.exec(body))) {
-    if (vhdl && /\bend\s*$/i.test(body.slice(Math.max(0, match.index - 12), match.index))) continue;
-    let end = body.length;
-    if (vhdl) {
-      end = scanVhdlRegion(body, match.index).end;
-    } else if (/^(function|task)$/.test(match[1])) {
-      const closing = new RegExp(`\\bend${match[1]}\\b`, "i").exec(body.slice(starts.lastIndex));
-      if (closing) end = starts.lastIndex + closing.index + closing[0].length;
-    } else {
-      // Verilog always/initial：跳过 @(...) 敏感表后按语句结构取结尾（for 条件分号、case、if/else 链不截断）
-      let stmt = starts.lastIndex;
-      while (stmt < body.length && /\s/.test(body[stmt])) stmt++;
-      if (body[stmt] === "@") {
-        stmt++;
-        while (stmt < body.length && /\s/.test(body[stmt])) stmt++;
-        if (body[stmt] === "(") stmt = skipParens(body, stmt);
-        else while (stmt < body.length && /[\w*]/.test(body[stmt])) stmt++;
-      }
-      end = stmtEnd(body, stmt);
-    }
-    result.push({ index: match.index, text: body.slice(match.index, end) });
-    starts.lastIndex = end;
-  }
-  return result;
 }
 
 /** 仅在用户打开分析时创建；文件详细解析按访问模块缓存，不物化全工程实例树。 */

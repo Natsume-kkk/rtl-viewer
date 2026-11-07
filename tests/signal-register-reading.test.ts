@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { choose, parseExpression, reference } from "../src/analysis/expression";
 import { ComputationProject } from "../src/analysis/project";
 import { localLogic } from "../src/analysis/local";
-import { SignalProject } from "../src/model/signal-flow";
+import { SignalProject } from "../src/analysis/signal-flow";
 import { SignalLogicView } from "../src/ui/signal-logic";
 import { drawWires, makeWires } from "../src/ui/signal-canvas";
 

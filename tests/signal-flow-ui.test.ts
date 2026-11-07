@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { it, expect, vi } from "vitest";
 import { SignalFlowPanel } from "../src/ui/signal-flow";
-import { SignalProject, traceSignal, type TraceNode } from "../src/model/signal-flow";
+import { SignalProject, traceSignal, type TraceNode } from "../src/analysis/signal-flow";
 const leaf=(label:string,line:number,reason?:string):TraceNode=>({label,file:"t.v",line,reason,children:[]});
 const setup=()=>{const root=document.createElement("aside");document.body.append(root);const navigate=vi.fn();const panel=new SignalFlowPanel(root,{close:vi.fn(),context:vi.fn(),navigate});return{root,panel,navigate};};
 const card=(root:HTMLElement,name:string)=>[...root.querySelectorAll<HTMLElement>(".port-card")].find(c=>c.dataset.signal===name)!;

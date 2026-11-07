@@ -1,8 +1,7 @@
 import { parseFileDetail, type HdlLang, type ModuleInfo, type ParameterInfo, type PortInfo } from "../parser";
 import { stripComments } from "../parser/verilog";
 import { stripVhdlComments } from "../parser/vhdl";
-import { analyzeExpression, parseVerilogProcess, parseVhdlProcess } from "../parser/procedural";
-import { processRanges } from "../model/signal-flow";
+import { analyzeExpression, parseVerilogProcess, parseVhdlProcess, processRanges } from "../parser/procedural";
 
 export interface CodeStatistics {
   physicalLines: number;
@@ -514,7 +513,7 @@ export function codeStatistics(content: string, language: HdlLang): CodeStatisti
     for (let index = 0; index < raw.length;) {
       if (blockComment) {
         comment = true;
-        if (language === "verilog" && raw[index] === "*" && raw[index + 1] === "/") {
+        if (raw[index] === "*" && raw[index + 1] === "/") {
           blockComment = false;
           index += 2;
         } else index++;
@@ -538,7 +537,7 @@ export function codeStatistics(content: string, language: HdlLang): CodeStatisti
         comment = true;
         break;
       }
-      if (language === "verilog" && raw[index] === "/" && raw[index + 1] === "*") {
+      if (raw[index] === "/" && raw[index + 1] === "*") {
         comment = true;
         blockComment = true;
         index += 2;
@@ -591,7 +590,7 @@ function firstNonEmptyIsComment(content: string, language: HdlLang): boolean {
   const first = content.split("\n").find(line => line.trim());
   if (!first) return true;
   const trimmed = first.trim();
-  return language === "vhdl" ? trimmed.startsWith("--") : trimmed.startsWith("//") || trimmed.startsWith("/*");
+  return language === "vhdl" ? trimmed.startsWith("--") || trimmed.startsWith("/*") : trimmed.startsWith("//") || trimmed.startsWith("/*");
 }
 
 function languageForFile(file: string): HdlLang {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
-import { SignalProject, traceSignal } from "../src/model/signal-flow";
+import { SignalProject, traceSignal } from "../src/analysis/signal-flow";
 import { SignalPortsView } from "../src/ui/signal-ports";
 import { SignalLogicView } from "../src/ui/signal-logic";
 import { ComputationProject } from "../src/analysis/project";

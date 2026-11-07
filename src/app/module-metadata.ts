@@ -18,6 +18,7 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
   modulePorts(moduleName: string): Promise<PortInfo[]>;
   moduleIpParameters(moduleName: string): Promise<ParameterInfo[]>;
   moduleParameters(moduleName: string): ParameterInfo[];
+  invalidateIps(): void;
   reset(): void;
 } {
   const ipMetadataCache = new Map<string, { ports: PortInfo[]; parameters: ParameterInfo[] }>();
@@ -96,12 +97,16 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
     return moduleFileModules(def)?.find((m) => m.name.toLowerCase() === key)?.parameters ?? [];
   }
 
-  /** 端口与解析缓存按工程失效：换工程后同名 IP（clk_wiz_0 等）不得沿用旧定义。 */
-  function reset(): void {
+  function invalidateIps(): void {
     generation++;
     ipMetadataCache.clear();
+  }
+
+  /** 端口与解析缓存按工程失效：换工程后同名 IP（clk_wiz_0 等）不得沿用旧定义。 */
+  function reset(): void {
+    invalidateIps();
     moduleFileCache.clear();
   }
 
-  return { modulePorts, moduleIpParameters, moduleParameters, reset };
+  return { modulePorts, moduleIpParameters, moduleParameters, invalidateIps, reset };
 }

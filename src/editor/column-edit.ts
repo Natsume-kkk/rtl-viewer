@@ -46,8 +46,17 @@ export function columnValues(options: ColumnOptions, count: number): string[] {
   });
 }
 
+export interface ColumnLineSource {
+  lineCount: number;
+  getLineContent(line: number): string;
+}
+
 /** 单光标从所在列处理到末行；矩形/多光标仅处理其选区，不跨行删除文本。 */
 export function columnTargets(lines: string[], selections: ColumnRange[], tabSize: number): ColumnTarget[] {
+  return columnTargetsFromSource({ lineCount: lines.length, getLineContent: line => lines[line - 1] }, selections, tabSize);
+}
+
+export function columnTargetsFromSource(lines: ColumnLineSource, selections: ColumnRange[], tabSize: number): ColumnTarget[] {
   if (!selections.length) throw new Error("没有可编辑的选区。");
   if (selections.some(s => s.startLineNumber !== s.endLineNumber)) throw new Error("请先用 Alt+Shift+方向键或 Alt+拖动选择矩形区域，再打开列编辑。");
   const sorted = [...selections].sort((a, b) => a.startLineNumber - b.startLineNumber || a.startColumn - b.startColumn);
@@ -60,10 +69,11 @@ export function columnTargets(lines: string[], selections: ColumnRange[], tabSiz
     }
     return sorted.map(range => ({ range, before: "", after: "" }));
   }
-  checkCount(lines.length - selection.startLineNumber + 1);
+  checkCount(lines.lineCount - selection.startLineNumber + 1);
   const visible = (text: string, column: number): number => CursorColumns.visibleColumnFromColumn(text, column, tabSize);
-  const visual = visible(lines[selection.startLineNumber - 1], selection.startColumn);
-  return lines.slice(selection.startLineNumber - 1).map((text, i) => {
+  const visual = visible(lines.getLineContent(selection.startLineNumber), selection.startColumn);
+  return Array.from({ length: lines.lineCount - selection.startLineNumber + 1 }, (_, i) => {
+    const text = lines.getLineContent(selection.startLineNumber + i);
     let offset: number = CursorColumns.columnFromVisibleColumn(text, visual, tabSize) - 1;
     if (offset > 0 && text[offset - 1] === "\t" && visible(text, offset + 1) > visual) offset--;
     const column = visible(text, offset + 1);

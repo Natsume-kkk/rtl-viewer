@@ -219,3 +219,21 @@ it("同名 VHDL 局部对象换过程重置宽度，同一作用域刷新保留"
   panel.actions.refresh();await vi.waitFor(()=>expect(panel.result).toHaveBeenCalledTimes(2));expect(panel.result.mock.lastCall[5]).toBe(true);
   line=4;await controller.analyze();expect(panel.result).toHaveBeenCalledTimes(3);expect(panel.result.mock.lastCall[5]).toBe(false);
 });
+
+
+it("注释中的同名文本不会触发信号分析", async () => {
+  const source = "module top; // mid\nwire mid; endmodule";
+  const file = "D:/test/comment.v", contents = new Map([[file, source]]), structures = new Map([[file, scanStructure(source, file)]]);
+  const index = new ModuleIndex(); index.addStructure([...structures.values()].flat());
+  const model = { uri: { path: `/${file}`, authority: "" }, getWordAtPosition: () => ({ word: "mid" }), getLanguageId: () => "verilog", getVersionId: () => 1, getValue: () => source };
+  const controller = createSignalController(document.createElement("div"), {
+    editor: () => ({ getModel: () => model, getPosition: () => ({ lineNumber: 1, column: source.indexOf("mid") + 1 }) }) as any,
+    files: () => contents.keys(), structures: () => structures, index: () => index, topName: () => "top", instancePath: () => undefined,
+    fileContent: () => source, isOpen: () => true, close: vi.fn(), navigate: vi.fn(), hint: vi.fn(),
+  });
+  const panel = fake.panels[0];
+  await controller.analyze();
+  expect(panel.logicResult).not.toHaveBeenCalled();
+  expect(panel.result).not.toHaveBeenCalled();
+  expect(panel.hint).toHaveBeenCalledWith("在源码信号上右键，选择“追踪此信号”。");
+});

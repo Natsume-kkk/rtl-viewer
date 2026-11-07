@@ -149,5 +149,12 @@ export default defineConfig(({ command }) => ({
   build: {
     outDir: "dist",
     target: "es2022",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("/node_modules/monaco-editor/")) return "monaco";
+        },
+      },
+    },
   },
 }));

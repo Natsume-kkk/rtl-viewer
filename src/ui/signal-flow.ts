@@ -1,5 +1,5 @@
 import { setIcon } from "./icons";
-import type { TraceNode, SignalContext } from "../model/signal-flow";
+import type { TraceNode, SignalContext } from "../analysis/signal-flow";
 import type { LogicGraph } from "../analysis/local";
 import { SignalLogicView, type LogicViewState } from "./signal-logic";
 import { SignalPortsView, type PortViewState } from "./signal-ports";

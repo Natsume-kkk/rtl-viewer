@@ -4,6 +4,8 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import type { BackendSummary, SourceSnapshot, SyntaxCheckOptions, SyntaxCheckResult, SyntaxDiagnostic, SyntaxStub } from "../ipc";
+import { orderVerilogFiles, orderVhdlFiles } from "./syntax-order";
+import { encodeNodeSnapshot, readNodeSource } from "./node-source";
 
 interface NodeCheckRequest {
   requestId: number;
@@ -14,6 +16,12 @@ interface NodeCheckRequest {
   vhdlStubs?: SyntaxStub[];
   options: SyntaxCheckOptions;
   snapshots?: SourceSnapshot[];
+}
+
+interface ProcessResult {
+  output: string;
+  timedOut: boolean;
+  error?: string;
 }
 
 export function runNodeSyntaxCheck(request: NodeCheckRequest): SyntaxCheckResult {
@@ -29,34 +37,46 @@ export function runNodeSyntaxCheck(request: NodeCheckRequest): SyntaxCheckResult
       const kind = /\.(?:v|sv)$/i.test(actual) ? "verilog" : /\.(?:vhd|vhdl)$/i.test(actual) ? "vhdl" : "header";
       return { actual, display: snapshots.overlays.get(actual) ?? actual, kind, library: request.options.vhdlLibraries.find(mapping => path.resolve(mapping.file) === actual)?.library ?? "work" };
     }).filter(file => file.kind !== "header" || /\.(?:vh|svh)$/i.test(file.actual));
-    const verilog = files.filter(file => file.kind === "verilog");
+    const verilog = orderVerilogFiles(files.filter(file => file.kind === "verilog"), file => readNodeSource(file.display));
     const vhdl = files.filter(file => file.kind === "vhdl");
     const diagnostics: SyntaxDiagnostic[] = [];
     const backends: BackendSummary[] = [];
-    const includeDirs = new Set([...files.filter(file => file.kind !== "vhdl").map(file => path.dirname(file.actual)), ...request.options.includeDirs.map(dir => path.resolve(dir))]);
+    const includeDirs = new Set([
+      ...files.filter(file => file.kind !== "vhdl").flatMap(file => [path.dirname(file.actual), path.dirname(file.display)]),
+      ...request.options.includeDirs.map(dir => path.resolve(dir)),
+    ]);
     let checkedFiles = 0;
     if (verilog.length) {
       const version = toolVersion(tools, "verilator");
       const outcome = runVerilator(tools, root, work, verilog, includeDirs, request.stubs, request.options, request.top);
       parseVerilator(outcome.output, root, diagnostics, snapshots.originals);
-      backends.push({ name: "verilator", version, files: verilog.length, status: outcome.timedOut ? "timed_out" : "completed" });
-      if (!outcome.timedOut) checkedFiles += verilog.length;
+      if (outcome.error) diagnostics.push(systemDiagnostic("", `无法启动或完成 Verilator 检查：${outcome.error}`));
+      backends.push({ name: "verilator", version, files: verilog.length, status: outcome.timedOut ? "timed_out" : outcome.error ? "failed" : "completed" });
+      if (!outcome.timedOut && !outcome.error) checkedFiles += verilog.length;
       if (outcome.timedOut) diagnostics.push(systemDiagnostic("", "Verilator 检查超过 120 秒，已停止"));
     }
     if (vhdl.length) {
       const version = toolVersion(tools, "ghdl");
       const outcome = runGhdl(tools, root, work, vhdl, request.vhdlStubs ?? [], request.options);
       parseGhdl(outcome.output, root, diagnostics, snapshots.originals);
-      backends.push({ name: "ghdl", version, files: vhdl.length, status: outcome.timedOut ? "timed_out" : "completed" });
-      if (!outcome.timedOut) checkedFiles += vhdl.length;
+      if (outcome.error) diagnostics.push(systemDiagnostic("", `无法启动或完成 GHDL 检查：${outcome.error}`));
+      backends.push({ name: "ghdl", version, files: vhdl.length, status: outcome.timedOut ? "timed_out" : outcome.error ? "failed" : "completed" });
+      if (!outcome.timedOut && !outcome.error) checkedFiles += vhdl.length;
       if (outcome.timedOut) diagnostics.push(systemDiagnostic("", "GHDL 单文件分析超过 60 秒，已停止"));
     }
     diagnostics.sort((a, b) => rank(a.severity) - rank(b.severity) || a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
-    if (diagnostics.length > 5000) {
-      diagnostics.length = 4999;
-      diagnostics.push(systemDiagnostic("", "诊断数量超过 5000，其余结果已省略"));
+    const seen = new Set<string>();
+    const unique = diagnostics.filter(diagnostic => {
+      const key = `${diagnostic.file}|${diagnostic.line}|${diagnostic.column}|${diagnostic.severity}|${diagnostic.ruleId}|${diagnostic.message}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (unique.length > 5000) {
+      unique.length = 4999;
+      unique.push(systemDiagnostic("", "诊断数量超过 5000，其余结果已省略"));
     }
-    return { requestId: request.requestId, diagnostics, checkedFiles, backends, cancelled: false };
+    return { requestId: request.requestId, diagnostics: unique, checkedFiles, backends, cancelled: false };
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
   }
@@ -66,17 +86,17 @@ function prepareSnapshots(snapshots: SourceSnapshot[], root: string, work: strin
   const overlays = new Map<string, string>(), originals = new Map<string, string>();
   for (const snapshot of snapshots) {
     const original = path.resolve(snapshot.file);
-    if (!original.startsWith(root + path.sep)) throw new Error(`快照文件不在当前工程内：${snapshot.file}`);
+    if (!original.startsWith(root + path.sep)) throw new Error(`快照文件不在当前工程内：${original}`);
     const overlay = path.join(work, "snapshot", path.relative(root, original));
     fs.mkdirSync(path.dirname(overlay), { recursive: true });
-    fs.writeFileSync(overlay, snapshot.content, snapshot.encoding === "utf16le" ? "utf16le" : "utf8");
+    fs.writeFileSync(overlay, encodeNodeSnapshot(snapshot.content, snapshot.encoding));
     overlays.set(original, overlay);
-    originals.set(overlay, original);
+    originals.set(normalize(overlay), normalize(original));
   }
   return { overlays, originals };
 }
 
-function runVerilator(tools: string, root: string, work: string, files: { actual: string; display: string }[], includeDirs: Set<string>, stubs: SyntaxStub[], options: SyntaxCheckOptions, top?: string) {
+function runVerilator(tools: string, root: string, work: string, files: { actual: string; display: string }[], includeDirs: Set<string>, stubs: SyntaxStub[], options: SyntaxCheckOptions, top?: string): ProcessResult {
   const directory = path.join(work, "verilator");
   fs.mkdirSync(directory, { recursive: true });
   const response = path.join(directory, "sources.f");
@@ -98,7 +118,7 @@ function runVerilator(tools: string, root: string, work: string, files: { actual
   return run(program, ["-f", response], root, tools, 120_000);
 }
 
-function runGhdl(tools: string, root: string, work: string, files: { actual: string; display: string; library: string }[], stubs: SyntaxStub[], options: SyntaxCheckOptions) {
+function runGhdl(tools: string, root: string, work: string, files: { actual: string; display: string; library: string }[], stubs: SyntaxStub[], options: SyntaxCheckOptions): ProcessResult {
   const ghdlWork = path.join(work, "ghdl");
   const stubDirectory = path.join(ghdlWork, "stubs");
   fs.mkdirSync(stubDirectory, { recursive: true });
@@ -107,7 +127,7 @@ function runGhdl(tools: string, root: string, work: string, files: { actual: str
     fs.writeFileSync(actual, stub.source);
     return { actual, display: actual, library: "work" };
   });
-  const ordered = orderVhdl([...stubFiles, ...files]);
+  const ordered = orderVhdlFiles([...stubFiles, ...files], file => readNodeSource(file.display));
   const output: string[] = [];
   let timedOut = false;
   for (const file of ordered) {
@@ -122,53 +142,18 @@ function runGhdl(tools: string, root: string, work: string, files: { actual: str
       timedOut = true;
       break;
     }
+    if (result.error) return { output: output.join("\n"), timedOut, error: result.error };
   }
   return { output: output.join("\n"), timedOut };
 }
 
-function orderVhdl<T extends { actual: string; library: string }>(files: T[]): T[] {
-  const definitions = new Map<string, number>();
-  const bodies = new Map<string, number>();
-  const entities = new Map<string, number>();
-  const texts = files.map(file => fs.readFileSync(file.actual, "utf8").toLowerCase());
-  texts.forEach((text, index) => {
-    for (const match of text.matchAll(/\bpackage\s+(?!body\b)([a-z_]\w*)\s+is\b/g)) definitions.set(`${files[index].library}.${match[1]}`, index);
-    for (const match of text.matchAll(/\bpackage\s+body\s+([a-z_]\w*)\s+is\b/g)) bodies.set(`${files[index].library}.${match[1]}`, index);
-    for (const match of text.matchAll(/\bentity\s+([a-z_]\w*)\s+is\b/g)) {
-      const key = `${files[index].library}.${match[1]}`;
-      if (!entities.has(key)) entities.set(key, index);
-    }
-  });
-  const dependencies = files.map(() => new Set<number>());
-  for (const [key, body] of bodies) if (definitions.has(key)) dependencies[body].add(definitions.get(key)!);
-  texts.forEach((text, index) => {
-    for (const [key, provider] of definitions) if (provider !== index && text.includes(key)) dependencies[index].add(provider);
-    for (const match of text.matchAll(/\bentity\s+([a-z_]\w*)\s*\.\s*([a-z_]\w*)\b/g)) {
-      const provider = entities.get(`${match[1]}.${match[2]}`);
-      if (provider !== undefined && provider !== index) dependencies[index].add(provider);
-    }
-    for (const match of text.matchAll(/\bcomponent\s+([a-z_]\w*)\b/g)) {
-      const provider = entities.get(`${files[index].library}.${match[1]}`);
-      if (provider !== undefined && provider !== index) dependencies[index].add(provider);
-    }
-  });
-  const emitted = new Set<number>(), ordered: T[] = [];
-  while (ordered.length < files.length) {
-    let progress = false;
-    for (let index = 0; index < files.length; index++) {
-      if (emitted.has(index) || [...dependencies[index]].some(dependency => !emitted.has(dependency))) continue;
-      emitted.add(index);
-      ordered.push(files[index]);
-      progress = true;
-    }
-    if (!progress) for (let index = 0; index < files.length; index++) if (emitted.add(index)) ordered.push(files[index]);
-  }
-  return ordered;
-}
-
-function run(program: string, args: string[], cwd: string, tools: string, timeout: number) {
+function run(program: string, args: string[], cwd: string, tools: string, timeout: number): ProcessResult {
   const result = spawnSync(program, args, { cwd, timeout, maxBuffer: 64 * 1024 * 1024, env: toolEnvironment(tools), encoding: "utf8" });
-  return { output: `${result.stderr ?? ""}\n${result.stdout ?? ""}`, timedOut: !!result.error && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT" };
+  const timedOut = !!result.error && (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+  const output = `${result.stderr ?? ""}\n${result.stdout ?? ""}`;
+  const silentFailure = result.status !== 0 && !output.trim() ? `进程异常结束，退出码 ${result.status ?? "未知"}` : undefined;
+  const error = timedOut ? undefined : result.error?.message ?? (result.signal ? `进程被 ${result.signal} 终止` : silentFailure);
+  return { output, timedOut, error };
 }
 
 function toolEnvironment(tools: string): NodeJS.ProcessEnv {
@@ -200,7 +185,7 @@ function parseVerilator(output: string, root: string, diagnostics: SyntaxDiagnos
     const body = line.slice(headerEnd + 1).trim();
     const location = splitLocation(body);
     diagnostics.push({
-      file: location ? originals.get(location.file) ?? reportedPath(root, location.file) : "",
+      file: location ? originals.get(normalize(location.file)) ?? reportedPath(root, location.file) : "",
       line: location?.line ?? 1,
       column: location?.column ?? 1,
       severity: diagnosticSeverity,
@@ -217,7 +202,7 @@ function parseGhdl(output: string, root: string, diagnostics: SyntaxDiagnostic[]
     if (!location) continue;
     const lower = location.message.toLowerCase();
     diagnostics.push({
-      file: originals.get(location.file) ?? reportedPath(root, location.file),
+      file: originals.get(normalize(location.file)) ?? reportedPath(root, location.file),
       line: location.line,
       column: location.column,
       severity: lower.startsWith("error") || lower.startsWith("fatal") ? "error" : lower.startsWith("warning") ? "warning" : "info",
@@ -240,7 +225,8 @@ function splitLocation(text: string): { file: string; line: number; column: numb
 }
 
 function reportedPath(root: string, file: string): string {
-  return normalize(path.isAbsolute(file) ? file : path.resolve(root, file));
+  const unquoted = file.replace(/^"|"$/g, "");
+  return normalize(path.isAbsolute(unquoted) ? unquoted : path.resolve(root, unquoted));
 }
 
 function systemDiagnostic(file: string, message: string): SyntaxDiagnostic {

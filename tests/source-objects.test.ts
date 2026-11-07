@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { parseExpression, expressionRelations } from "../src/analysis/expression";
 import { ComputationProject } from "../src/analysis/project";
-import { SignalProject } from "../src/model/signal-flow";
+import { SignalProject } from "../src/analysis/signal-flow";
 import { localLogic } from "../src/analysis/local";
 
 const setup = (source: string, file = "objects.vhd") => {

@@ -74,3 +74,34 @@ it("队列完成后合并跨文件项目级诊断", async () => {
   await queue.start();
   expect(queue.diagnosticValues().filter(item => item.ruleId === "10157-A-2-7")).toHaveLength(1);
 });
+
+it("后台队列中的刷新失败会恢复并分析剩余文件", async () => {
+  const calls: { file: string; resolve: (result: { fingerprint: string; facts: ReturnType<typeof analyzeFileFacts>; diagnostics: never[] }) => void; reject: (error: Error) => void }[] = [];
+  let finished: (() => void) | undefined;
+  const queue = createFactsScheduler({
+    files: () => [{ file: "a.sv", content: "module a; endmodule" }, { file: "b.sv", content: "module b; endmodule" }],
+    priorityFile: () => undefined,
+    result: () => undefined,
+    progress: () => undefined,
+    complete: () => finished?.(),
+  }, (file, content) => new Promise((resolve, reject) => {
+    calls.push({ file, resolve: value => resolve(value), reject });
+  }));
+  const initial = queue.start();
+  await Promise.resolve();
+  const refreshing = queue.refresh("a.sv", "broken");
+  await Promise.resolve();
+  expect(calls).toHaveLength(2);
+  calls[1].reject(new Error("synthetic failure"));
+  await refreshing;
+  expect(calls).toHaveLength(3);
+  calls[2].resolve({ fingerprint: "a2", facts: analyzeFileFacts("a.sv", "module a; endmodule"), diagnostics: [] });
+  await Promise.resolve();
+  expect(calls).toHaveLength(4);
+  calls[3].resolve({ fingerprint: "b", facts: analyzeFileFacts("b.sv", "module b; endmodule"), diagnostics: [] });
+  const done = new Promise<void>(resolve => { finished = resolve; });
+  calls[0].resolve({ fingerprint: "a", facts: analyzeFileFacts("a.sv", "module a; endmodule"), diagnostics: [] });
+  await Promise.all([initial, done]);
+  expect(queue.values().map(facts => facts.file).sort()).toEqual(["a.sv", "b.sv"]);
+  expect(queue.running).toBe(false);
+});

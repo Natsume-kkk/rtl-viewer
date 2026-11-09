@@ -770,7 +770,7 @@ function refreshFactsViews(): void {
   const facts = factsScheduler.values().filter(item => inAnalysisScope(item.file));
   const diagnostics = factsScheduler.diagnosticValues().filter(item => inAnalysisScope(item.file));
   problemPanel.setScope(analysisScope, state.topName || state.autoTop);
-  problemPanel.setBuiltins(diagnostics, factsDone > 0, factsTotal > 0 && factsDone < factsTotal);
+  problemPanel.setBuiltins(diagnostics, factsDone > 0, factsScheduler.running || factsRefreshTimer !== undefined || factsTotal > 0 && factsDone < factsTotal);
   statsPanel.render({
     facts,
     files,
@@ -823,14 +823,19 @@ const factsScheduler = createFactsScheduler({
   priorityFile: () => activeGroup().tabs.activeTab?.path,
   result: queueFactsViewsRefresh,
   progress: (done, total) => { factsDone = done; factsTotal = total; queueFactsViewsRefresh(); },
-  complete: () => undefined,
+  complete: queueFactsViewsRefresh,
 });
 let factsRefreshTimer: number | undefined;
 function scheduleFactsRefresh(): void {
   const tab = activeGroup().tabs.activeTab;
   if (!tab?.path || !state.contents.has(indexedFilePath(state.contents, tab.path)) || !inAnalysisScope(tab.path)) return;
   window.clearTimeout(factsRefreshTimer);
-  factsRefreshTimer = window.setTimeout(() => void factsScheduler.refresh(tab.path, tab.model.getValue()), 400);
+  factsRefreshTimer = window.setTimeout(() => {
+    factsRefreshTimer = undefined;
+    void factsScheduler.refresh(tab.path, tab.model.getValue());
+    refreshFactsViews();
+  }, 400);
+  refreshFactsViews();
 }
 registerEditorActions();
 window.addEventListener("pagehide", () => workspace.dispose(), { once: true });

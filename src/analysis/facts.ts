@@ -42,6 +42,7 @@ export interface CaseFacts {
   emptyDefault: boolean;
   defaultHasX: boolean;
   labels: string[];
+  branches: { labels: string[]; targets: string[]; isDefault: boolean }[];
   defaultAssignments: { target: string; expression: string }[];
 }
 
@@ -50,6 +51,7 @@ export interface SourceSignature {
   line: number;
   column: number;
   text: string;
+  scope?: string;
 }
 
 export interface DeclarationFacts {
@@ -140,6 +142,12 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
   let initialCount = 0;
   let functionTaskCount = 0;
   const initialLines: number[] = [];
+  const declarations = declarationFacts(clean, language, starts, scopes);
+  const constants = new Set([
+    ...declarations.filter(item => item.kind !== "other").map(item => item.name),
+    ...modules.flatMap(module => (module.parameters ?? []).map(parameter => parameter.name)),
+  ]);
+  const cases = caseFacts(clean, language, starts, constants, scopes);
   const ranges = processRanges(clean, language === "vhdl");
   for (const range of ranges) {
     const text = clean.slice(range.index, range.index + range.text.length);
@@ -171,7 +179,8 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
     const hasResetBranch = resetBranch(text, language);
     const ifCount = (text.match(/\bif\b/gi) ?? []).length;
     const elseCount = (text.match(/\belse\b/gi) ?? []).length;
-    const incompleteConditionalAssignment = combinational && hasIncompleteConditionalAssignment(assignments);
+    const processCases = cases.filter(item => item.scope === scopeAtOffset(scopes, range.index) && item.startLine >= startLine && item.startLine <= lineAt(starts, range.index + range.text.length));
+    const incompleteConditionalAssignment = combinational && hasIncompleteConditionalAssignment(assignments, processCases, language);
     const missingElse = combinational && ifCount > elseCount;
     const resets = resetSignals(text, language);
     const clocks = (language === "vhdl"
@@ -204,14 +213,8 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
   const loopCount = (clean.match(/\b(?:for|foreach|while|repeat|forever)\b/g) ?? []).length;
   const generateCount = (clean.match(/\bgenerate\b/gi) ?? []).length;
   const instanceCount = modules.reduce((count, module) => count + module.instances.length, 0);
-  const declarations = declarationFacts(clean, language, starts, scopes);
-  const constants = new Set([
-    ...declarations.filter(item => item.kind !== "other").map(item => item.name),
-    ...modules.flatMap(module => (module.parameters ?? []).map(parameter => parameter.name)),
-  ]);
   const multiDeclarationLines = multipleDeclarationLines(clean, language, starts);
-  const cases = caseFacts(clean, language, starts, constants, scopes);
-  const signatures = [...sourceSignatures(clean, language, starts), ...absoluteIncludeSignatures(language === "verilog" ? stripComments(content, false) : clean, starts), ...advancedSignatures(clean, starts, language, constants)];
+  const signatures = [...sourceSignatures(clean, language, starts, scopes), ...absoluteIncludeSignatures(language === "verilog" ? stripComments(content, false) : clean, starts, scopes), ...advancedSignatures(clean, starts, language, constants, scopes)];
   const positionalInstanceLines = positionalInstances(clean, language, starts);
   const concurrentAssignments = continuousAssignments(clean, language, starts, ranges, scopes);
   return {
@@ -247,14 +250,31 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
   };
 }
 
-function hasIncompleteConditionalAssignment(assignments: AssignmentFacts[]): boolean {
+function hasIncompleteConditionalAssignment(assignments: AssignmentFacts[], cases: CaseFacts[], language: HdlLang): boolean {
   const targets = new Set(assignments.map(assignment => assignment.target));
   for (const target of targets) {
-    const paths = assignments.filter(assignment => assignment.target === target).map(assignment => assignment.conditions);
-    if (!paths.length || paths.some(path => path.length === 0)) continue;
-    if (!conditionsCoverAll(paths)) return true;
+    const targetAssignments = assignments.filter(assignment => assignment.target === target);
+    if (targetAssignments.some(assignment => assignment.conditions.length === 0)) continue;
+    const ordinary = targetAssignments.filter(assignment => !cases.some(item => assignmentInCase(assignment, item)));
+    if (ordinary.length && !conditionsCoverAll(ordinary.map(assignment => assignment.conditions))) return true;
+    for (const item of cases) {
+      const related = targetAssignments.filter(assignment => assignmentInCase(assignment, item));
+      if (related.length && !caseCoversTarget(item, target, related, language)) return true;
+    }
   }
   return false;
+}
+
+function assignmentInCase(assignment: AssignmentFacts, item: CaseFacts): boolean {
+  return assignment.conditions.some(condition => condition.startsWith(`case(${item.control})`) || condition.startsWith(`${item.control} ==`) || condition.startsWith(`${item.control} = `));
+}
+
+function caseCoversTarget(item: CaseFacts, target: string, assignments: AssignmentFacts[], language: HdlLang): boolean {
+  if (assignments.some(assignment => assignment.conditions.length !== 1)) return false;
+  const hasTarget = (name: string) => language === "vhdl" ? name.toLowerCase() === target.toLowerCase() : name === target;
+  const branchCovers = (branch: CaseFacts["branches"][number]) => branch.targets.some(hasTarget);
+  if (item.hasDefault) return item.branches.filter(branch => branch.isDefault).some(branchCovers) && item.branches.filter(branch => !branch.isDefault).every(branchCovers);
+  return item.fullyCovered && item.branches.every(branchCovers);
 }
 
 function conditionsCoverAll(paths: string[][]): boolean {
@@ -267,9 +287,9 @@ function conditionsCoverAll(paths: string[][]): boolean {
   return positive.length > 0 && negative.length > 0 && conditionsCoverAll(positive) && conditionsCoverAll(negative);
 }
 
-function advancedSignatures(clean: string, starts: number[], language: HdlLang, constants: Set<string>): SourceSignature[] {
+function advancedSignatures(clean: string, starts: number[], language: HdlLang, constants: Set<string>, scopes: { name: string; start: number; end: number }[]): SourceSignature[] {
   const result: SourceSignature[] = [];
-  const add = (kind: SourceSignature["kind"], index: number, text: string) => result.push({ kind, line: lineAt(starts, index), column: 1, text: text.slice(0, 200) });
+  const add = (kind: SourceSignature["kind"], index: number, text: string) => result.push({ kind, line: lineAt(starts, index), column: 1, text: text.slice(0, 200), scope: scopeAtOffset(scopes, index) });
   for (const match of clean.matchAll(/\bfor\s*\(([^)]*)\)([\s\S]*?)(?=\bfor\b|\bfunction\b|\btask\b|\balways|\binitial|\bendmodule\b|$)/g)) {
     const header = match[1], body = match[2];
     const [initial = "", condition = ""] = header.split(";");
@@ -323,10 +343,10 @@ function constantExpression(text: string, constants: Set<string>, language: HdlL
   });
 }
 
-function absoluteIncludeSignatures(content: string, starts: number[]): SourceSignature[] {
+function absoluteIncludeSignatures(content: string, starts: number[], scopes: { name: string; start: number; end: number }[]): SourceSignature[] {
   const result: SourceSignature[] = [];
   for (const match of content.matchAll(/\binclude\s+"(?:\/|[A-Za-z]:)[^"]*"/g)) {
-    result.push({ kind: "absoluteInclude", line: lineAt(starts, match.index!), column: 1, text: match[0].slice(0, 200) });
+    result.push({ kind: "absoluteInclude", line: lineAt(starts, match.index!), column: 1, text: match[0].slice(0, 200), scope: scopeAtOffset(scopes, match.index!) });
   }
   return result;
 }
@@ -342,9 +362,8 @@ function caseFacts(clean: string, language: HdlLang, starts: number[], constants
   const pattern = language === "vhdl" ? /\bcase\s+([\s\S]*?)\s+is\b([\s\S]*?)\bend\s+case\b/gi : /\b(?:case|casex|casez)\s*\(([^)]*)\)([\s\S]*?)\bendcase\b/g;
   for (const match of clean.matchAll(pattern)) {
     const control = match[1], body = match[2];
-    const labels = language === "vhdl"
-      ? [...body.matchAll(/\bwhen\s+([\s\S]*?)=>/gi)].map(label => label[1].trim()).filter(label => !/^others\b/i.test(label)).flatMap(label => label.split("|").map(item => item.trim()))
-      : verilogCaseLabels(body);
+    const branches = language === "vhdl" ? vhdlCaseBranches(body) : verilogCaseBranches(body);
+    const labels = branches.filter(branch => !branch.isDefault).flatMap(branch => branch.labels);
     const defaultText = language === "vhdl" ? /\bwhen\s+others\b([\s\S]*)/i.exec(body)?.[1] ?? "" : /\bdefault\b([\s\S]*)/.exec(body)?.[1] ?? "";
     const hasDefault = language === "vhdl" ? /\bwhen\s+others\b/i.test(body) : /\bdefault\b/.test(body);
     const defaultAssignments = [...defaultText.matchAll(/\b([A-Za-z_]\w*)\s*(?:<=|:=|=(?!=))\s*([^;]+)/g)].map(assignment => ({ target: assignment[1], expression: assignment[2].trim() }));
@@ -359,6 +378,7 @@ function caseFacts(clean: string, language: HdlLang, starts: number[], constants
       emptyDefault: language === "vhdl" ? /\bwhen\s+others\s*=>\s*null\b/i.test(body) : /\bdefault\s*:\s*;/.test(body),
       defaultHasX: /'[hdboHDBO]?[0-9a-fA-FxXzZ_]*[xX]/.test(defaultText),
       labels,
+      branches,
       defaultAssignments,
     });
   }
@@ -367,7 +387,8 @@ function caseFacts(clean: string, language: HdlLang, starts: number[], constants
 
 function caseFullyCovered(clean: string, language: HdlLang, control: string, labels: string[], hasDefault: boolean): boolean {
   if (hasDefault) return true;
-  if (language !== "vhdl" || !/^[A-Za-z_]\w*$/.test(control.trim()) || !labels.length) return false;
+  if (!/^[A-Za-z_]\w*$/.test(control.trim()) || !labels.length) return false;
+  if (language === "verilog") return verilogCaseFullyCovered(clean, control.trim(), labels);
   const name = control.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const declaration = new RegExp(`\\b(?:[A-Za-z_]\\w*\\s*,\\s*)*${name}(?:\\s*,\\s*[A-Za-z_]\\w*)*\\s*:\\s*(?:(?:in|out|inout|buffer)\\s+)?([A-Za-z_]\\w*)`, "i").exec(clean);
   const type = declaration?.[1].toLowerCase();
@@ -384,8 +405,37 @@ function caseFullyCovered(clean: string, language: HdlLang, control: string, lab
   return expected.length > 0 && expected.every(label => actual.has(label));
 }
 
-function verilogCaseLabels(body: string): string[] {
-  const labels: string[] = [];
+function verilogCaseFullyCovered(clean: string, control: string, labels: string[]): boolean {
+  const name = control.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const declaration = new RegExp(`\\b(?:reg|wire|logic|input|output|inout)\\s+(?:signed\\s+|unsigned\\s+)?(\\[[^\\]]+\\])?\\s*(?:[A-Za-z_]\\w*\\s*,\\s*)*${name}\\b`).exec(clean);
+  if (!declaration) return false;
+  const range = declaration[1] ? /^\[\s*(\d+)\s*:\s*(\d+)\s*\]$/.exec(declaration[1]) : undefined;
+  if (declaration[1] && !range) return false;
+  const width = range ? Math.abs(Number(range[1]) - Number(range[2])) + 1 : 1;
+  if (width > 8) return false;
+  const values = new Set<bigint>();
+  for (const label of labels) {
+    const value = caseLabelValue(label);
+    if (value === undefined || value < 0 || value >= (1n << BigInt(width))) return false;
+    values.add(value);
+  }
+  return values.size === 2 ** width;
+}
+
+function caseLabelValue(label: string): bigint | undefined {
+  const text = label.trim().replaceAll("_", "");
+  if (/^\d+$/.test(text)) return BigInt(text);
+  const match = /^\d+\s*'\s*[sS]?([bBoOdDhH])([0-9a-fA-F]+)$/.exec(text);
+  if (!match) return undefined;
+  const digits = match[2];
+  if (match[1].toLowerCase() === "b") return BigInt(`0b${digits}`);
+  if (match[1].toLowerCase() === "o") return BigInt(`0o${digits}`);
+  if (match[1].toLowerCase() === "h") return BigInt(`0x${digits}`);
+  return BigInt(digits);
+}
+
+function verilogCaseBranches(body: string): { labels: string[]; targets: string[]; isDefault: boolean }[] {
+  const labels: { text: string; colon: number }[] = [];
   const tokens = [...body.matchAll(/\d+\s*'\s*[sS]?[bBoOdDhH][0-9a-fA-FxXzZ_]+|[A-Za-z_]\w*|\d[\d_]*|[():;{}\[\]]|<=|>=|==|!=|&&|\|\||[+\-*/|&^~?,=]/g)].map(match => ({ text: match[0], index: match.index! }));
   let depth = 0, parens = 0, brackets = 0, statementStart = true, labelStart = -1;
   for (const token of tokens) {
@@ -410,7 +460,7 @@ function verilogCaseLabels(body: string): string[] {
     if (token.text === ":") {
       if (statementStart && depth === 0 && parens === 0 && brackets === 0 && labelStart >= 0) {
         const label = body.slice(labelStart, token.index).trim();
-        if (label && !/^default\b/i.test(label)) labels.push(label);
+        if (label) labels.push({ text: label, colon: token.index });
       }
       statementStart = false;
       labelStart = -1;
@@ -421,16 +471,31 @@ function verilogCaseLabels(body: string): string[] {
     statementStart = false;
     labelStart = -1;
   }
-  return labels;
+  return labels.map((label, index) => {
+    const text = body.slice(label.colon + 1, labels[index + 1]?.colon ?? body.length);
+    return { labels: label.text.split(",").map(item => item.trim()).filter(Boolean), targets: assignmentTargets(text), isDefault: /^default\b/i.test(label.text) };
+  });
 }
 
-function sourceSignatures(clean: string, language: HdlLang, starts: number[]): SourceSignature[] {
+function vhdlCaseBranches(body: string): { labels: string[]; targets: string[]; isDefault: boolean }[] {
+  const labels = [...body.matchAll(/\bwhen\s+([\s\S]*?)=>/gi)];
+  return labels.map((label, index) => {
+    const text = body.slice(label.index! + label[0].length, labels[index + 1]?.index ?? body.length);
+    return { labels: label[1].split("|").map(item => item.trim()).filter(Boolean), targets: assignmentTargets(text), isDefault: /^others\b/i.test(label[1].trim()) };
+  });
+}
+
+function assignmentTargets(text: string): string[] {
+  return [...text.matchAll(/\b([A-Za-z_]\w*)\s*(?:<=|:=|=(?!=))/g)].map(match => match[1]);
+}
+
+function sourceSignatures(clean: string, language: HdlLang, starts: number[], scopes: { name: string; start: number; end: number }[]): SourceSignature[] {
   const result: SourceSignature[] = [];
   let offset = 0;
   for (const line of clean.split("\n")) {
     const lineNumber = lineAt(starts, offset);
     const text = line.trim().slice(0, 200);
-    const add = (kind: SourceSignature["kind"], column = 1) => result.push({ kind, line: lineNumber, column, text });
+    const add = (kind: SourceSignature["kind"], column = 1, index = offset) => result.push({ kind, line: lineNumber, column, text, scope: scopeAtOffset(scopes, index) });
     if (/#\s*\d/.test(line)) add("delay");
     if (/\bdefparam\b/.test(line)) add("defparam");
     if (/\b(?:casex|casez)\b/.test(line)) add("caseXZ");
@@ -456,8 +521,10 @@ function sourceSignatures(clean: string, language: HdlLang, starts: number[]): S
     if (/\S(?:<=|:=)\S|\s(?:<=|:=)\S|\S(?:<=|:=)\s/.test(line)) add("spacing");
     if ((line.match(/;/g) ?? []).length >= 2 && /<=|:=|=(?!=)/.test(line) && !/\bfor\s*\(/.test(line)) add("multiStatement");
     if (/\balways\b/.test(line) && line.includes("|")) add("sensitivityPipe");
-    if (/\bposedge\b|\brising_edge\b/i.test(line)) add("posedge");
-    if (/\bnegedge\b|\bfalling_edge\b/i.test(line)) add("negedge");
+    const posedge = /\bposedge\b|\brising_edge\b/i.exec(line);
+    if (posedge) add("posedge", 1, offset + posedge.index);
+    const negedge = /\bnegedge\b|\bfalling_edge\b/i.exec(line);
+    if (negedge) add("negedge", 1, offset + negedge.index);
     offset += line.length + 1;
   }
   return result;

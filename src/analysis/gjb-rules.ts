@@ -142,13 +142,13 @@ export function runGjb10157Rules(facts: FileFacts): RuleDiagnostic[] {
   if (modules[0] && fileBase && fileBase !== modules[0].name) emit("A-2-1", modules[0].line, 1, `模块名“${modules[0].name}”与文件名“${fileBase}”不一致。`);
   const edges = new Map<string, Set<string>>();
   for (const signature of facts.signatures.filter(item => item.kind === "posedge" || item.kind === "negedge")) {
-    const scope = moduleScopeAt(facts, signature.line);
+    const scope = moduleScopeAt(facts, signature.line, signature.scope);
     const kinds = edges.get(scope) ?? new Set<string>();
     kinds.add(signature.kind);
     edges.set(scope, kinds);
   }
   for (const [scope, kinds] of edges) {
-    if (kinds.size > 1) emit("A-4-1", facts.signatures.find(item => item.kind === "negedge" && moduleScopeAt(facts, item.line) === scope)?.line ?? 1, 1, "同一模块同时使用了 posedge 和 negedge，建议避免混用时钟边沿。");
+    if (kinds.size > 1) emit("A-4-1", facts.signatures.find(item => item.kind === "negedge" && moduleScopeAt(facts, item.line, item.scope) === scope)?.line ?? 1, 1, "同一模块同时使用了 posedge 和 negedge，建议避免混用时钟边沿。");
   }
   for (const parameter of facts.parameters) {
     if (parameter.defaultValue && /^\d+$/.test(parameter.defaultValue.trim())) emit("A-9-2", parameter.line ?? 1, 1, `参数“${parameter.name}”未显式指定进制和位宽。`);
@@ -349,13 +349,13 @@ export function runGjb9765Rules(facts: FileFacts): RuleDiagnostic[] {
   }
   const edgeKinds = new Map<string, Set<string>>();
   for (const signature of facts.signatures.filter(item => item.kind === "posedge" || item.kind === "negedge")) {
-    const scope = moduleScopeAt(facts, signature.line);
+    const scope = moduleScopeAt(facts, signature.line, signature.scope);
     const edges = edgeKinds.get(scope) ?? new Set<string>();
     edges.add(signature.kind);
     edgeKinds.set(scope, edges);
   }
   for (const [scope, edges] of edgeKinds) {
-    if (edges.size > 1) emit("4.9-i", facts.signatures.find(signature => signature.kind === "negedge" && moduleScopeAt(facts, signature.line) === scope)?.line ?? 1, 1, "同一模块同时存在上升沿和下降沿触发的寄存器。");
+    if (edges.size > 1) emit("4.9-i", facts.signatures.find(signature => signature.kind === "negedge" && moduleScopeAt(facts, signature.line, signature.scope) === scope)?.line ?? 1, 1, "同一模块同时存在上升沿和下降沿触发的寄存器。");
   }
   for (const process of facts.processes) {
     if (process.clocks.some(clock => process.resets.includes(clock))) emit("4.10-h", process.startLine, 1, "同一信号同时用作时钟和复位／置位，请避免。");

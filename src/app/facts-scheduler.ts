@@ -139,8 +139,11 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
         diagnostics.delete(file);
         failures.set(file, analysisFailure(file, error));
         running = false;
-        projectDiagnostics = runProjectRules([...facts.values()]);
-        context.complete(false);
+        if (resume) void start();
+        else {
+          projectDiagnostics = runProjectRules([...facts.values()]);
+          context.complete(false);
+        }
       }
     }
   }

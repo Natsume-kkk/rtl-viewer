@@ -233,3 +233,24 @@ it("VHDL 确定位宽和常量初始化引用按对象类型检查", () => {
   expect(vhdlIds("entity demo is end; architecture rtl of demo is constant C : integer := 1; constant D : integer := C; begin end;")).not.toContain("9765-4.6-c");
   expect(vhdlIds("entity demo is end; architecture rtl of demo is signal a,b : std_logic_vector(7 downto 0); begin process(all) begin q <= a = b; end process; end;")).not.toContain("9765-4.6-b");
 });
+
+it("完整 case 不报警但分支漏赋目标仍报告覆盖不足", () => {
+  for (const source of [
+    "module demo; wire sel; always @* case (sel) 0: q = 0; default: q = 1; endcase endmodule",
+    "module demo; wire sel; always @* case (sel) 0: q = 0; 1: q = 1; endcase endmodule",
+  ]) expect(runGeneralRules(analyzeFileFacts("demo.v", source)).map(item => item.ruleId)).not.toContain("VLG-SY-004");
+  expect(runGeneralRules(analyzeFileFacts("demo.v", "module demo; always @* case (sel) 0: q = 0; 1: r = 1; default: q = 1; endcase endmodule")).map(item => item.ruleId)).toContain("VLG-SY-004");
+  const fullVhdl = "entity demo is end; architecture rtl of demo is signal a,q:bit; begin process(a) begin case a is when '0' => q <= '0'; when others => q <= '1'; end case; end process; end;";
+  expect(runGeneralRules(analyzeFileFacts("demo.vhd", fullVhdl)).map(item => item.ruleId)).not.toContain("VHD-SY-003");
+  expect(vhdlIds(fullVhdl)).not.toContain("9765-4.2-f");
+  const missingVhdl = "entity demo is end; architecture rtl of demo is signal a,q,r:bit; begin process(a) begin case a is when '0' => r <= '0'; when others => q <= '1'; end case; end process; end;";
+  expect(runGeneralRules(analyzeFileFacts("demo.vhd", missingVhdl)).map(item => item.ruleId)).toContain("VHD-SY-003");
+});
+
+it("同一行不同设计单元的边沿签名保持独立", () => {
+  const verilog = "module a; always @(posedge clk) q <= d; endmodule module b; always @(negedge clk) q <= d; endmodule";
+  expect(ids(verilog)).not.toContain("10157-A-4-1");
+  expect(ids("module demo; always @(posedge clk) q <= d; always @(negedge clk) r <= d; endmodule")).toContain("10157-A-4-1");
+  const vhdl = "entity a is end; architecture rtl of a is begin process(clk) begin if rising_edge(clk) then q <= d; end if; end process; end; entity b is end; architecture rtl of b is begin process(clk) begin if falling_edge(clk) then q <= d; end if; end process; end;";
+  expect(vhdlIds(vhdl)).not.toContain("9765-4.9-i");
+});

@@ -80,13 +80,13 @@ function main(argv: string[]): number {
   return diagnostics.some(item => item.severity === "error") ? 1 : 0;
 }
 
-function syntaxOptions(options: CliOptions) {
+export function syntaxOptions(options: CliOptions) {
   return {
     ...emptySyntaxCheckOptions,
     top: options.top ?? "",
     defines: options.defines,
-    includeDirs: options.includeDirs,
-    vhdlLibraries: options.libraries,
+    includeDirs: options.includeDirs.map(directory => path.resolve(options.root, directory)),
+    vhdlLibraries: options.libraries.map(mapping => ({ ...mapping, file: path.resolve(options.root, mapping.file) })),
     verilatorArgs: options.verilatorArgs,
     ghdlArgs: options.ghdlArgs,
   };

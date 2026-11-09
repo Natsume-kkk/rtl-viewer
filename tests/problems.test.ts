@@ -143,7 +143,9 @@ it("内置分析完成即可导出，不依赖外部检查", () => {
   const { root, panel } = setup();
   const html = [...root.querySelectorAll("button")].find(button => button.textContent === "导出 HTML") as HTMLButtonElement;
   expect(html.disabled).toBe(true);
-  panel.setBuiltins([], true);
+  panel.setBuiltins([], true, true);
+  expect(html.disabled).toBe(true);
+  panel.setBuiltins([], true, false);
   expect(html.disabled).toBe(false);
 });
 

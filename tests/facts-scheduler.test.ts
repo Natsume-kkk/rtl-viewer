@@ -46,3 +46,31 @@ it("取消使旧队列停止，清空后不保留旧事实", async () => {
   queue.clear();
   expect(queue.values()).toEqual([]);
 });
+
+it("单文件分析失败保留明确诊断而不冒充无问题", async () => {
+  const queue = createFactsScheduler({
+    files: () => [{ file: "bad.sv", content: "module bad; endmodule" }],
+    priorityFile: () => undefined,
+    result: () => undefined,
+    progress: () => undefined,
+    complete: () => undefined,
+  }, async () => { throw new Error("parser failed"); });
+  await queue.start();
+  expect(queue.get("bad.sv")).toBeUndefined();
+  expect(queue.diagnosticValues()).toEqual([expect.objectContaining({ file: "bad.sv", ruleId: "ANALYSIS-FAILED", severity: "error", message: expect.stringContaining("parser failed") })]);
+});
+
+it("队列完成后合并跨文件项目级诊断", async () => {
+  const queue = scheduler({
+    files: () => [
+      { file: "a.sv", content: "module a; parameter WIDTH = 8; endmodule" },
+      { file: "b.sv", content: "module b; parameter WIDTH = 16; endmodule" },
+    ],
+    priorityFile: () => undefined,
+    result: () => undefined,
+    progress: () => undefined,
+    complete: () => undefined,
+  });
+  await queue.start();
+  expect(queue.diagnosticValues().filter(item => item.ruleId === "10157-A-2-7")).toHaveLength(1);
+});

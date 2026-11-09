@@ -129,7 +129,7 @@ it("复位、时钟、三态和端口类型只在对应上下文中报警", () =
   expect(ids("module demo(pad,en,a); inout pad; input en,a; assign pad = en ? a : 1'bz; endmodule")).not.toContain("10157-R-8-2");
   expect(ids("module demo; reg a,en; always @* a = en ? 1'b1 : 1'bz; endmodule")).toContain("10157-R-8-2");
   expect(ids("module demo; logic a; endmodule", "demo.sv")).not.toContain("10157-R-3-2");
-  expect(ids("module demo(input logic a); endmodule", "demo.sv")).toContain("10157-R-3-2");
+  expect(ids("module demo(input logic a); endmodule", "demo.sv")).not.toContain("10157-R-3-2");
   expect(ids("module demo; // `include \"/absolute/path\"\nendmodule")).not.toContain("10157-R-2-7");
   expect(ids("module demo; `include \"/absolute/path\"\nendmodule")).toContain("10157-R-2-7");
 });
@@ -161,4 +161,75 @@ it("文件名规则同时支持 Windows 和 POSIX 路径", () => {
   expect(ids("module demo; endmodule", "D:\\project\\demo.v")).not.toContain("10157-A-2-1");
   expect(ids("module demo; endmodule", "D:/project/demo.v")).not.toContain("10157-A-2-1");
   expect(ids("module demo; endmodule", "D:\\project\\other.v")).toContain("10157-A-2-1");
+});
+
+it("条件覆盖按目标和互补分支判断，时序 if 不冒充组合逻辑", () => {
+  expect(ids("module demo; always @(posedge clk) if (en) q <= d; endmodule")).not.toContain("10157-A-11-5");
+  expect(vhdlIds("entity demo is end; architecture rtl of demo is begin process(clk) begin if rising_edge(clk) then if en = '1' then q <= d; end if; end if; end process; end;")).not.toContain("9765-4.8-d");
+  expect(runGeneralRules(analyzeFileFacts("demo.v", "module demo; always @* begin q = 0; if (sel) r = a; end endmodule")).map(item => item.ruleId)).toContain("VLG-SY-004");
+  expect(vhdlIds("entity demo is end; architecture rtl of demo is begin process begin q <= '0'; if sel = '1' then r <= a; end if; end process; end;")).toContain("9765-4.2-f");
+  expect(runGeneralRules(analyzeFileFacts("demo.v", "module demo; always @* if (sel) q = a; else q = b; endmodule")).map(item => item.ruleId)).not.toContain("VLG-SY-004");
+  expect(runGeneralRules(analyzeFileFacts("demo.vhd", "entity demo is end; architecture rtl of demo is begin process(all) begin if sel = '1' then q <= a; else q <= b; end if; end process; end;")).map(item => item.ruleId)).not.toContain("VHD-SY-003");
+});
+
+it("时钟域和多驱动按模块隔离，不把同文件当作同一设计单元", () => {
+  const source = "module a; always @(posedge clk_a) q <= d; endmodule module b; always @(posedge clk_b) q <= d; endmodule";
+  expect(ids(source)).not.toContain("10157-A-4-4");
+  expect(runGeneralRules(analyzeFileFacts("demo.v", source)).map(item => item.ruleId)).not.toContain("VLG-SY-005");
+  expect(ids("module demo; always @(posedge clk_a) q <= d; always @(posedge clk_b) r <= d; endmodule")).toContain("10157-A-4-4");
+});
+
+it("VHDL case、复位和行波时钟只在真实条件不满足时报警", () => {
+  const full = "entity demo is end; architecture rtl of demo is signal a,q:bit; begin process(a) begin case a is when '0' => q <= '0'; when '1' => q <= '1'; end case; end process; end;";
+  expect(vhdlIds(full)).not.toContain("9765-4.8-c");
+  expect(vhdlIds("entity demo is end; architecture rtl of demo is signal a,q:bit; begin process(a) begin case a is when '0' => q <= '0'; end case; end process; end;")).toContain("9765-4.8-c");
+  expect(vhdlIds("entity demo is end; architecture rtl of demo is begin process(clk,rst_a,rst_b) begin if rst_a = '1' then q <= '0'; elsif rst_b = '1' then q <= '0'; elsif rising_edge(clk) then q <= d; end if; end process; end;")).not.toContain("9765-4.6-g");
+  expect(vhdlIds("entity demo is end; architecture rtl of demo is signal clk,source:bit; begin clk <= source; process(clk) begin if rising_edge(clk) then q <= d; end if; end process; end;")).not.toContain("9765-4.9-g");
+  const ripple = "entity demo is end; architecture rtl of demo is signal clk,source:bit; begin process(source_clk) begin if rising_edge(source_clk) then source <= d; end if; end process; clk <= source; process(clk) begin if rising_edge(clk) then q <= d; end if; end process; end;";
+  expect(vhdlIds(ripple)).toContain("9765-4.9-g");
+  expect(vhdlIds("entity foo is end; architecture rtl of foo is signal foo:bit; begin end;")).toContain("9765-4.5-b");
+});
+
+it("状态 default 和 parameter 字面量按条款目标检查", () => {
+  expect(ids("module demo; reg [1:0] state; always @(posedge clk) case(state) 0: state <= 1; default: q <= 0; endcase endmodule")).toContain("10157-R-14-2");
+  expect(ids("module demo; reg [1:0] state; always @(posedge clk) case(state) 0: state <= 1; default: state <= 0; endcase endmodule")).not.toContain("10157-R-14-2");
+  expect(ids("module demo; parameter P = 1; endmodule")).toContain("10157-A-9-2");
+  expect(ids("module demo; parameter P = 1'b1; endmodule")).not.toContain("10157-A-9-2");
+});
+
+it("端口和声明注释按就近位置判断，文件头不再掩盖缺失", () => {
+  const source = `-- file header
+entity demo is
+  port(a : in bit);
+end;
+architecture rtl of demo is
+  -- documented b
+  signal b : bit;
+  signal c : bit; -- documented c
+begin
+end;`;
+  const diagnostics = vhdl(source);
+  expect(diagnostics.some(item => item.ruleId === "9765-4.13-b" && item.message.includes("“a”"))).toBe(true);
+  expect(diagnostics.filter(item => item.ruleId === "9765-4.13-c")).toHaveLength(0);
+});
+
+it("确定位宽的不一致进入赋值、运算符和 case 分支检查", () => {
+  const diagnostics = ids("module demo; wire [7:0] a; wire [3:0] b; assign a = b; assign q = a == b; assign r = a & b; always @* case(a) 4'd0: q = 0; endcase endmodule");
+  expect(diagnostics).toEqual(expect.arrayContaining(["10157-R-10-2", "10157-R-9-1", "10157-R-9-2", "10157-R-11-3"]));
+  const valid = ids("module demo; wire [7:0] a; assign a = 8'd1; assign q = a == 8'd0; assign r = a & 8'h0f; always @* case(a) 8'd0: q = 0; endcase endmodule");
+  for (const id of ["10157-R-10-2", "10157-R-9-1", "10157-R-9-2", "10157-R-11-3"]) expect(valid).not.toContain(id);
+});
+
+it("异步复位边沿与进入条件保持一致", () => {
+  expect(ids("module demo; always @(posedge clk or negedge rst_n) if (rst_n) q <= 0; else q <= d; endmodule")).toContain("10157-R-6-3");
+  expect(ids("module demo; always @(posedge clk or negedge rst_n) if (!rst_n) q <= 0; else q <= d; endmodule")).not.toContain("10157-R-6-3");
+});
+
+it("VHDL 确定位宽和常量初始化引用按对象类型检查", () => {
+  const source = "entity demo is end; architecture rtl of demo is signal a : std_logic_vector(7 downto 0); signal b : std_logic_vector(3 downto 0); signal input_value : integer; constant C : integer := input_value; constant D : integer := C; begin process(all) begin q <= a = b; end process; end;";
+  const diagnostics = vhdlIds(source);
+  expect(diagnostics).toContain("9765-4.6-b");
+  expect(diagnostics.filter(id => id === "9765-4.6-c")).toHaveLength(1);
+  expect(vhdlIds("entity demo is end; architecture rtl of demo is constant C : integer := 1; constant D : integer := C; begin end;")).not.toContain("9765-4.6-c");
+  expect(vhdlIds("entity demo is end; architecture rtl of demo is signal a,b : std_logic_vector(7 downto 0); begin process(all) begin q <= a = b; end process; end;")).not.toContain("9765-4.6-b");
 });

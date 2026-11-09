@@ -440,7 +440,8 @@ async function exportSyntaxReport(format: "html" | "csv"): Promise<void> {
     if (!path) return;
     const external: SyntaxCheckResult = lastSyntaxResult ?? { requestId: 0, checkedFiles: 0, cancelled: false, backends: [], diagnostics: [] };
     const reportResult = { ...external, diagnostics: [...problemPanel.builtinDiagnostics, ...external.diagnostics.filter(item => inAnalysisScope(item.file))] };
-    const content = format === "html" ? syntaxReportHtml(state.folder, reportResult, generated, { options: syntaxOptions, facts: factsScheduler.values().filter(item => inAnalysisScope(item.file)), stale: problemPanel.isStale }) : syntaxReportCsv(reportResult);
+    const context = { options: syntaxOptions, facts: factsScheduler.values().filter(item => inAnalysisScope(item.file)), stale: problemPanel.isStale };
+    const content = format === "html" ? syntaxReportHtml(state.folder, reportResult, generated, context) : syntaxReportCsv(reportResult, context);
     await writeFile(path, content, "utf8");
     statusbar.hint(`检查报告已导出：${path}`);
   } catch (error) {
@@ -769,7 +770,7 @@ function refreshFactsViews(): void {
   const facts = factsScheduler.values().filter(item => inAnalysisScope(item.file));
   const diagnostics = factsScheduler.diagnosticValues().filter(item => inAnalysisScope(item.file));
   problemPanel.setScope(analysisScope, state.topName || state.autoTop);
-  problemPanel.setBuiltins(diagnostics, factsDone > 0);
+  problemPanel.setBuiltins(diagnostics, factsDone > 0, factsTotal > 0 && factsDone < factsTotal);
   statsPanel.render({
     facts,
     files,

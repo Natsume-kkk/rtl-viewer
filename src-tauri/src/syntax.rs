@@ -317,7 +317,8 @@ fn execute_check_inner(
     let ghdl = tools.join("ghdl/bin/ghdl.exe");
     let mut include_dirs: BTreeSet<PathBuf> = files.iter()
         .filter(|file| file.kind != SourceKind::Vhdl)
-        .filter_map(|file| file.path.parent().map(Path::to_path_buf))
+        .flat_map(|file| [file.path.parent(), Path::new(&file.display).parent()])
+        .filter_map(|path| path.map(Path::to_path_buf))
         .collect();
     include_dirs.extend(request.options.include_dirs.iter().map(PathBuf::from));
 
@@ -330,9 +331,10 @@ fn execute_check_inner(
         let mut status = "completed".to_owned();
         match run_verilator(&verilator, tools, &root, work, &ordered, &include_dirs, &request.stubs, &request.options, request.top.as_deref(), request.request_id, jobs) {
             Ok(outcome) => {
+                let before = diagnostics.len();
                 parse_verilator_output(&outcome.stdout, &root, &mut diagnostics);
                 parse_verilator_output(&outcome.stderr, &root, &mut diagnostics);
-                if !outcome.success && !outcome.cancelled && !outcome.timed_out && diagnostics.is_empty() {
+                if !outcome.success && !outcome.cancelled && !outcome.timed_out && diagnostics.len() == before {
                     diagnostics.push(system_diagnostic("", &format!("Verilator 检查失败：{}", output_summary(&outcome.stdout, &outcome.stderr))));
                 }
                 if outcome.cancelled || is_cancelled(jobs, request.request_id) {
@@ -661,9 +663,7 @@ fn reported_path(root: &Path, file: &str) -> String {
 }
 
 fn push_diagnostic(diagnostics: &mut Vec<SyntaxDiagnostic>, diagnostic: SyntaxDiagnostic) {
-    if diagnostics.len() < MAX_DIAGNOSTICS * 4 {
-        diagnostics.push(diagnostic);
-    }
+    diagnostics.push(diagnostic);
 }
 
 fn output_summary(stdout: &str, stderr: &str) -> String {
@@ -754,6 +754,12 @@ fn order_vhdl(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>
         for window in words.windows(3) {
             if window[0] != "entity" { continue; }
             if let Some(provider) = entities.get(&(window[1].clone(), window[2].clone())) {
+                if *provider != index { dependencies[index].insert(*provider); }
+            }
+        }
+        for token in 0..words.len().saturating_sub(3) {
+            if words[token] != "architecture" || words[token + 2] != "of" { continue; }
+            if let Some(provider) = entities.get(&(files[index].library.clone(), words[token + 3].clone())) {
                 if *provider != index { dependencies[index].insert(*provider); }
             }
         }
@@ -897,6 +903,16 @@ mod tests {
     }
 
     #[test]
+    fn vhdl_architecture_follows_entity_in_another_file() {
+        let architecture = fixture("a_rtl.vhd", "architecture rtl of split_entity is begin end architecture;");
+        let entity = fixture("z_entity.vhd", "entity split_entity is end entity;");
+        let (ordered, errors) = order_vhdl(vec![architecture, entity]);
+        assert!(errors.is_empty());
+        let names: Vec<_> = ordered.iter().map(|file| file.path.file_name().unwrap().to_string_lossy()).collect();
+        assert_eq!(names, ["z_entity.vhd", "a_rtl.vhd"]);
+    }
+
+    #[test]
     fn diagnostics_parse_windows_paths_and_message_colons() {
         let root = PathBuf::from("D:/project");
         let mut diagnostics = Vec::new();
@@ -921,10 +937,13 @@ mod tests {
 
     #[test]
     fn truncation_preserves_errors_before_information() {
-        let mut diagnostics: Vec<_> = (0..6000).map(|index| SyntaxDiagnostic {
-            file: format!("D:/project/{index}.sv"), line: 1, column: 1, severity: "info".into(), rule_id: "INFO".into(), source: "verilator".into(), message: "information".into(),
-        }).collect();
-        diagnostics.push(system_diagnostic("D:/project/error.sv", "critical"));
+        let mut diagnostics = Vec::new();
+        for index in 0..(MAX_DIAGNOSTICS * 4 + 1) {
+            push_diagnostic(&mut diagnostics, SyntaxDiagnostic {
+                file: format!("D:/project/{index}.sv"), line: 1, column: 1, severity: "info".into(), rule_id: "INFO".into(), source: "verilator".into(), message: "information".into(),
+            });
+        }
+        push_diagnostic(&mut diagnostics, system_diagnostic("D:/project/error.sv", "critical"));
         finalize_diagnostics(&mut diagnostics);
         assert_eq!(diagnostics.len(), MAX_DIAGNOSTICS);
         assert_eq!(diagnostics[0].severity, "error");
@@ -979,7 +998,8 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let source = root.join("top.sv");
         fs::write(&source, "module top; invalid verilog\n").unwrap();
-        let snapshot = SourceSnapshot { file: crate::normalize(&source), content: "module top(input logic a, output logic b); assign b = a; endmodule\n".into(), encoding: "utf8".into() };
+        fs::write(root.join("types.svh"), "typedef logic [1:0] pair_t;\n").unwrap();
+        let snapshot = SourceSnapshot { file: crate::normalize(&source), content: "module top(input logic a, output logic b); `include \"types.svh\"\npair_t value; assign value = {a, a}; assign b = value[0]; endmodule\n".into(), encoding: "utf8".into() };
         let result = execute_check(SyntaxCheckRequest { request_id: 95, root: crate::normalize(&root), files: vec![crate::normalize(&source)], snapshots: vec![snapshot], ..Default::default() }, &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools/windows-x64"), &root.join("work"), &Arc::new(SyntaxJobState::default()), &|_| {}).unwrap();
         assert_eq!(result.checked_files, 1, "{result:?}");
         assert!(!result.diagnostics.iter().any(|diagnostic| diagnostic.severity == "error"), "{result:?}");

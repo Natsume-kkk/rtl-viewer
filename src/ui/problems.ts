@@ -53,6 +53,7 @@ export class ProblemPanel {
   private result?: SyntaxCheckResult;
   private builtin: RuleDiagnostic[] = [];
   private builtinAnalyzed = false;
+  private builtinRunning = false;
   private running = false;
   private cancelling = false;
   private stale = false;
@@ -199,9 +200,10 @@ export class ProblemPanel {
     this.renderResults();
   }
 
-  setBuiltins(diagnostics: RuleDiagnostic[], analyzed = true): void {
+  setBuiltins(diagnostics: RuleDiagnostic[], analyzed = true, running = false): void {
     this.builtin = diagnostics;
     this.builtinAnalyzed = analyzed;
+    this.builtinRunning = running;
     this.renderResults();
   }
 
@@ -258,6 +260,7 @@ export class ProblemPanel {
     this.result = undefined;
     this.builtin = [];
     this.builtinAnalyzed = false;
+    this.builtinRunning = false;
     this.running = false;
     this.cancelling = false;
     this.stale = false;
@@ -286,7 +289,7 @@ export class ProblemPanel {
     this.cancelButton.disabled = !this.running || this.cancelling;
     this.cancelButton.textContent = this.cancelling ? "正在取消…" : "取消";
     this.progressBar.hidden = !this.running;
-    this.exportButtons.forEach(button => { button.disabled = !this.hasResults || this.running; });
+    this.exportButtons.forEach(button => { button.disabled = !this.hasResults || this.running || this.builtinRunning; });
     this.focusButton.textContent = this.severities.size === SEVERITIES.length ? "仅看错误和警告" : "查看全部问题";
     this.focusButton.setAttribute("aria-pressed", String(this.severities.size !== SEVERITIES.length));
     if (this.running) {
@@ -312,6 +315,10 @@ export class ProblemPanel {
       this.summary.textContent = "工程载入后自动执行全部检查；编辑停顿后自动复查。";
       return;
     }
+    if (this.builtinRunning) {
+      this.summary.textContent = "内置分析进行中，完成后可导出报告。";
+      return;
+    }
     const all = this.allDiagnostics();
     const counts = severityCounts(all);
     const filtered = this.filteredDiagnostics();
@@ -328,7 +335,7 @@ export class ProblemPanel {
     this.renderSummary();
     this.backends.textContent = "";
     const builtinStatus = document.createElement("span");
-    builtinStatus.textContent = this.builtinAnalyzed ? "内置分析 · 已更新到当前源码" : "内置分析 · 等待分析";
+    builtinStatus.textContent = this.builtinRunning ? "内置分析 · 进行中" : this.builtin.some(item => item.ruleId === "ANALYSIS-FAILED") ? "内置分析 · 部分文件失败" : this.builtinAnalyzed ? "内置分析 · 已更新到当前源码" : "内置分析 · 等待分析";
     this.backends.append(builtinStatus);
     for (const backend of this.result?.backends ?? []) {
       const item = document.createElement("span");

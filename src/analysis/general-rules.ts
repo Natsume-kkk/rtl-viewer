@@ -1,4 +1,4 @@
-import type { AssignmentFacts, FileFacts } from "./facts";
+import { assignmentScope, type AssignmentFacts, type FileFacts } from "./facts";
 
 export interface RuleDiagnostic {
   file: string;
@@ -7,7 +7,7 @@ export interface RuleDiagnostic {
   severity: "error" | "warning" | "info";
   ruleId: string;
   source: "builtin";
-  category: "style" | "synth" | "gjb10157" | "gjb9765";
+  category: "style" | "synth" | "gjb10157" | "gjb9765" | "analysis";
   message: string;
   relatedRuleIds?: string[];
 }
@@ -40,10 +40,10 @@ export function runGeneralRules(facts: FileFacts, includeStyle = false): RuleDia
         if (process.sequential && assignment.operator === "=") emit("warning", "VLG-SY-001", "synth", assignment.line, 1, `时序 always 中对“${assignment.target}”使用阻塞赋值，请使用 <=。`);
         if (process.combinational && assignment.operator === "<=") emit("warning", "VLG-SY-002", "synth", assignment.line, 1, `组合 always 中对“${assignment.target}”使用非阻塞赋值，请使用 =。`);
       }
-      if (process.incompleteConditionalAssignment) emit("info", "VLG-SY-004", "synth", process.startLine, 1, "组合 always 中存在未覆盖的条件赋值路径，未检测到无条件默认赋值。");
+      if (process.incompleteConditionalAssignment) emit("info", "VLG-SY-004", "synth", process.startLine, 1, "组合 always 中未能确认所有条件路径均有赋值。");
     } else {
       if (process.sequential && !process.hasResetBranch) emit("info", "VHD-SY-001", "synth", process.startLine, 1, "时序过程中未识别到规则所定义的复位分支。");
-      if (process.incompleteConditionalAssignment) emit("info", "VHD-SY-003", "synth", process.startLine, 1, "组合过程中存在未覆盖的条件赋值路径，未检测到无条件默认赋值。");
+      if (process.incompleteConditionalAssignment) emit("info", "VHD-SY-003", "synth", process.startLine, 1, "组合过程中未能确认所有条件路径均有赋值。");
       if (process.combinational && process.explicitSensitivity && !process.sensitivity.includes("all")) {
         const sensitivity = new Set(process.sensitivity);
         const missing = new Set<string>();
@@ -59,6 +59,9 @@ export function runGeneralRules(facts: FileFacts, includeStyle = false): RuleDia
   }
   for (const line of facts.initialLines) emit("info", "VLG-SY-003", "synth", line, 1, "检测到 initial；请核对目标器件与仿真用途。");
   emitMultipleDrivers(facts, emit);
+  for (const process of facts.processes) {
+    for (const issue of process.issues) emit("info", "ANALYSIS-BOUNDARY", "analysis", process.startLine, 1, `静态检查受限：${issue}；相关区域未按完整语义判定。`);
+  }
   return diagnostics;
 }
 
@@ -68,7 +71,7 @@ function emitMultipleDrivers(facts: FileFacts, emit: (severity: RuleDiagnostic["
   for (const assignment of [...facts.processes.flatMap(process => process.assignments), ...facts.concurrentAssignments]) {
     const target = assignment.targetText.trim();
     if (target !== assignment.target || !/^[A-Za-z_]\w*$/.test(target)) continue;
-    const key = facts.language === "vhdl" ? target.toLowerCase() : target;
+    const key = `${assignmentScope(facts, assignment)}|${facts.language === "vhdl" ? target.toLowerCase() : target}`;
     const first = drivers.get(key);
     if (first && (first.processIndex !== assignment.processIndex || first.processIndex === -1) && !reported.has(key)) {
       reported.add(key);

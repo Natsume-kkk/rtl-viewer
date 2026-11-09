@@ -118,3 +118,15 @@ it("Node CLI 依赖排序使用未保存快照中的定义", () => {
   expect(result.checkedFiles).toBe(2);
   expect(result.diagnostics.filter(item => item.severity === "error")).toEqual([]);
 });
+
+it("Node CLI 在独立 architecture 之前分析对应 entity", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rtl-node-split-entity-"));
+  roots.push(root);
+  const architecture = path.join(root, "a_rtl.vhd");
+  const entity = path.join(root, "z_entity.vhd");
+  fs.writeFileSync(architecture, "architecture rtl of split_entity is begin end architecture;\n");
+  fs.writeFileSync(entity, "entity split_entity is end entity;\n");
+  const result = runNodeSyntaxCheck({ requestId: 7, root, files: [architecture, entity], stubs: [], options: emptySyntaxCheckOptions });
+  expect(result.checkedFiles).toBe(2);
+  expect(result.diagnostics.filter(item => item.severity === "error")).toEqual([]);
+});

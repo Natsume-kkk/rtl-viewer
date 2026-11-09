@@ -36,11 +36,25 @@ export function syntaxReportHtml(folder: string, result: SyntaxCheckResult, gene
 </body></html>`;
 }
 
-export function syntaxReportCsv(result: SyntaxCheckResult): string {
+export function syntaxReportCsv(result: SyntaxCheckResult, context: SyntaxReportContext = {}): string {
   const rows = ["Severity,Source,Rule,File,Line,Column,Message"];
   for (const diagnostic of result.diagnostics) {
     rows.push([diagnostic.severity, diagnostic.source, diagnostic.ruleId, diagnostic.file, String(diagnostic.line), String(diagnostic.column), diagnostic.message].map(csvField).join(","));
   }
+  if (!context.options && !context.facts && context.stale === undefined) return rows.join("\r\n") + "\r\n";
+  rows.push("");
+  rows.push(["Backend", "Version", "Files", "Status"].map(csvField).join(","));
+  if (result.backends.length) {
+    for (const backend of result.backends) rows.push([backend.name, backend.version, String(backend.files), backend.status].map(csvField).join(","));
+  } else rows.push(["external", "未运行", "0", "not_run"].map(csvField).join(","));
+  rows.push(["Stale", context.stale ? "true" : "false"].map(csvField).join(","));
+  rows.push(["Options", JSON.stringify(context.options ?? {})].map(csvField).join(","));
+  const facts = context.facts ?? [];
+  const codeLines = facts.reduce((sum, item) => sum + item.statistics.codeLines, 0);
+  const commentLines = facts.reduce((sum, item) => sum + item.statistics.commentOnlyLines + item.statistics.inlineCommentLines, 0);
+  const denominator = facts.reduce((sum, item) => sum + item.statistics.codeLines + item.statistics.commentOnlyLines + item.statistics.inlineCommentLines, 0);
+  rows.push(["CodeLines", "CommentLines", "CommentRatio"].map(csvField).join(","));
+  rows.push([String(codeLines), String(commentLines), `${denominator ? Math.round(commentLines / denominator * 100) : 0}%`].map(csvField).join(","));
   return rows.join("\r\n") + "\r\n";
 }
 

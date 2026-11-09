@@ -114,3 +114,14 @@ it("隐藏统计不渲染，恢复后刷新且孙级节点仅在展开时物化"
   childNode.dispatchEvent(new Event("toggle"));
   await vi.waitFor(() => expect(grandchildReads).toBe(1));
 });
+
+it("拓扑中的未分析文件显示待分析而不是零统计", () => {
+  const root = document.createElement("section");
+  document.body.append(root);
+  const panel = new StatsPanel(root, { displayPath: file => file, onOpenFile: vi.fn(), onOpenProblems: vi.fn(), onScopeChange: vi.fn(), onClose: vi.fn() });
+  panel.render({ facts: [], files: ["D:/project/a.sv"], diagnostics: [], done: 0, total: 1, running: false, stale: false, scope: "top", topology: [{ key: "a", label: "a", moduleName: "a", file: "D:/project/a.sv", children: [] }] });
+  const issue = root.querySelector<HTMLButtonElement>(".stats-topology-issues")!;
+  expect(issue.textContent).toBe("待分析");
+  expect(issue.disabled).toBe(true);
+  expect(root.querySelector(".stats-topology-row")!.textContent).not.toContain("0%");
+});

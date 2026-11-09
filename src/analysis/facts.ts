@@ -1,4 +1,4 @@
-import { parseFileDetail, type HdlLang, type ModuleInfo, type ParameterInfo, type PortInfo } from "../parser";
+import { parseFileDetail, type HdlLang, type ModuleInfo, type ParameterInfo, type PortConnection, type PortInfo } from "../parser";
 import { stripComments } from "../parser/verilog";
 import { stripVhdlComments } from "../parser/vhdl";
 import { analyzeExpression, parseVerilogProcess, parseVhdlProcess, processRanges } from "../parser/procedural";
@@ -28,16 +28,21 @@ export interface AssignmentFacts {
   conditions: string[];
   reads: string[];
   expression: string;
+  scope?: string;
 }
 
 export interface CaseFacts {
   startLine: number;
+  scope?: string;
+  control: string;
   hasDefault: boolean;
+  fullyCovered: boolean;
   controlConstant: boolean;
   nonconstantLabel: boolean;
   emptyDefault: boolean;
   defaultHasX: boolean;
   labels: string[];
+  defaultAssignments: { target: string; expression: string }[];
 }
 
 export interface SourceSignature {
@@ -51,11 +56,15 @@ export interface DeclarationFacts {
   name: string;
   kind: "parameter" | "constant" | "other";
   line: number;
+  scope?: string;
+  defaultValue?: string;
+  width?: string;
 }
 
 export interface ProcessFacts {
   kind: "always" | "process";
   startLine: number;
+  scope?: string;
   endLine: number;
   sequential: boolean;
   combinational: boolean;
@@ -79,23 +88,34 @@ export interface DefinitionFacts {
   line: number;
 }
 
+export interface InstanceFacts {
+  module: string;
+  scope: string;
+  line: number;
+  connections: PortConnection[];
+}
+
 export interface FileFacts {
   file: string;
   language: HdlLang;
   statistics: CodeStatistics;
+  commentLines: number[];
   lines: LineFacts[];
   eofNewline: boolean;
   firstNonEmptyComment: boolean;
   definitions: DefinitionFacts[];
+  scopes: { name: string; start: number; end: number }[];
   declarations: DeclarationFacts[];
-  ports: PortInfo[];
-  parameters: ParameterInfo[];
+  ports: (PortInfo & { scope?: string })[];
+  parameters: (ParameterInfo & { scope?: string })[];
+  instances: InstanceFacts[];
   processes: ProcessFacts[];
   cases: CaseFacts[];
   signatures: SourceSignature[];
   positionalInstanceLines: number[];
   concurrentAssignments: AssignmentFacts[];
   instanceReads: string[];
+  instanceReadSites: { name: string; line: number; scope?: string }[];
   initialCount: number;
   initialLines: number[];
   multiDeclarationLines: number[];
@@ -111,7 +131,9 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
   const language = languageForFile(file);
   const clean = language === "vhdl" ? stripVhdlComments(content) : stripComments(content);
   const starts = lineStarts(content);
+  const codeAnalysis = analyzeCodeLines(content, language);
   const modules = parseFileDetail(content, file);
+  const scopes = definitionScopes(clean, language);
   const definitions = modules.flatMap(module => definitionFacts(module));
   const processes: ProcessFacts[] = [];
   const issues: string[] = [];
@@ -149,8 +171,8 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
     const hasResetBranch = resetBranch(text, language);
     const ifCount = (text.match(/\bif\b/gi) ?? []).length;
     const elseCount = (text.match(/\belse\b/gi) ?? []).length;
-    const incompleteConditionalAssignment = combinational && ifCount > elseCount && !assignments.some(assignment => assignment.conditions.length === 0);
-    const missingElse = ifCount > elseCount;
+    const incompleteConditionalAssignment = combinational && hasIncompleteConditionalAssignment(assignments);
+    const missingElse = combinational && ifCount > elseCount;
     const resets = resetSignals(text, language);
     const clocks = (language === "vhdl"
       ? [...text.matchAll(/(?:rising_edge|falling_edge)\s*\(\s*([A-Za-z_]\w*)|([A-Za-z_]\w*)\s*'\s*event/gi)].map(match => (match[1] ?? match[2]).toLowerCase())
@@ -159,6 +181,7 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
     processes.push({
       kind: language === "vhdl" ? "process" : "always",
       startLine,
+      scope: scopeAtOffset(scopes, range.index),
       endLine: lineAt(starts, range.index + range.text.length),
       sequential,
       combinational,
@@ -181,33 +204,37 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
   const loopCount = (clean.match(/\b(?:for|foreach|while|repeat|forever)\b/g) ?? []).length;
   const generateCount = (clean.match(/\bgenerate\b/gi) ?? []).length;
   const instanceCount = modules.reduce((count, module) => count + module.instances.length, 0);
-  const declarations = declarationFacts(clean, language, starts);
+  const declarations = declarationFacts(clean, language, starts, scopes);
   const constants = new Set([
     ...declarations.filter(item => item.kind !== "other").map(item => item.name),
     ...modules.flatMap(module => (module.parameters ?? []).map(parameter => parameter.name)),
   ]);
   const multiDeclarationLines = multipleDeclarationLines(clean, language, starts);
-  const cases = caseFacts(clean, language, starts, constants);
+  const cases = caseFacts(clean, language, starts, constants, scopes);
   const signatures = [...sourceSignatures(clean, language, starts), ...absoluteIncludeSignatures(language === "verilog" ? stripComments(content, false) : clean, starts), ...advancedSignatures(clean, starts, language, constants)];
   const positionalInstanceLines = positionalInstances(clean, language, starts);
-  const concurrentAssignments = continuousAssignments(clean, language, starts, ranges);
+  const concurrentAssignments = continuousAssignments(clean, language, starts, ranges, scopes);
   return {
     file,
     language,
-    statistics: codeStatistics(content, language),
+    statistics: codeAnalysis.statistics,
+    commentLines: codeAnalysis.commentLines,
     lines: lineFacts(content),
     eofNewline: content.length === 0 || content.endsWith("\n"),
     firstNonEmptyComment: firstNonEmptyIsComment(content, language),
     definitions,
+    scopes,
     declarations,
-    ports: modules.flatMap(module => module.ports),
-    parameters: modules.flatMap(module => module.parameters ?? []),
+    ports: modules.flatMap(module => module.ports.map(port => ({ ...port, scope: module.name }))),
+    parameters: modules.flatMap(module => (module.parameters ?? []).map(parameter => ({ ...parameter, scope: module.name }))),
+    instances: modules.flatMap(module => module.instances.map(instance => ({ module: instance.module, scope: module.name, line: instance.line, connections: instance.connections ?? [] }))),
     processes,
     cases,
     signatures,
     positionalInstanceLines,
     concurrentAssignments,
     instanceReads: modules.flatMap(module => module.instances.flatMap(instance => (instance.connections ?? []).flatMap(connection => connection.expr.match(/[A-Za-z_]\w*/g) ?? []))),
+    instanceReadSites: modules.flatMap(module => module.instances.flatMap(instance => (instance.connections ?? []).flatMap(connection => (connection.expr.match(/[A-Za-z_]\w*/g) ?? []).map(name => ({ name, line: connection.line, scope: module.name }))))),
     initialCount,
     initialLines,
     multiDeclarationLines,
@@ -218,6 +245,26 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
     instanceCount,
     issues,
   };
+}
+
+function hasIncompleteConditionalAssignment(assignments: AssignmentFacts[]): boolean {
+  const targets = new Set(assignments.map(assignment => assignment.target));
+  for (const target of targets) {
+    const paths = assignments.filter(assignment => assignment.target === target).map(assignment => assignment.conditions);
+    if (!paths.length || paths.some(path => path.length === 0)) continue;
+    if (!conditionsCoverAll(paths)) return true;
+  }
+  return false;
+}
+
+function conditionsCoverAll(paths: string[][]): boolean {
+  if (paths.some(path => path.length === 0)) return true;
+  const condition = paths[0][0];
+  if (!condition || condition.startsWith("case(")) return false;
+  const positive = paths.filter(path => path[0] === condition).map(path => path.slice(1));
+  const negated = condition.startsWith("!(") && condition.endsWith(")") ? condition.slice(2, -1) : `!(${condition})`;
+  const negative = paths.filter(path => path[0] === negated).map(path => path.slice(1));
+  return positive.length > 0 && negative.length > 0 && conditionsCoverAll(positive) && conditionsCoverAll(negative);
 }
 
 function advancedSignatures(clean: string, starts: number[], language: HdlLang, constants: Set<string>): SourceSignature[] {
@@ -284,7 +331,7 @@ function absoluteIncludeSignatures(content: string, starts: number[]): SourceSig
   return result;
 }
 
-function caseFacts(clean: string, language: HdlLang, starts: number[], constants: Set<string>): CaseFacts[] {
+function caseFacts(clean: string, language: HdlLang, starts: number[], constants: Set<string>, scopes: { name: string; start: number; end: number }[]): CaseFacts[] {
   const result: CaseFacts[] = [];
   const constantNames = new Set(constants);
   if (language === "vhdl") {
@@ -299,17 +346,42 @@ function caseFacts(clean: string, language: HdlLang, starts: number[], constants
       ? [...body.matchAll(/\bwhen\s+([\s\S]*?)=>/gi)].map(label => label[1].trim()).filter(label => !/^others\b/i.test(label)).flatMap(label => label.split("|").map(item => item.trim()))
       : verilogCaseLabels(body);
     const defaultText = language === "vhdl" ? /\bwhen\s+others\b([\s\S]*)/i.exec(body)?.[1] ?? "" : /\bdefault\b([\s\S]*)/.exec(body)?.[1] ?? "";
+    const hasDefault = language === "vhdl" ? /\bwhen\s+others\b/i.test(body) : /\bdefault\b/.test(body);
+    const defaultAssignments = [...defaultText.matchAll(/\b([A-Za-z_]\w*)\s*(?:<=|:=|=(?!=))\s*([^;]+)/g)].map(assignment => ({ target: assignment[1], expression: assignment[2].trim() }));
     result.push({
       startLine: lineAt(starts, match.index!),
-      hasDefault: language === "vhdl" ? /\bwhen\s+others\b/i.test(body) : /\bdefault\b/.test(body),
+      scope: scopeAtOffset(scopes, match.index!),
+      control: control.trim(),
+      hasDefault,
+      fullyCovered: caseFullyCovered(clean, language, control, labels, hasDefault),
       controlConstant: language === "vhdl" ? /^\s*'/.test(control) : /^\s*(?:\d+'|\d)/.test(control),
       nonconstantLabel: labels.some(label => !constantExpression(label, constantNames, language)),
       emptyDefault: language === "vhdl" ? /\bwhen\s+others\s*=>\s*null\b/i.test(body) : /\bdefault\s*:\s*;/.test(body),
       defaultHasX: /'[hdboHDBO]?[0-9a-fA-FxXzZ_]*[xX]/.test(defaultText),
       labels,
+      defaultAssignments,
     });
   }
   return result;
+}
+
+function caseFullyCovered(clean: string, language: HdlLang, control: string, labels: string[], hasDefault: boolean): boolean {
+  if (hasDefault) return true;
+  if (language !== "vhdl" || !/^[A-Za-z_]\w*$/.test(control.trim()) || !labels.length) return false;
+  const name = control.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const declaration = new RegExp(`\\b(?:[A-Za-z_]\\w*\\s*,\\s*)*${name}(?:\\s*,\\s*[A-Za-z_]\\w*)*\\s*:\\s*(?:(?:in|out|inout|buffer)\\s+)?([A-Za-z_]\\w*)`, "i").exec(clean);
+  const type = declaration?.[1].toLowerCase();
+  if (!type) return false;
+  let expected: string[] = [];
+  if (type === "bit") expected = ["'0'", "'1'"];
+  else if (type === "boolean") expected = ["false", "true"];
+  else if (type === "std_logic" || type === "std_ulogic") expected = ["'u'", "'x'", "'0'", "'1'", "'z'", "'w'", "'l'", "'h'", "'-'"];
+  else {
+    const enumType = new RegExp(`\\btype\\s+${type}\\s+is\\s*\\(([^)]*)\\)`, "i").exec(clean);
+    if (enumType) expected = enumType[1].split(",").map(item => item.trim().toLowerCase());
+  }
+  const actual = new Set(labels.map(label => label.trim().toLowerCase()));
+  return expected.length > 0 && expected.every(label => actual.has(label));
 }
 
 function verilogCaseLabels(body: string): string[] {
@@ -413,26 +485,29 @@ function positionalInstances(clean: string, language: HdlLang, starts: number[])
   return result;
 }
 
-function continuousAssignments(clean: string, language: HdlLang, starts: number[], ranges: { index: number; text: string }[]): AssignmentFacts[] {
+function continuousAssignments(clean: string, language: HdlLang, starts: number[], ranges: { index: number; text: string }[], scopes: { name: string; start: number; end: number }[]): AssignmentFacts[] {
   const result: AssignmentFacts[] = [];
-  const pattern = language === "vhdl" ? /^\s*([A-Za-z_]\w*)\s*<=\s*([^;]+);/gm : /\bassign\s+([A-Za-z_]\w*)\s*=\s*([^;]+);/g;
+  const pattern = language === "vhdl" ? /(?:^|;)\s*([A-Za-z_]\w*)\s*<=\s*([^;]+);/gm : /\bassign\s+([A-Za-z_]\w*)\s*=\s*([^;]+);/g;
   for (const match of clean.matchAll(pattern)) {
-    if (ranges.some(range => match.index! >= range.index && match.index! < range.index + range.text.length)) continue;
+    const assignmentIndex = match.index! + match[0].indexOf(match[1]);
+    if (ranges.some(range => assignmentIndex >= range.index && assignmentIndex < range.index + range.text.length)) continue;
     const expression = analyzeExpression(match[2], language === "vhdl");
     result.push({
-      target: match[1], targetText: match[1], operator: language === "vhdl" ? "<=" : "=", line: lineAt(starts, match.index!), processIndex: -1, conditions: [], reads: [...expression.reads, ...expression.blockedReads], expression: match[2],
+      target: match[1], targetText: match[1], operator: language === "vhdl" ? "<=" : "=", line: lineAt(starts, assignmentIndex), processIndex: -1, conditions: [], reads: [...expression.reads, ...expression.blockedReads], expression: match[2], scope: scopeAtOffset(scopes, assignmentIndex),
     });
   }
   return result;
 }
 
-function declarationFacts(clean: string, language: HdlLang, starts: number[]): DeclarationFacts[] {
+function declarationFacts(clean: string, language: HdlLang, starts: number[], scopes: { name: string; start: number; end: number }[]): DeclarationFacts[] {
   const result: DeclarationFacts[] = [];
   if (language === "vhdl") {
-    for (const match of clean.matchAll(/\b(?:signal|variable|constant)\s+([^:]+):/gi)) {
+    for (const match of clean.matchAll(/\b(?:signal|variable|constant)\s+([^:]+):\s*([^;]+)/gi)) {
+      const [type, ...initial] = match[2].split(":=");
+      const defaultValue = initial.length ? initial.join(":=").trim() : undefined;
       for (const name of match[1].split(",")) {
         const trimmed = name.trim();
-        if (/^[A-Za-z_]\w*$/.test(trimmed)) result.push({ name: trimmed, kind: /^\s*constant\b/i.test(match[0]) ? "constant" : "other", line: lineAt(starts, match.index!) });
+        if (/^[A-Za-z_]\w*$/.test(trimmed)) result.push({ name: trimmed, kind: /^\s*constant\b/i.test(match[0]) ? "constant" : "other", line: lineAt(starts, match.index!), scope: scopeAtOffset(scopes, match.index!), width: type.trim(), defaultValue });
       }
     }
   } else {
@@ -440,7 +515,9 @@ function declarationFacts(clean: string, language: HdlLang, starts: number[]): D
       const kind = /^\s*(?:parameter|localparam)\b/.test(match[0]) ? "parameter" : "other";
       for (const segment of match[1].split(",")) {
         const name = (segment.replace(/\[[^\]]*\]/g, " ").replace(/=.*$/s, "").match(/[A-Za-z_]\w*/g) ?? []).filter(name => !/^(?:reg|wire|integer|parameter|localparam|input|output|inout|signed|unsigned|logic|bit)$/.test(name)).at(-1);
-        if (name) result.push({ name, kind, line: lineAt(starts, match.index!) });
+        const defaultValue = segment.includes("=") ? segment.slice(segment.indexOf("=") + 1).trim() : undefined;
+        const width = name ? /\[[^\]]+\]/.exec(segment.slice(0, segment.lastIndexOf(name)))?.[0] : undefined;
+        if (name) result.push({ name, kind, line: lineAt(starts, match.index!), scope: scopeAtOffset(scopes, match.index!), defaultValue, width });
       }
     }
   }
@@ -491,6 +568,24 @@ function isResetIdentifier(name: string): boolean {
   return /^(?:rst|reset)(?:n|p)?(?:_|$)/.test(lower) || /_(?:rst|reset)(?:n|p)?(?:_|$)/.test(lower) || /^(?:clear|preset)(?:n|p)?$/.test(lower);
 }
 
+function definitionScopes(clean: string, language: HdlLang): { name: string; start: number; end: number }[] {
+  const result: { name: string; start: number; end: number }[] = [];
+  const pattern = language === "vhdl" ? /\bentity\s+([A-Za-z_]\w*)\s+is\b/gi : /\b(?:module|macromodule)\s+([A-Za-z_]\w*)/g;
+  for (const match of clean.matchAll(pattern)) {
+    const start = match.index!;
+    const end = language === "vhdl" ? clean.length : /\bendmodule\b/.exec(clean.slice(start))?.index;
+    result.push({ name: match[1], start, end: language === "vhdl" ? clean.length : end === undefined ? clean.length : start + end });
+  }
+  if (language === "vhdl") {
+    for (let index = 0; index < result.length - 1; index++) result[index].end = result[index + 1].start;
+  }
+  return result;
+}
+
+function scopeAtOffset(scopes: { name: string; start: number; end: number }[], offset: number): string {
+  return scopes.find(scope => offset >= scope.start && offset < scope.end)?.name ?? "";
+}
+
 function definitionFacts(module: ModuleInfo): DefinitionFacts[] {
   const result: DefinitionFacts[] = [];
   if (module.vhdl) {
@@ -503,12 +598,17 @@ function definitionFacts(module: ModuleInfo): DefinitionFacts[] {
 }
 
 export function codeStatistics(content: string, language: HdlLang): CodeStatistics {
-  if (!content) return { physicalLines: 0, codeLines: 0, commentOnlyLines: 0, inlineCommentLines: 0, blankLines: 0, commentRatio: 0 };
+  return analyzeCodeLines(content, language).statistics;
+}
+
+function analyzeCodeLines(content: string, language: HdlLang): { statistics: CodeStatistics; commentLines: number[] } {
+  if (!content) return { statistics: { physicalLines: 0, codeLines: 0, commentOnlyLines: 0, inlineCommentLines: 0, blankLines: 0, commentRatio: 0 }, commentLines: [] };
   const rawLines = content.split("\n");
   if (content.endsWith("\n")) rawLines.pop();
   let codeLines = 0, commentOnlyLines = 0, inlineCommentLines = 0, blankLines = 0;
+  const commentedLines: number[] = [];
   let blockComment = false, string = false;
-  for (const raw of rawLines) {
+  for (const [lineIndex, raw] of rawLines.entries()) {
     let code = false, comment = false;
     for (let index = 0; index < raw.length;) {
       if (blockComment) {
@@ -552,20 +652,24 @@ export function codeStatistics(content: string, language: HdlLang): CodeStatisti
       if (!/\s/.test(raw[index])) code = true;
       index++;
     }
+    if (comment) commentedLines.push(lineIndex + 1);
     if (comment && code) inlineCommentLines++;
     else if (comment) commentOnlyLines++;
     else if (code) codeLines++;
     else blankLines++;
   }
-  const commentLines = commentOnlyLines + inlineCommentLines;
+  const commentCount = commentOnlyLines + inlineCommentLines;
   const denominator = codeLines + commentOnlyLines + inlineCommentLines * 2;
   return {
-    physicalLines: rawLines.length,
-    codeLines: codeLines + inlineCommentLines,
-    commentOnlyLines,
-    inlineCommentLines,
-    blankLines,
-    commentRatio: denominator ? commentLines / denominator : 0,
+    statistics: {
+      physicalLines: rawLines.length,
+      codeLines: codeLines + inlineCommentLines,
+      commentOnlyLines,
+      inlineCommentLines,
+      blankLines,
+      commentRatio: denominator ? commentCount / denominator : 0,
+    },
+    commentLines: commentedLines,
   };
 }
 
@@ -611,4 +715,18 @@ function lineAt(starts: number[], position: number): number {
     else high = middle - 1;
   }
   return low + 1;
+}
+
+export function moduleScopeAt(facts: FileFacts, line: number, scope?: string): string {
+  if (scope !== undefined) return scope;
+  let fallback = "";
+  for (const definition of facts.definitions) {
+    if (definition.kind !== "architecture" && definition.line <= line) fallback = definition.name;
+  }
+  return fallback;
+}
+
+export function assignmentScope(facts: FileFacts, assignment: AssignmentFacts): string {
+  const process = assignment.processIndex >= 0 ? facts.processes[assignment.processIndex] : undefined;
+  return assignment.scope ?? process?.scope ?? moduleScopeAt(facts, process?.startLine ?? assignment.line);
 }

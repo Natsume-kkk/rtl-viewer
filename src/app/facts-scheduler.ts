@@ -1,5 +1,6 @@
 import type { FileFacts } from "../analysis/facts";
 import type { RuleDiagnostic } from "../analysis/general-rules";
+import { runProjectRules } from "../analysis/project-rules";
 
 interface FactsInput {
   file: string;
@@ -30,8 +31,10 @@ interface PendingAnalysis {
 export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: FactsAnalyzer) {
   const facts = new Map<string, FileFacts>();
   const diagnostics = new Map<string, RuleDiagnostic[]>();
+  const failures = new Map<string, RuleDiagnostic>();
   const versions = new Map<string, string>();
   const pending = new Map<number, PendingAnalysis>();
+  let projectDiagnostics: RuleDiagnostic[] = [];
   let worker: Worker | undefined;
   let serial = 0;
   let generation = 0;
@@ -77,6 +80,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     const request = ++generation;
     resetWorker();
     running = true;
+    projectDiagnostics = [];
     const priority = context.priorityFile();
     const inputs = context.files();
     inputs.sort((a, b) => Number(b.file === priority) - Number(a.file === priority) || a.file.localeCompare(b.file));
@@ -86,21 +90,24 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
       try {
         const next = await analyze(input.file, input.content);
         if (request !== generation) return;
+        failures.delete(input.file);
         if (versions.get(input.file) !== next.fingerprint) {
           facts.set(input.file, next.facts);
           diagnostics.set(input.file, next.diagnostics);
           versions.set(input.file, next.fingerprint);
           context.result(next.facts);
         }
-      } catch {
+      } catch (error) {
         if (request !== generation) return;
         facts.delete(input.file);
         diagnostics.delete(input.file);
+        failures.set(input.file, analysisFailure(input.file, error));
       }
       context.progress(index + 1, inputs.length);
     }
     if (request === generation) {
       running = false;
+      projectDiagnostics = runProjectRules([...facts.values()]);
       context.complete(false);
     }
   }
@@ -113,6 +120,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     try {
       const next = await analyze(file, content);
       if (request !== generation) return;
+      failures.delete(file);
       if (versions.get(file) !== next.fingerprint) {
         facts.set(file, next.facts);
         diagnostics.set(file, next.diagnostics);
@@ -121,12 +129,17 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
       }
       running = false;
       if (resume) void start();
-      else context.complete(false);
-    } catch {
+      else {
+        projectDiagnostics = runProjectRules([...facts.values()]);
+        context.complete(false);
+      }
+    } catch (error) {
       if (request === generation) {
         facts.delete(file);
         diagnostics.delete(file);
+        failures.set(file, analysisFailure(file, error));
         running = false;
+        projectDiagnostics = runProjectRules([...facts.values()]);
         context.complete(false);
       }
     }
@@ -143,7 +156,9 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     cancel();
     facts.clear();
     diagnostics.clear();
+    failures.clear();
     versions.clear();
+    projectDiagnostics = [];
   }
 
   return {
@@ -154,7 +169,11 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     dispose: cancel,
     get: (file: string) => facts.get(file),
     values: () => [...facts.values()],
-    diagnosticValues: () => [...diagnostics.values()].flat(),
+    diagnosticValues: () => [...diagnostics.values()].flat().concat(projectDiagnostics, [...failures.values()]),
     get running() { return running; },
   };
+}
+
+function analysisFailure(file: string, error: unknown): RuleDiagnostic {
+  return { file, line: 1, column: 1, severity: "error", ruleId: "ANALYSIS-FAILED", source: "builtin", category: "analysis", message: `内置分析失败：${error instanceof Error ? error.message : String(error)}` };
 }

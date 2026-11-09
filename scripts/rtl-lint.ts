@@ -6,6 +6,7 @@ import { runNodeSyntaxCheck } from "../src/app/node-syntax";
 import { analyzeFileFacts } from "../src/analysis/facts";
 import { runGeneralRules } from "../src/analysis/general-rules";
 import { runGjb10157Rules, runGjb9765Rules } from "../src/analysis/gjb-rules";
+import { runProjectRules } from "../src/analysis/project-rules";
 import { ALL_RULE_PREFERENCES, applyRulePreferences } from "../src/analysis/rule-preferences";
 import { emptySyntaxCheckOptions, type SyntaxCheckResult, type SyntaxStub } from "../src/ipc";
 import { parseFile, parseXci } from "../src/parser";
@@ -55,6 +56,7 @@ function main(argv: string[]): number {
     const diagnostics = fact.language === "verilog" ? runGjb10157Rules(fact) : runGjb9765Rules(fact);
     for (const diagnostic of diagnostics) builtin.push(diagnostic);
   }
+  for (const diagnostic of runProjectRules(facts)) builtin.push(diagnostic);
   const diagnostics = applyRulePreferences([...external.diagnostics, ...builtin], ALL_RULE_PREFERENCES);
   const result: SyntaxCheckResult = { ...external, diagnostics };
   for (const diagnostic of diagnostics) {
@@ -72,7 +74,7 @@ function main(argv: string[]): number {
   }
   if (options.csv) {
     fs.mkdirSync(path.dirname(path.resolve(options.csv)), { recursive: true });
-    fs.writeFileSync(options.csv, syntaxReportCsv(result));
+    fs.writeFileSync(options.csv, syntaxReportCsv(result, { options: syntaxOptions(options), facts, stale: false }));
     console.log(`CSV report: ${options.csv}`);
   }
   return diagnostics.some(item => item.severity === "error") ? 1 : 0;
@@ -90,7 +92,7 @@ function syntaxOptions(options: CliOptions) {
   };
 }
 
-function parseArgs(argv: string[]): CliOptions {
+export function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = { root: process.cwd(), paths: [], defines: [], includeDirs: [], libraries: [], verilatorArgs: [], ghdlArgs: [], external: true };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
@@ -113,7 +115,7 @@ function parseArgs(argv: string[]): CliOptions {
     else if (argument.startsWith("-")) throw new Error(`未知参数：${argument}`);
     else options.paths.push(argument);
   }
-  if (!options.paths.length) options.paths.push(".");
+  if (!options.paths.length) options.paths.push(options.root);
   return options;
 }
 

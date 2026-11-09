@@ -39,7 +39,8 @@ export function applyRulePreferences(diagnostics: Diagnostic[], preferences: Rul
   for (const diagnostic of filtered) {
     const override = preferences.severityOverrides[diagnostic.ruleId];
     if (override) diagnostic.severity = override;
-    const key = `${dedupeFamily(diagnostic.ruleId)}|${filePathKey(diagnostic.file)}|${diagnostic.line}|${diagnostic.column}`;
+    const family = dedupeFamily(diagnostic.ruleId);
+    const key = `${family}|${filePathKey(diagnostic.file)}|${diagnostic.line}|${family === "lineWidth" ? 0 : diagnostic.column}`;
     const previous = grouped.get(key);
     if (!previous) {
       grouped.set(key, { ...diagnostic, relatedRuleIds: relatedIds(diagnostic) ?? [diagnostic.ruleId] });

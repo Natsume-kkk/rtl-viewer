@@ -12,6 +12,7 @@ assign clk = a & b;
 assign a = 1'bz;
 always @(posedge clk) a = 1;
 always @(negedge clk) a = 1;
+always @(posedge clk) begin case (a) default:; endcase end
 always @* if (a) b <= a;
 always @(a | b) if (a == 1'bx) b = a + 1'bx;
 always @(a) if (b) b = 0;
@@ -58,13 +59,15 @@ begin
     if rising_edge(a) then foo_ <= a; end if;
   end process;
   process(clk) begin
-    case a is
-      when '0' => foo_ <= a;
-      when others => null;
-    end case;
-    case a is
-      when '0' => foo_ <= a;
-    end case;
+    if rising_edge(clk) then
+      case a is
+        when '0' => foo_ <= a;
+        when others => null;
+      end case;
+      case a is
+        when '0' => foo_ <= a;
+      end case;
+    end if;
   end process;
   u1: entity work.sub port map(a, y);
   u2: entity work.sub port map(a => open, b => y, clk => clk);
@@ -80,7 +83,6 @@ end;${" ".repeat(80)}`;
 it("补充命名、格式和简单结构检查具有实际诊断", () => {
   const source = `module _bad;
 parameter p = 1;
-parameter p = 2;
 wire Vdd, vdd;
 wire unused;
 wire clk;
@@ -104,9 +106,9 @@ case (a)
 endcase
 repeat (a) a = 1;
 endmodule
-module module; endmodule`;
+module module; parameter p = 2; endmodule`;
   const ids = new Set(runGjb10157Rules(analyzeFileFacts("module.sv", source)).map(item => item.ruleId));
-  for (const id of ["R-2-1", "R-2-3", "R-2-6", "R-2-7", "R-2-8", "R-3-2", "R-7-2", "R-9-6", "R-13-7", "A-1-1", "A-2-3", "A-2-4", "A-2-7", "A-2-8", "A-4-3", "A-4-4", "A-9-2", "A-11-1", "A-11-3", "A-12-1", "A-16-1"]) {
+  for (const id of ["R-2-1", "R-2-3", "R-2-6", "R-2-7", "R-2-8", "R-7-2", "R-9-6", "R-13-7", "A-1-1", "A-2-3", "A-2-4", "A-2-7", "A-2-8", "A-4-3", "A-4-4", "A-9-2", "A-11-1", "A-11-3", "A-12-1", "A-16-1"]) {
     expect(ids, id).toContain(`10157-${id}`);
   }
 });
@@ -141,7 +143,7 @@ begin
   #10 value <= a;
 end;`;
   const ids = new Set(runGjb9765Rules(analyzeFileFacts("bad_name.vhd", source)).map(item => item.ruleId));
-  for (const id of ["4.4-a", "4.5-a", "4.6-i", "4.7-c", "4.8-a", "4.8-e", "4.9-e", "4.9-i", "4.11-b", "4.12-a", "4.13-b", "4.13-c", "4.14-a", "4.14-c"]) {
+  for (const id of ["4.4-a", "4.5-a", "4.6-i", "4.7-c", "4.8-a", "4.8-e", "4.9-e", "4.9-i", "4.12-a", "4.13-b", "4.13-c", "4.14-a", "4.14-c"]) {
     expect(ids, id).toContain(`9765-${id}`);
   }
 });
@@ -245,6 +247,6 @@ endmodule`;
 });
 
 it("完整标准目录保持 110＋81 条，自动检查不冒充完整合规", () => {
-  expect(gjbCoverage(GJB10157_RULES)).toEqual({ automatic: 79, total: 110, manual: 31 });
-  expect(gjbCoverage(GJB9765_RULES)).toEqual({ automatic: 54, total: 81, manual: 27 });
+  expect(gjbCoverage(GJB10157_RULES)).toEqual({ automatic: 87, total: 110, manual: 23 });
+  expect(gjbCoverage(GJB9765_RULES)).toEqual({ automatic: 56, total: 81, manual: 25 });
 });

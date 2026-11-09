@@ -16,9 +16,9 @@ it("通用与 GJB 重复诊断合并并保留关联条款", () => {
 
 it("行宽保留最严格条款，Tab 冲突使用固定空格约定", () => {
   const width = applyRulePreferences([
-    diagnostic("VLG-ST-001", "120", "style"),
-    diagnostic("10157-A-1-4", "80", "gjb10157"),
-    diagnostic("9765-4.14-d", "72", "gjb9765"),
+    { ...diagnostic("VLG-ST-001", "120", "style"), column: 121 },
+    { ...diagnostic("10157-A-1-4", "80", "gjb10157"), column: 80 },
+    { ...diagnostic("9765-4.14-d", "72", "gjb9765"), column: 73 },
   ], ALL_RULE_PREFERENCES);
   expect(width).toHaveLength(1);
   expect(width[0].ruleId).toBe("9765-4.14-d");

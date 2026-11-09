@@ -154,7 +154,7 @@ export class StatsPanel {
   private renderStatus(view: StatsView): void {
     this.status.textContent = "";
     const builtin = document.createElement("span");
-    builtin.textContent = view.done < view.total ? `内置分析：进行中 ${view.done}/${view.total}` : "内置分析：已更新到当前源码";
+    builtin.textContent = view.done < view.total ? `内置分析：进行中 ${view.done}/${view.total}` : view.diagnostics.some(item => item.ruleId === "ANALYSIS-FAILED") ? "内置分析：部分文件失败" : "内置分析：已更新到当前源码";
     const external = document.createElement("span");
     const externalStatus = view.running ? "检查中" : view.external ? view.external.cancelled ? "已取消，结果可能不完整" : `已检查 ${view.external.checkedFiles} 个文件` : "未运行";
     external.textContent = `外部检查：${externalStatus}${view.stale && view.external ? " · 上次快照，待重新检查" : ""}`;
@@ -200,13 +200,14 @@ export class StatsPanel {
     label.title = node.file ?? node.moduleName;
     row.append(label);
     const fact = node.file ? facts.get(filePathKey(node.file)) : undefined;
-    row.append(metric(fact?.statistics.codeLines ?? 0), metric(`${Math.round((fact?.statistics.commentRatio ?? 0) * 100)}%`), metric(fact?.instanceCount ?? 0));
+    const pending = !!node.file && !fact;
+    row.append(metric(fact?.statistics.codeLines ?? "—"), metric(fact ? `${Math.round(fact.statistics.commentRatio * 100)}%` : "—"), metric(fact?.instanceCount ?? "—"));
     const issues = node.file ? issueCounts.get(filePathKey(node.file)) ?? 0 : 0;
     const issueButton = document.createElement("button");
     issueButton.className = "stats-topology-issues";
-    issueButton.textContent = String(issues);
-    issueButton.title = node.file ? "查看此文件诊断" : "IP 黑盒";
-    if (node.file) issueButton.onclick = event => {
+    issueButton.textContent = pending ? "待分析" : String(issues);
+    issueButton.title = pending ? "内置分析尚未完成" : node.file ? "查看此文件诊断" : "IP 黑盒";
+    if (node.file && !pending) issueButton.onclick = event => {
       event.preventDefault();
       event.stopPropagation();
       this.callbacks.onOpenProblems({ file: node.file });

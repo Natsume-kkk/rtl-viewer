@@ -57,8 +57,14 @@ export function orderVhdlFiles<T extends OrderedFile>(files: T[], read: (file: T
       }
     }
     for (const window of windows(tokens, 3)) {
-      if (window[0] !== "entity") continue;
-      const provider = entities.get(`${window[1]}.${window[2]}`);
+      if (window[0] === "entity") {
+        const provider = entities.get(`${window[1]}.${window[2]}`);
+        if (provider !== undefined && provider !== index) dependencies[index].add(provider);
+      }
+    }
+    for (let token = 0; token + 3 < tokens.length; token++) {
+      if (tokens[token] !== "architecture" || tokens[token + 2] !== "of") continue;
+      const provider = entities.get(`${files[index].library}.${tokens[token + 3]}`);
       if (provider !== undefined && provider !== index) dependencies[index].add(provider);
     }
   });

@@ -47,3 +47,12 @@ it("仅有内置结果时明确外部后端未运行", () => {
   expect(html).toContain("外部后端未运行");
   expect(html).toContain("本次仅包含内置分析结果");
 });
+
+it("CSV 在诊断表后保留后端、配置、统计和过期状态", () => {
+  const csv = syntaxReportCsv(result, { options: { ...emptySyntaxCheckOptions, top: "demo" }, facts: [analyzeFileFacts("D:/p/demo.vhd", "-- header\nentity demo is end;")], stale: true });
+  expect(csv).toContain('"Backend","Version","Files","Status"');
+  expect(csv).toContain('"ghdl","6.0.0","1","completed"');
+  expect(csv).toContain('"Stale","true"');
+  expect(csv).toContain('"Options","{""top"":""demo""');
+  expect(csv).toContain('"CodeLines","CommentLines","CommentRatio"');
+});

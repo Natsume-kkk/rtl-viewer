@@ -45,3 +45,8 @@ end;`;
   const diagnostics = runGeneralRules(analyzeFileFacts("demo.vhd", source));
   expect(diagnostics.filter(item => item.ruleId === "VHD-SY-002" || item.ruleId === "VHD-SY-003")).toEqual([]);
 });
+
+it("未知调用的分析边界进入通用诊断", () => {
+  const diagnostics = runGeneralRules(analyzeFileFacts("demo.v", "module demo; always @* begin unknown_call(q); end endmodule"));
+  expect(diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: "ANALYSIS-BOUNDARY", category: "analysis", severity: "info", message: expect.stringContaining("不继续推导") })]));
+});

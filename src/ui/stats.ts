@@ -2,6 +2,7 @@ import type { FileFacts } from "../analysis/facts";
 import type { RuleDiagnostic } from "../analysis/general-rules";
 import type { SyntaxCheckResult, SyntaxDiagnostic } from "../ipc";
 import { filePathKey } from "../file-path";
+import type { NodeKind } from "../model/hierarchy";
 import { setIcon } from "./icons";
 
 interface StatsPanelCallbacks {
@@ -16,6 +17,7 @@ export interface StatsTopologyNode {
   key: string;
   label: string;
   moduleName: string;
+  kind: NodeKind;
   file?: string;
   line?: number;
   children: StatsTopologyNode[];
@@ -57,6 +59,12 @@ export class StatsPanel {
   private sortKey: SortKey = "file";
   private ascending = true;
   private viewMode: "topology" | "files" = "topology";
+  private fileRowsVisible = 200;
+  private renderedTopology?: StatsTopologyNode[];
+  private topologyFacts = new Map<string, FileFacts>();
+  private topologyIssueCounts = new Map<string, number>();
+  private topologyFailedFiles = new Set<string>();
+  private readonly topologyNodes = new Map<string, { node: StatsTopologyNode; element: HTMLElement }>();
 
   constructor(private readonly root: HTMLElement, private callbacks: StatsPanelCallbacks) {
     root.className = "stats-panel";
@@ -87,6 +95,7 @@ export class StatsPanel {
     }
     this.modeFilter.addEventListener("change", () => {
       this.viewMode = this.modeFilter.value === "files" ? "files" : "topology";
+      this.fileRowsVisible = 200;
       if (this.currentView) this.render(this.currentView);
     });
     const close = document.createElement("button");
@@ -173,17 +182,51 @@ export class StatsPanel {
   }
 
   private renderTopology(view: StatsView): void {
-    const facts = new Map(view.facts.map(item => [filePathKey(item.file), item]));
-    const issueCounts = issueCountsByFile(view.diagnostics);
+    this.topologyFacts = new Map(view.facts.map(item => [filePathKey(item.file), item]));
+    this.topologyIssueCounts = issueCountsByFile(view.diagnostics);
+    this.topologyFailedFiles = new Set(view.diagnostics.filter(item => item.ruleId === "ANALYSIS-FAILED").map(item => filePathKey(item.file)));
+    const currentTree = this.table.querySelector(".stats-topology");
+    if (this.renderedTopology === view.topology && currentTree) {
+      currentTree.querySelector(".stats-topology-total")?.replaceWith(topologyTotal(view));
+      this.updateTopologyRows();
+      return;
+    }
+    this.renderedTopology = view.topology;
+    this.topologyNodes.clear();
     this.table.textContent = "";
     const tree = document.createElement("div");
     tree.className = "stats-topology";
     tree.append(topologyHeader(), topologyTotal(view));
-    for (const node of view.topology ?? []) tree.append(this.topologyNode(node, 0, facts, issueCounts));
+    for (const node of view.topology ?? []) tree.append(this.topologyNode(node, 0, this.topologyFacts, this.topologyIssueCounts, this.topologyFailedFiles));
     this.table.append(tree);
   }
 
-  private topologyNode(node: StatsTopologyNode, depth: number, facts: Map<string, FileFacts>, issueCounts: Map<string, number>): HTMLElement {
+  private updateTopologyRows(): void {
+    for (const { node, element } of this.topologyNodes.values()) {
+      const row = element.querySelector<HTMLElement>(":scope > .stats-topology-row");
+      if (!row) continue;
+      const fact = node.kind === "module" && node.file ? this.topologyFacts.get(filePathKey(node.file)) : undefined;
+      const failed = node.kind === "module" && !!node.file && !fact && this.topologyFailedFiles.has(filePathKey(node.file));
+      const pending = node.kind === "module" && !!node.file && !fact && !failed;
+      const metrics = row.querySelectorAll<HTMLElement>(".stats-topology-metric");
+      if (metrics[0]) metrics[0].textContent = String(fact?.statistics.codeLines ?? "—");
+      if (metrics[1]) metrics[1].textContent = fact ? `${Math.round(fact.statistics.commentRatio * 100)}%` : "—";
+      if (metrics[2]) metrics[2].textContent = String(fact?.instanceCount ?? "—");
+      const issues = node.file ? this.topologyIssueCounts.get(filePathKey(node.file)) ?? 0 : 0;
+      const issueButton = row.querySelector<HTMLButtonElement>(".stats-topology-issues");
+      if (!issueButton) continue;
+      issueButton.textContent = node.kind === "ip" ? "IP" : node.kind === "primitive" ? "原语" : node.kind === "unresolved" ? "未解析" : failed ? "分析失败" : pending ? "待分析" : String(issues);
+      issueButton.title = node.kind === "ip" ? "IP 黑盒，不纳入内置代码统计与规则分析" : node.kind === "primitive" ? "厂商原语，不纳入内置代码统计与规则分析" : node.kind === "unresolved" ? "未找到模块定义，无法进行内置代码分析" : failed ? "内置分析失败，查看此文件诊断" : pending ? "内置分析尚未完成" : "查看此文件诊断";
+      issueButton.disabled = !(node.kind === "module" && node.file && !pending);
+      issueButton.onclick = node.kind === "module" && node.file && !pending ? event => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.callbacks.onOpenProblems({ file: node.file! });
+      } : null;
+    }
+  }
+
+  private topologyNode(node: StatsTopologyNode, depth: number, facts: Map<string, FileFacts>, issueCounts: Map<string, number>, failedFiles: Set<string>): HTMLElement {
     const hasChildren = node.children.length > 0;
     const container = hasChildren ? document.createElement("details") : document.createElement("div");
     container.className = "stats-topology-node";
@@ -199,15 +242,16 @@ export class StatsPanel {
     label.textContent = depth === 0 ? node.moduleName : `${node.label} : ${node.moduleName}`;
     label.title = node.file ?? node.moduleName;
     row.append(label);
-    const fact = node.file ? facts.get(filePathKey(node.file)) : undefined;
-    const pending = !!node.file && !fact;
+    const fact = node.kind === "module" && node.file ? facts.get(filePathKey(node.file)) : undefined;
+    const failed = node.kind === "module" && !!node.file && !fact && failedFiles.has(filePathKey(node.file));
+    const pending = node.kind === "module" && !!node.file && !fact && !failed;
     row.append(metric(fact?.statistics.codeLines ?? "—"), metric(fact ? `${Math.round(fact.statistics.commentRatio * 100)}%` : "—"), metric(fact?.instanceCount ?? "—"));
     const issues = node.file ? issueCounts.get(filePathKey(node.file)) ?? 0 : 0;
     const issueButton = document.createElement("button");
     issueButton.className = "stats-topology-issues";
-    issueButton.textContent = pending ? "待分析" : String(issues);
-    issueButton.title = pending ? "内置分析尚未完成" : node.file ? "查看此文件诊断" : "IP 黑盒";
-    if (node.file && !pending) issueButton.onclick = event => {
+    issueButton.textContent = node.kind === "ip" ? "IP" : node.kind === "primitive" ? "原语" : node.kind === "unresolved" ? "未解析" : failed ? "分析失败" : pending ? "待分析" : String(issues);
+    issueButton.title = node.kind === "ip" ? "IP 黑盒，不纳入内置代码统计与规则分析" : node.kind === "primitive" ? "厂商原语，不纳入内置代码统计与规则分析" : node.kind === "unresolved" ? "未找到模块定义，无法进行内置代码分析" : failed ? "内置分析失败，查看此文件诊断" : pending ? "内置分析尚未完成" : "查看此文件诊断";
+    if (node.kind === "module" && node.file && !pending) issueButton.onclick = event => {
       event.preventDefault();
       event.stopPropagation();
       this.callbacks.onOpenProblems({ file: node.file });
@@ -229,15 +273,16 @@ export class StatsPanel {
     } else {
       const file = document.createElement("span");
       file.className = "stats-ip-label";
-      file.textContent = "IP";
+      file.textContent = node.kind === "ip" ? "IP" : "—";
       row.append(file);
     }
     container.append(row);
+    this.topologyNodes.set(node.key, { node, element: container });
     if (hasChildren && container instanceof HTMLDetailsElement) {
       const populate = () => {
         if (container.dataset.populated) return;
         container.dataset.populated = "true";
-        for (const child of node.children) container.append(this.topologyNode(child, depth + 1, facts, issueCounts));
+        for (const child of node.children) container.append(this.topologyNode(child, depth + 1, this.topologyFacts, this.topologyIssueCounts, this.topologyFailedFiles));
       };
       container.open = this.expanded.has(node.key) || depth === 0 && !this.collapsed.has(node.key);
       if (container.open) populate();
@@ -259,6 +304,7 @@ export class StatsPanel {
   private renderTable(view: StatsView): void {
     const facts = new Map(view.facts.map(item => [filePathKey(item.file), item]));
     const issueCounts = issueCountsByFile(view.diagnostics);
+    const failedFiles = new Set(view.diagnostics.filter(item => item.ruleId === "ANALYSIS-FAILED").map(item => filePathKey(item.file)));
     const rows = view.files.map(file => {
       const item = facts.get(filePathKey(file));
       return {
@@ -296,6 +342,7 @@ export class StatsPanel {
           this.sortKey = column.key;
           this.ascending = column.key === "file";
         }
+        this.fileRowsVisible = 200;
         this.renderTable(view);
       };
       cell.append(button);
@@ -308,8 +355,9 @@ export class StatsPanel {
     totalRow.className = "stats-total-row";
     totalRow.append(textCell("合计"), textCell(totals.codeLines), textCell(totals.commentRatio), textCell(totals.instances), textCell(totals.issues));
     body.append(totalRow);
-    for (const row of rows) {
+    for (const row of rows.slice(0, this.fileRowsVisible)) {
       const line = document.createElement("tr");
+      line.dataset.file = row.file;
       const file = document.createElement("td");
       const link = document.createElement("button");
       link.textContent = shortFileName(row.file);
@@ -319,7 +367,15 @@ export class StatsPanel {
       line.append(file);
       if (!row.item) {
         for (let index = 0; index < COLUMNS.length - 2; index++) line.append(textCell("—"));
-        line.append(textCell("待分析"));
+        const issues = document.createElement("td");
+        if (failedFiles.has(filePathKey(row.file))) {
+          const button = document.createElement("button");
+          button.textContent = "分析失败";
+          button.title = "内置分析失败，查看此文件诊断";
+          button.onclick = () => this.callbacks.onOpenProblems({ file: row.file });
+          issues.append(button);
+        } else issues.textContent = "待分析";
+        line.append(issues);
         body.append(line);
         continue;
       }
@@ -336,6 +392,23 @@ export class StatsPanel {
         issues.append(button);
       } else issues.textContent = "0";
       line.append(issues);
+      body.append(line);
+    }
+    const remaining = rows.length - Math.min(this.fileRowsVisible, rows.length);
+    if (remaining > 0) {
+      const line = document.createElement("tr");
+      line.className = "stats-load-more-row";
+      const cell = document.createElement("td");
+      cell.colSpan = COLUMNS.length;
+      const loadMore = document.createElement("button");
+      loadMore.className = "stats-load-more btn btn-ghost btn-inline";
+      loadMore.textContent = `继续加载文件（剩余 ${remaining} 个）`;
+      loadMore.onclick = () => {
+        this.fileRowsVisible += 200;
+        this.renderTable(view);
+      };
+      cell.append(loadMore);
+      line.append(cell);
       body.append(line);
     }
     table.append(header, body);

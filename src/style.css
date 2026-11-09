@@ -1272,7 +1272,7 @@ body.resizing {
 .stats-table .stats-total-row td { background: var(--surface-app); color: var(--fg); font-weight: 600; border-bottom: 1px solid var(--border-strong); }
 .stats-topology-label { min-width: 0; padding-left: calc(var(--stats-depth) * 14px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sem-module); font-family: var(--font-mono); }
 .stats-topology-metric { text-align: right; color: var(--fg-secondary); font-variant-numeric: tabular-nums; }
-.stats-topology-issues { border: 0; background: transparent; color: var(--sem-module); text-align: right; font: var(--fs-body) var(--font-mono); cursor: pointer; }
+.stats-topology-issues { border: 0; padding: 0; background: transparent; color: var(--sem-module); text-align: right; white-space: nowrap; font: var(--fs-body) var(--font-mono); cursor: pointer; }
 .stats-open-file { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; }
 .stats-leaf-spacer { width: 16px; height: 16px; flex: none; }
 .stats-ip-label { color: var(--sem-ip); text-align: center; font-size: var(--fs-caption); }
@@ -1503,6 +1503,8 @@ button:focus-visible, [tabindex]:focus-visible, select:focus-visible, input:focu
 .tree-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tree-row.active { border-radius: 0; background: var(--surface-active); color: var(--fg); box-shadow: inset 2px 0 var(--accent); }
 .tree-badge { font-size: var(--fs-caption); color: var(--sem-ip); border: 1px solid var(--border-strong); border-radius: 3px; padding: 0 3px; line-height: 15px; }
+button.tree-badge { background: var(--surface-editor); font-family: var(--font-ui); cursor: pointer; }
+button.tree-badge:hover { background: var(--surface-hover); }
 .kind-ip .tree-type { color: var(--sem-ip); }
 .kind-unresolved .tree-type { color: var(--sem-unresolved); }
 .kind-primitive .tree-type { color: var(--sem-module); }

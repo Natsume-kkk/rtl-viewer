@@ -88,6 +88,9 @@ export class OutlineView {
     setIcon(this.toggleEl, collapsed ? "chevron-right" : "chevron-down");
     this.toggleEl.setAttribute("aria-expanded", String(!collapsed));
     localStorage.setItem(LS_COLLAPSED, collapsed ? "1" : "0");
+    this.activeLine = undefined;
+    if (collapsed) this.listEl.textContent = "";
+    else this.renderList();
   }
 
   private toggleCollapse(): void {
@@ -140,9 +143,11 @@ export class OutlineView {
   }
 
   private activeLine: number | undefined;
+  private visibleCount = 200;
 
   /** 光标跟随：高亮最后一个起点不晚于 line 的条目；条目无变化时不动 DOM。 */
   highlightLine(line: number): void {
+    if (this.rootEl.classList.contains("collapsed")) return;
     let idx = -1;
     for (let i = 0; i < this.items.length; i++) {
       if (this.items[i].line > line) break;
@@ -151,22 +156,29 @@ export class OutlineView {
     const itemLine = idx >= 0 ? this.items[idx].line : undefined;
     if (itemLine === this.activeLine) return;
     this.activeLine = itemLine;
+    if (idx >= this.visibleCount) {
+      this.visibleCount = idx + 1;
+      this.renderList(false);
+    }
     this.listEl
       .querySelectorAll(".outline-row.active")
       .forEach((el) => el.classList.remove("active"));
     if (itemLine === undefined) return;
-    for (const row of this.listEl.querySelectorAll<HTMLElement>(".outline-row")) {
-      if (row.querySelector(".outline-line")?.textContent === String(itemLine)) {
-        row.classList.add("active");
-        row.scrollIntoView({ block: "nearest" });
-        break;
-      }
-    }
+    const row = this.listEl.querySelector<HTMLElement>(`.outline-row[data-line="${itemLine}"]`);
+    row?.classList.add("active");
+    row?.scrollIntoView?.({ block: "nearest" });
   }
 
-  private renderList(): void {
-    this.listEl.textContent = "";
+  private renderList(resetLimit = true): void {
+    if (resetLimit) this.visibleCount = 200;
+    if (this.rootEl.classList.contains("collapsed")) {
+      this.listEl.textContent = "";
+      return;
+    }
+    this.listEl.querySelector(".outline-load-more")?.remove();
+    this.listEl.querySelector(".outline-empty")?.remove();
     if (!this.fileName) {
+      this.listEl.textContent = "";
       this.renderEmpty("未打开文件");
       return;
     }
@@ -175,25 +187,55 @@ export class OutlineView {
       ? this.items.filter((i) => i.name.toLowerCase().includes(filter))
       : this.items;
     if (shown.length === 0) {
+      this.listEl.textContent = "";
       this.renderEmpty(this.items.length === 0 ? "无可识别符号" : "无匹配项");
       return;
     }
-    for (const item of shown) {
-      const row = document.createElement("button");
-      row.className = `outline-row outline-kind-${item.kind}`;
-      row.title = `${item.name}，第 ${item.line} 行`;
-      const kind = document.createElement("span");
-      kind.className = "outline-kind";
-      kind.textContent = OUTLINE_KIND_LABELS[item.kind];
-      const name = document.createElement("span");
-      name.className = "outline-name";
-      name.textContent = item.name;
-      const line = document.createElement("span");
-      line.className = "outline-line";
-      line.textContent = String(item.line);
-      row.append(kind, name, line);
-      row.addEventListener("click", () => this.callbacks.onJump(item.line));
-      this.listEl.appendChild(row);
+    const previousRows = [...this.listEl.children].filter((child): child is HTMLButtonElement => child.classList.contains("outline-row"));
+    const available = new Map<string, HTMLButtonElement[]>();
+    for (const row of previousRows) {
+      const matches = available.get(row.dataset.outlineKey!) ?? [];
+      matches.push(row);
+      available.set(row.dataset.outlineKey!, matches);
+    }
+    const retained = new Set<HTMLButtonElement>();
+    let reference = this.listEl.firstChild;
+    for (const item of shown.slice(0, this.visibleCount)) {
+      const key = `${item.kind}|${item.name}|${item.line}`;
+      let row = available.get(key)?.shift();
+      if (!row) {
+        row = document.createElement("button");
+        row.className = `outline-row outline-kind-${item.kind}`;
+        row.dataset.outlineKey = key;
+        row.dataset.line = String(item.line);
+        row.title = `${item.name}，第 ${item.line} 行`;
+        const kind = document.createElement("span");
+        kind.className = "outline-kind";
+        kind.textContent = OUTLINE_KIND_LABELS[item.kind];
+        const name = document.createElement("span");
+        name.className = "outline-name";
+        name.textContent = item.name;
+        const line = document.createElement("span");
+        line.className = "outline-line";
+        line.textContent = String(item.line);
+        row.append(kind, name, line);
+        row.addEventListener("click", () => this.callbacks.onJump(item.line));
+      }
+      retained.add(row);
+      if (row === reference) reference = reference.nextSibling;
+      else this.listEl.insertBefore(row, reference);
+    }
+    for (const row of previousRows) if (!retained.has(row)) row.remove();
+    const remaining = shown.length - Math.min(this.visibleCount, shown.length);
+    if (remaining > 0) {
+      const loadMore = document.createElement("button");
+      loadMore.className = "outline-load-more btn btn-ghost btn-inline";
+      loadMore.textContent = `继续加载（剩余 ${remaining} 项）`;
+      loadMore.addEventListener("click", () => {
+        this.visibleCount += 200;
+        this.renderList(false);
+      });
+      this.listEl.appendChild(loadMore);
     }
   }
 

@@ -39,6 +39,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
   let serial = 0;
   let generation = 0;
   let running = false;
+  let diagnosticsRevision = 0;
 
   function resetWorker(): void {
     worker?.terminate();
@@ -103,11 +104,13 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
         diagnostics.delete(input.file);
         failures.set(input.file, analysisFailure(input.file, error));
       }
+      diagnosticsRevision++;
       context.progress(index + 1, inputs.length);
     }
     if (request === generation) {
       running = false;
       projectDiagnostics = runProjectRules([...facts.values()]);
+      diagnosticsRevision++;
       context.complete(false);
     }
   }
@@ -121,6 +124,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
       const next = await analyze(file, content);
       if (request !== generation) return;
       failures.delete(file);
+      diagnosticsRevision++;
       if (versions.get(file) !== next.fingerprint) {
         facts.set(file, next.facts);
         diagnostics.set(file, next.diagnostics);
@@ -131,6 +135,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
       if (resume) void start();
       else {
         projectDiagnostics = runProjectRules([...facts.values()]);
+        diagnosticsRevision++;
         context.complete(false);
       }
     } catch (error) {
@@ -138,10 +143,12 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
         facts.delete(file);
         diagnostics.delete(file);
         failures.set(file, analysisFailure(file, error));
+        diagnosticsRevision++;
         running = false;
         if (resume) void start();
         else {
           projectDiagnostics = runProjectRules([...facts.values()]);
+          diagnosticsRevision++;
           context.complete(false);
         }
       }
@@ -152,6 +159,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     generation++;
     resetWorker();
     running = false;
+    diagnosticsRevision++;
     context.complete(true);
   }
 
@@ -174,6 +182,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     values: () => [...facts.values()],
     diagnosticValues: () => [...diagnostics.values()].flat().concat(projectDiagnostics, [...failures.values()]),
     get running() { return running; },
+    get diagnosticsRevision() { return diagnosticsRevision; },
   };
 }
 

@@ -40,6 +40,16 @@ it("Node CLI 将空端口连接归为提示", () => {
   expect(result.diagnostics.find(item => item.ruleId === "VERILATOR-PINCONNECTEMPTY")?.severity).toBe("info");
 });
 
+it("Node CLI 过滤 Verilator 退出摘要但保留真实错误", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "rtl-node-exit-summary-"));
+  roots.push(root);
+  const source = path.join(root, "top.sv");
+  fs.writeFileSync(source, "module top; invalid verilog\n");
+  const result = runNodeSyntaxCheck({ requestId: 8, root, files: [source], stubs: [], options: emptySyntaxCheckOptions });
+  expect(result.diagnostics.some(item => item.severity === "error")).toBe(true);
+  expect(result.diagnostics.some(item => /^Exiting due to/i.test(item.message))).toBe(false);
+});
+
 it("Node CLI 按 entity 依赖排序并向 GHDL 提供 IP 黑盒", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "rtl-node-vhdl-"));
   roots.push(root);

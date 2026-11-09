@@ -2,7 +2,7 @@ import type { TraceNode } from "../analysis/signal-flow";
 import { CardWidths, columnPositions, element as el, cardHeader, appendSource, signalCode, makeWires, drawWires, CANVAS_TOP, type CardWidthState, type CardEdge, type CardPosition } from "./signal-canvas";
 
 type Side = "up" | "down";
-interface PortCard { id: string; trace: TraceNode; column: number; children: string[]; card: HTMLElement; external?: boolean }
+interface PortCard { id: string; trace: TraceNode; column: number; children: string[]; card: HTMLElement; external?: boolean; materialized?: boolean }
 export interface PortViewState { expanded: string[]; assignments?: string[]; widths?:CardWidthState }
 
 /** Display the existing bounded trace as cards; this view never infers RTL connectivity. */
@@ -16,13 +16,28 @@ export class SignalPortsView {
   private roots: Record<Side, string[]> = {up: [], down: []};
   private externalDirections = new Map<string, Set<Side>>();
   private active = true;
+  private materializeNode?: (node: PortCard) => void;
   private widths = new CardWidths(() => this.render());
   constructor(signal: string, upstream: TraceNode, downstream: TraceNode, body: HTMLElement) {
     body.classList.add("logic-body"); body.append(this.canvas); this.canvas.append(this.svg);
     const add = (id: string, trace: TraceNode, column: number, label: string, external = false): PortCard => {
       const old = this.nodes.get(id); if (old) return old;
-      const card = el("article", `logic-card port-card${id === "focus" ? " selected" : ""}`); card.dataset.node = id; card.dataset.signal = label;
-      const location = trace.file ? {file: trace.file, line: trace.line ?? 1} : undefined;
+      const card = el("article", `logic-card port-card${id === "focus" ? " selected" : ""}`);
+      card.dataset.node = id;
+      card.dataset.signal = label;
+      const node = { id, trace, column, children: [], card, external, materialized: false };
+      this.nodes.set(id, node);
+      this.canvas.append(card);
+      this.widths.add(id, card);
+      return node;
+    };
+    const base = upstream.label.slice(0, upstream.label.lastIndexOf("."));
+    const materialize = (node: PortCard) => {
+      if (node.materialized) return;
+      node.materialized = true;
+      const { id, trace, column, card } = node;
+      const label = card.dataset.signal!;
+      const location = trace.file ? { file: trace.file, line: trace.line ?? 1 } : undefined;
       const assignment = !trace.mapping && (!!trace.statement || trace.reason === "赋值位置");
       const subject = trace.port ?? trace.signal;
       const instance = subject && id !== "focus" ? subject.path.startsWith(base + "/") ? subject.path.slice(base.length + 1) : subject.path : undefined;
@@ -30,14 +45,24 @@ export class SignalPortsView {
       cardHeader(card, title, location, [trace.label, trace.tip, trace.note].filter(Boolean).join("\n"));
       if (instance) card.append(el("code", `logic-detail ${trace.port ? "port-pin" : "signal-pin"}`, trace.port ? `${trace.port.direction ?? "方向待确认"} ${trace.port.name}` : `内部信号 ${trace.signal!.name}`));
       if (assignment && (trace.owner || trace.target)) card.append(el("code", "logic-detail assignment-context", trace.owner ?? trace.target!.context.path));
-      if (assignment) appendSource(card, {...trace, statement: trace.statement ?? trace.label}, signal, () => this.render());
+      if (assignment) appendSource(card, { ...trace, statement: trace.statement ?? trace.label }, signal, () => this.render());
       if (trace.mapping) { const code = signalCode(trace.mapping, signal, /\.vhdl?$/i.test(trace.file ?? "")); code.classList.add("port-mapping"); card.append(code); }
       if (trace.note) card.append(el("code", "flow-note", trace.note));
       if (trace.reason && trace.reason !== "赋值位置") card.append(el("p", "flow-reason", trace.reason));
-      const node = {id, trace, column, children: [], card, external}; this.nodes.set(id, node); this.canvas.append(card); this.widths.add(id, card); return node;
+      if (node.children.length) {
+        const button = el("button", "text-button path-continue", "继续追踪");
+        button.type = "button";
+        button.setAttribute("aria-label", `继续追踪 ${trace.label}`);
+        button.onclick = () => { if (this.expanded.has(id)) this.expanded.delete(id); else this.expanded.add(id); this.render(); };
+        card.querySelector<HTMLElement>(".logic-card-head")!.onclick = null;
+        card.onclick = event => { if (!(event.target as HTMLElement).closest("button, details") && !button.hidden) button.click(); };
+        card.append(button);
+        this.branches.set(id, button);
+      }
+      this.canvas.append(card);
     };
-    const base = upstream.label.slice(0, upstream.label.lastIndexOf("."));
-    const focus = add("focus", {...upstream,reason:undefined,note:undefined}, 0, signal);
+    const focus = add("focus", { ...upstream, reason: undefined, note: undefined }, 0, signal);
+    materialize(focus);
     focus.card.append(el("code", "logic-detail", [upstream.port?.direction, base].filter(Boolean).join(" · ")));
     const identity = (n: TraceNode) => JSON.stringify([n.owner ?? n.target?.context.path, n.scope, n.signal?.identity, n.port?.path, n.label, n.file, n.line, n.reason, n.note, n.mapping]);
     const walk = (trace: TraceNode, parent: PortCard, side: Side, depth: number): string => {
@@ -52,7 +77,7 @@ export class SignalPortsView {
       const existed = this.nodes.has(id);
       const name = trace.target?.signal ?? (trace.label.includes(" ← ") ? trace.label.split(" ← ")[0] : trace.label.startsWith(base + ".") || trace.label.startsWith(base + "/") ? trace.label.slice(base.length + 1) : trace.label);
       const node = add(id, trace, unknown ? parent.column : side === "up" ? -depth : depth, name, unknown);
-      const edge: CardEdge = side === "up" ? {from: id, to: parent.id} : {from: parent.id, to: id};
+      const edge: CardEdge = side === "up" ? { from: id, to: parent.id } : { from: parent.id, to: id };
       edge.vertical = unknown; edge.unknown = unknown;
       if (unknown) {
         const existing = this.edges.find(e => (e.from === id && e.to === parent.id) || (e.to === id && e.from === parent.id));
@@ -72,15 +97,12 @@ export class SignalPortsView {
         else if (![...focus.card.querySelectorAll(".flow-reason")].some(n => n.textContent === trace.reason)) focus.card.append(el("p", "flow-reason", trace.reason));
       }
     }
-    for (const [id, directions] of this.externalDirections) this.nodes.get(id)!.card.append(el("span", "port-boundary", directions.size === 2 ? "顶层端口 · 与外部双向连接" : directions.has("up") ? "顶层端口 · 外部输入" : "顶层端口 · 输出至外部"));
-    for (const node of this.nodes.values()) if (node.children.length) {
-      const button = el("button", "text-button path-continue", "继续追踪"); button.type = "button";
-      button.setAttribute("aria-label", `继续追踪 ${node.trace.label}`);
-      button.onclick = () => { if(this.expanded.has(node.id))this.expanded.delete(node.id);else this.expanded.add(node.id); this.render(); };
-      node.card.querySelector<HTMLElement>(".logic-card-head")!.onclick = null;
-      node.card.onclick = event => { if (!(event.target as HTMLElement).closest("button, details") && !button.hidden) button.click(); };
-      node.card.append(button); this.branches.set(node.id, button);
+    for (const [id, directions] of this.externalDirections) {
+      const node = this.nodes.get(id)!;
+      materialize(node);
+      node.card.append(el("span", "port-boundary", directions.size === 2 ? "顶层端口 · 与外部双向连接" : directions.has("up") ? "顶层端口 · 外部输入" : "顶层端口 · 输出至外部"));
     }
+    this.materializeNode = materialize;
     this.render();
     const current = focus.card.offsetLeft;
     if (current > body.clientWidth - 260 && body.clientWidth > 0) body.scrollLeft = Math.max(0, current - body.clientWidth / 2 + 118);
@@ -88,7 +110,7 @@ export class SignalPortsView {
   dispose(): void { this.active = false; this.widths.dispose(); }
   capture(): PortViewState { return {expanded: [...this.expanded], assignments: [...this.nodes.values()].filter(n=>n.card.querySelector<HTMLDetailsElement>(".assignment-block")?.open).map(n=>n.id), widths:this.widths.capture()}; }
   restore(state: PortViewState): void { this.expanded = new Set(state.expanded); this.widths.restore(state.widths); if(state.assignments)for(const node of this.nodes.values()){const block=node.card.querySelector<HTMLDetailsElement>(".assignment-block");if(block)block.open=state.assignments.includes(node.id);} this.render(); }
-  expandAll(): void { this.expanded = new Set(this.branches.keys()); for(const block of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))block.open=true; this.render(); }
+  expandAll(): void { this.expanded = new Set([...this.nodes.values()].filter(node => node.children.length).map(node => node.id)); for(const block of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))block.open=true; this.render(); }
   collapseAll(): void { this.expanded.clear(); for(const block of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))block.open=false; this.render(); }
   private render(): void {
     if (!this.active) return;
@@ -100,6 +122,7 @@ export class SignalPortsView {
     const visit = (id: string, choice: boolean, parent: string) => {
       this.edges.filter(e=>e.from===parent&&e.to===id||e.from===id&&e.to===parent).forEach(e=>active.add(e));
       visible.add(id); const node = this.nodes.get(id)!;
+      this.materializeNode?.(node);
       const pending = choice && node.children.some(child => !assignmentEnd(child));
       if(pending)choices.add(id);
       if (traversed.has(id)) return;
@@ -121,11 +144,12 @@ export class SignalPortsView {
     for (const node of this.nodes.values()) node.card.hidden = !visible.has(node.id);
     this.widths.fit();
     const widths = new Map<number, number>();
-    for (const node of this.nodes.values()) widths.set(node.column, Math.max(widths.get(node.column) ?? 0, this.widths.get(node.id)));
+    for (const node of this.nodes.values()) if (node.materialized) widths.set(node.column, Math.max(widths.get(node.column) ?? 0, this.widths.get(node.id)));
     const offsets = columnPositions(widths);
     const rows = new Map<number, number>(), positions = new Map<string, CardPosition>();
     // Reserve slots so choosing another route retains the preceding layout.
     for (const node of [...this.nodes.values()].sort((a, b) => Number(!!a.external) - Number(!!b.external))) {
+      if (!node.materialized) continue;
       const x = offsets.get(node.column)!, y = rows.get(node.column) ?? CANVAS_TOP;
       const h = node.card.offsetHeight || Number(node.card.dataset.height) || 96;
       if (!node.card.hidden) node.card.dataset.height = String(h);

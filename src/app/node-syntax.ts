@@ -183,6 +183,7 @@ function parseVerilator(output: string, root: string, diagnostics: SyntaxDiagnos
     const rule = line.slice(1, headerEnd).split("-")[1] ?? "GENERAL";
     const diagnosticSeverity = rule === "PINCONNECTEMPTY" ? "info" : severity;
     const body = line.slice(headerEnd + 1).trim();
+    if (/^Exiting due to\s+\d+\s+error\(s\)$/i.test(body)) continue;
     const location = splitLocation(body);
     diagnostics.push({
       file: location ? originals.get(normalize(location.file)) ?? reportedPath(root, location.file) : "",

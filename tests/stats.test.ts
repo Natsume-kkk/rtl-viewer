@@ -68,7 +68,7 @@ it("模块拓扑按需展开，定位按钮打开定义行且不显示长目录"
     stale: false,
     scope: "top",
     topName: "a",
-    topology: [{ key: "a", label: "a", moduleName: "a", file: "D:/project/a.sv", line: 1, children: [{ key: "a/u_b", label: "u_b", moduleName: "b", file: "D:/project/b.sv", line: 2, children: [{ key: "a/u_b/u_c", label: "u_c", moduleName: "c", children: [] }] }] }],
+    topology: [{ key: "a", label: "a", moduleName: "a", kind: "module", file: "D:/project/a.sv", line: 1, children: [{ key: "a/u_b", label: "u_b", moduleName: "b", kind: "module", file: "D:/project/b.sv", line: 2, children: [{ key: "a/u_b/u_c", label: "u_c", moduleName: "c", kind: "unresolved", children: [] }] }] }],
   });
   const rootNode = root.querySelector<HTMLDetailsElement>(".stats-topology-node")!;
   const childNode = rootNode.querySelector<HTMLDetailsElement>(".stats-topology-node")!;
@@ -100,10 +100,10 @@ it("隐藏统计不渲染，恢复后刷新且孙级节点仅在展开时物化"
   document.body.append(root);
   const panel = new StatsPanel(root, { displayPath: file => file, onOpenFile: vi.fn(), onOpenProblems: vi.fn(), onScopeChange: vi.fn(), onClose: vi.fn() });
   let grandchildReads = 0;
-  const grandchild = { key: "a/u/u_g", label: "u_g", moduleName: "g", children: [] };
+  const grandchild = { key: "a/u/u_g", label: "u_g", moduleName: "g", kind: "module" as const, children: [] };
   Object.defineProperty(grandchild, "children", { get: () => { grandchildReads++; return []; } });
-  const child = { key: "a/u", label: "u", moduleName: "u", children: [grandchild] };
-  const view = { facts: [], files: [], diagnostics: [], done: 0, total: 0, running: false, stale: false, scope: "top" as const, topology: [{ key: "a", label: "a", moduleName: "a", children: [child] }] };
+  const child = { key: "a/u", label: "u", moduleName: "u", kind: "module" as const, children: [grandchild] };
+  const view = { facts: [], files: [], diagnostics: [], done: 0, total: 0, running: false, stale: false, scope: "top" as const, topology: [{ key: "a", label: "a", moduleName: "a", kind: "module" as const, children: [child] }] };
   panel.render(view);
   expect(root.querySelector(".stats-topology")).toBeNull();
   root.hidden = false;
@@ -119,9 +119,87 @@ it("拓扑中的未分析文件显示待分析而不是零统计", () => {
   const root = document.createElement("section");
   document.body.append(root);
   const panel = new StatsPanel(root, { displayPath: file => file, onOpenFile: vi.fn(), onOpenProblems: vi.fn(), onScopeChange: vi.fn(), onClose: vi.fn() });
-  panel.render({ facts: [], files: ["D:/project/a.sv"], diagnostics: [], done: 0, total: 1, running: false, stale: false, scope: "top", topology: [{ key: "a", label: "a", moduleName: "a", file: "D:/project/a.sv", children: [] }] });
+  panel.render({ facts: [], files: ["D:/project/a.sv"], diagnostics: [], done: 0, total: 1, running: false, stale: false, scope: "top", topology: [{ key: "a", label: "a", moduleName: "a", kind: "module", file: "D:/project/a.sv", children: [] }] });
   const issue = root.querySelector<HTMLButtonElement>(".stats-topology-issues")!;
   expect(issue.textContent).toBe("待分析");
   expect(issue.disabled).toBe(true);
   expect(root.querySelector(".stats-topology-row")!.textContent).not.toContain("0%");
+});
+
+it("拓扑和文件列表区分黑盒、未解析、分析失败与待分析", () => {
+  const root = document.createElement("section");
+  document.body.append(root);
+  const onOpenProblems = vi.fn();
+  const panel = new StatsPanel(root, { displayPath: file => file, onOpenFile: vi.fn(), onOpenProblems, onScopeChange: vi.fn(), onClose: vi.fn() });
+  const failure: RuleDiagnostic = { file: "D:/project/failed.sv", line: 1, column: 1, severity: "error", ruleId: "ANALYSIS-FAILED", source: "builtin", category: "analysis", message: "内置分析失败" };
+  panel.render({
+    facts: [],
+    files: ["D:/project/failed.sv"],
+    diagnostics: [failure],
+    done: 1,
+    total: 1,
+    running: false,
+    stale: false,
+    scope: "top",
+    topology: [{
+      key: "top", label: "top", moduleName: "top", kind: "module", file: "D:/project/failed.sv", children: [
+        { key: "top/u_ip", label: "u_ip", moduleName: "clk_wiz", kind: "ip", file: "D:/project/ip/clk_wiz.xci", children: [] },
+        { key: "top/u_primitive", label: "u_primitive", moduleName: "BUFG", kind: "primitive", children: [] },
+        { key: "top/u_missing", label: "u_missing", moduleName: "missing", kind: "unresolved", children: [] },
+      ],
+    }],
+  });
+  const rows = [...root.querySelectorAll(".stats-topology-row")].filter(row => !row.classList.contains("stats-topology-total") && !row.classList.contains("stats-topology-head"));
+  const issueText = (index: number) => rows[index].querySelector(".stats-topology-issues")!.textContent;
+  expect(issueText(0)).toBe("分析失败");
+  expect(rows[0].querySelector<HTMLButtonElement>(".stats-topology-issues")!.disabled).toBe(false);
+  expect(issueText(1)).toBe("IP");
+  expect(rows[1].querySelector<HTMLButtonElement>(".stats-topology-issues")!.title).toBe("IP 黑盒，不纳入内置代码统计与规则分析");
+  expect(issueText(2)).toBe("原语");
+  expect(rows[2].querySelector<HTMLButtonElement>(".stats-topology-issues")!.title).toBe("厂商原语，不纳入内置代码统计与规则分析");
+  expect(issueText(3)).toBe("未解析");
+  expect(rows[3].querySelector(".stats-ip-label")!.textContent).toBe("—");
+  expect(root.querySelector(".stats-table")!.textContent).not.toContain("待分析");
+  rows[0].querySelector<HTMLButtonElement>(".stats-topology-issues")!.click();
+  expect(onOpenProblems).toHaveBeenCalledWith({ file: "D:/project/failed.sv" });
+
+  root.querySelector<HTMLSelectElement>(".stats-view-mode")!.value = "files";
+  root.querySelector<HTMLSelectElement>(".stats-view-mode")!.dispatchEvent(new Event("change"));
+  const failedRow = root.querySelector(".stats-table tbody tr:last-child")!;
+  expect(failedRow.textContent).toContain("分析失败");
+  expect(failedRow.textContent).not.toContain("待分析");
+  failedRow.querySelector<HTMLButtonElement>("td:last-child button")!.click();
+  expect(onOpenProblems).toHaveBeenCalledWith({ file: "D:/project/failed.sv" });
+});
+
+it("同一份拓扑刷新复用节点，后展开子节点使用最新诊断", () => {
+  const root = document.createElement("section");
+  document.body.append(root);
+  const panel = new StatsPanel(root, { displayPath: file => file, onOpenFile: vi.fn(), onOpenProblems: vi.fn(), onScopeChange: vi.fn(), onClose: vi.fn() });
+  const topology = [{ key: "a", label: "a", moduleName: "a", kind: "module" as const, file: "D:/project/a.sv", children: [{ key: "a/u", label: "u", moduleName: "b", kind: "module" as const, file: "D:/project/b.sv", children: [] }] }];
+  const view = { facts: [analyzeFileFacts("D:/project/a.sv", "module a; endmodule"), analyzeFileFacts("D:/project/b.sv", "module b; endmodule")], files: ["D:/project/a.sv", "D:/project/b.sv"], diagnostics: [], done: 2, total: 2, running: false, stale: false, scope: "top" as const, topology };
+  panel.render(view);
+  const rootNode = root.querySelector<HTMLDetailsElement>(".stats-topology-node")!;
+  panel.render({ ...view, diagnostics: [{ file: "D:/project/b.sv", line: 1, column: 1, severity: "info" as const, ruleId: "RULE", source: "builtin" as const, category: "style" as const, message: "hint" }] });
+  expect(root.querySelector(".stats-topology-node")).toBe(rootNode);
+  rootNode.querySelector("summary")!.click();
+  const childNode = rootNode.querySelector<HTMLDetailsElement>(".stats-topology-node")!;
+  expect(childNode.querySelector(".stats-topology-issues")!.textContent).toBe("1");
+});
+
+it("全部工程文件按二百行加载，刷新保留已加载数量", () => {
+  const root = document.createElement("section");
+  document.body.append(root);
+  const panel = new StatsPanel(root, { displayPath: file => file, onOpenFile: vi.fn(), onOpenProblems: vi.fn(), onScopeChange: vi.fn(), onClose: vi.fn() });
+  const files = Array.from({ length: 450 }, (_, index) => `D:/project/file-${index}.sv`);
+  const view = { facts: [], files, diagnostics: [], done: 0, total: files.length, running: false, stale: false, scope: "project" as const };
+  panel.render(view);
+  expect(root.querySelectorAll(".stats-table tr[data-file]")).toHaveLength(200);
+  root.querySelector<HTMLButtonElement>(".stats-load-more")!.click();
+  expect(root.querySelectorAll(".stats-table tr[data-file]")).toHaveLength(400);
+  root.querySelector<HTMLButtonElement>(".stats-load-more")!.click();
+  expect(root.querySelectorAll(".stats-table tr[data-file]")).toHaveLength(450);
+  expect(root.querySelector(".stats-load-more")).toBeNull();
+  panel.render(view);
+  expect(root.querySelectorAll(".stats-table tr[data-file]")).toHaveLength(450);
 });

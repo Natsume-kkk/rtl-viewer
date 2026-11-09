@@ -1,6 +1,7 @@
 import { monaco } from "../editor/monaco";
 import type { SyntaxDiagnostic } from "../ipc";
 import { filePathKey } from "../file-path";
+import { diagnosticDisplayMessage, isUnclassifiedDisplayMessage } from "./diagnostic-display";
 
 interface MarkedModel {
   path: string;
@@ -31,7 +32,7 @@ export function syncProblemMarkers(models: Iterable<MarkedModel>, diagnostics: S
       severity: diagnostic.severity === "error" ? monaco.MarkerSeverity.Error
         : diagnostic.severity === "warning" ? monaco.MarkerSeverity.Warning
           : monaco.MarkerSeverity.Info,
-      message: `${diagnostic.ruleId}: ${diagnostic.message}`,
+      message: markerMessage(diagnostic),
       source: diagnostic.source,
       startLineNumber: Math.min(Math.max(1, diagnostic.line), model.getLineCount()),
       startColumn: Math.max(1, diagnostic.column),
@@ -40,4 +41,10 @@ export function syncProblemMarkers(models: Iterable<MarkedModel>, diagnostics: S
     }));
     monaco.editor.setModelMarkers(model, "rtl.syntax", markers);
   }
+}
+
+function markerMessage(diagnostic: SyntaxDiagnostic): string {
+  const display = diagnosticDisplayMessage(diagnostic);
+  const original = isUnclassifiedDisplayMessage(display) ? `\n原始诊断：${diagnostic.message}` : "";
+  return `${diagnostic.ruleId}: ${display}${original}`;
 }

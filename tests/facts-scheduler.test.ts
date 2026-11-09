@@ -105,3 +105,19 @@ it("后台队列中的刷新失败会恢复并分析剩余文件", async () => {
   expect(queue.values().map(facts => facts.file).sort()).toEqual(["a.sv", "b.sv"]);
   expect(queue.running).toBe(false);
 });
+
+it("诊断版本只在分析生命周期推进，供 Monaco 跳过无效重算", async () => {
+  const queue = scheduler({
+    files: () => [{ file: "a.sv", content: "module a; endmodule" }],
+    priorityFile: () => undefined,
+    result: () => undefined,
+    progress: () => undefined,
+    complete: () => undefined,
+  });
+  const initial = queue.diagnosticsRevision;
+  await queue.start();
+  expect(queue.diagnosticsRevision).toBeGreaterThan(initial);
+  const completed = queue.diagnosticsRevision;
+  await queue.refresh("a.sv", "module a; endmodule");
+  expect(queue.diagnosticsRevision).toBeGreaterThan(completed);
+});

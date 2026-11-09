@@ -186,17 +186,32 @@ export class SearchPanel {
       this.callbacks.onOpen(group.file, group.matches[0].line, group.matches[0].column, group.matches[0].length),
     );
     box.appendChild(head);
-    for (const m of group.matches) {
-      const row = document.createElement("button");
-      row.className = "search-match";
-      const lineNo = document.createElement("span");
-      lineNo.className = "search-line-no";
-      lineNo.textContent = String(m.line);
-      row.appendChild(lineNo);
-      row.appendChild(this.highlight(m.text, m.highlights ?? []));
-      row.addEventListener("click", () => this.callbacks.onOpen(group.file, m.line, m.column, m.length));
-      box.appendChild(row);
-    }
+    let shown = 0;
+    let loadMore: HTMLButtonElement | undefined;
+    const appendBatch = () => {
+      const end = Math.min(shown + 100, group.matches.length);
+      for (const m of group.matches.slice(shown, end)) {
+        const row = document.createElement("button");
+        row.className = "search-match";
+        const lineNo = document.createElement("span");
+        lineNo.className = "search-line-no";
+        lineNo.textContent = String(m.line);
+        row.appendChild(lineNo);
+        row.appendChild(this.highlight(m.text, m.highlights ?? []));
+        row.addEventListener("click", () => this.callbacks.onOpen(group.file, m.line, m.column, m.length));
+        box.insertBefore(row, loadMore ?? null);
+      }
+      shown = end;
+      loadMore?.remove();
+      const remaining = group.matches.length - shown;
+      if (!remaining) return;
+      loadMore = document.createElement("button");
+      loadMore.className = "search-file search-load-more";
+      loadMore.textContent = `继续加载此文件结果（剩余 ${remaining} 条）`;
+      loadMore.addEventListener("click", appendBatch);
+      box.appendChild(loadMore);
+    };
+    appendBatch();
     return box;
   }
 

@@ -5,6 +5,7 @@ export interface MenuItem {
   label: string;
   action: () => void;
   checked?: boolean;
+  title?: string;
 }
 
 let ctxMenu: HTMLDivElement | null = null;
@@ -29,6 +30,7 @@ export function showCtxMenu(x: number, y: number, items: MenuItem[], anchor?: HT
     if (item.checked !== undefined) row.setAttribute("aria-checked", String(item.checked));
     row.className = "menu-item ctx-item";
     row.textContent = item.label;
+    if (item.title) row.title = item.title;
     row.addEventListener("click", () => {
       closeCtxMenu();
       item.action();

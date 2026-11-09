@@ -1,5 +1,6 @@
 import type { SyntaxCheckResult, SyntaxDiagnostic, SyntaxProgress } from "../ipc";
 import type { RuleDiagnostic } from "../analysis/general-rules";
+import { diagnosticDisplayMessage, isUnclassifiedDisplayMessage, isVerilatorExitSummary } from "../app/diagnostic-display";
 import { setIcon, type IconName } from "./icons";
 
 interface ProblemPanelCallbacks {
@@ -27,8 +28,9 @@ export interface ProblemDisplayFilter {
 }
 
 type Diagnostic = SyntaxDiagnostic | RuleDiagnostic;
+type ProblemRows = (diagnostic: Diagnostic) => HTMLButtonElement;
 type ProblemGroupElement = HTMLDetailsElement & {
-  update(title: string, rows: () => HTMLButtonElement[], onJump?: () => void): void;
+  update(title: string, items: Diagnostic[], rows: ProblemRows, onJump?: () => void): void;
   dispose(): void;
 };
 
@@ -37,27 +39,6 @@ const SOURCES = ["external", "general", "gjb10157", "gjb9765"] as const;
 const SEVERITY_LABELS: Record<string, string> = { error: "错误", warning: "警告", info: "提示" };
 const SOURCE_LABELS: Record<string, string> = { external: "外部工具", general: "通用规则", gjb10157: "GJB 10157", gjb9765: "GJB 9765" };
 const STATUS_LABELS: Record<string, string> = { completed: "已完成", cancelled: "已取消", timed_out: "超时", failed: "失败" };
-const VERILATOR_RULE_LABELS: Record<string, string> = {
-  PINNOTFOUND: "端口未找到",
-  PINCONNECTEMPTY: "端口未连接",
-  MODDUP: "模块重复定义",
-  EOFNEWLINE: "文件末尾缺少换行",
-  WIDTH: "位宽不匹配",
-  UNUSED: "信号未使用",
-  UNDRIVEN: "信号未驱动",
-  DECLFILENAME: "文件名与模块名不一致",
-  CASEINCOMPLETE: "case 分支不完整",
-  CASEOVERLAP: "case 分支重叠",
-  LATCH: "可能产生锁存器",
-  MULTIDRIVEN: "信号多重驱动",
-  BLKSEQ: "时序逻辑使用阻塞赋值",
-  COMBDLY: "组合逻辑使用非阻塞赋值",
-  IMPLICIT: "隐式信号声明",
-  SELRANGE: "选择范围越界",
-  SYNCASYNCNET: "信号同时用于同步和异步场景",
-  VARHIDDEN: "变量隐藏",
-  SYNTAX: "语法错误",
-};
 
 export class ProblemPanel {
   private result?: SyntaxCheckResult;
@@ -73,6 +54,7 @@ export class ProblemPanel {
   private readonly sources = new Set<string>(SOURCES);
   private file = "all";
   private query = "";
+  private filterTimer: number | undefined;
   private fileOptionsSignature = "";
   private readonly summary: HTMLElement;
   private readonly backends: HTMLElement;
@@ -86,7 +68,20 @@ export class ProblemPanel {
   private readonly configureButton: HTMLButtonElement;
   private readonly focusButton: HTMLButtonElement;
   private readonly groups = new Map<string, ProblemGroupElement>();
+  private readonly groupDiagnostics = new Map<string, Diagnostic[]>();
   private labels = new Map<string, string>();
+  private allCache?: {
+    builtin: RuleDiagnostic[];
+    external: SyntaxDiagnostic[] | undefined;
+    diagnostics: Diagnostic[];
+    counts: Record<"error" | "warning" | "info", number>;
+    environment: number;
+    needsConfiguration: boolean;
+    labels: Map<string, string>;
+  };
+  private filteredCache?: { all: Diagnostic[]; key: string; diagnostics: Diagnostic[] };
+  private renderedAll?: Diagnostic[];
+  private renderedFiltered?: Diagnostic[];
   private empty?: HTMLElement;
 
   constructor(private readonly root: HTMLElement, private callbacks: ProblemPanelCallbacks) {
@@ -160,7 +155,11 @@ export class ProblemPanel {
     this.queryFilter.setAttribute("aria-label", "搜索规则或诊断");
     this.queryFilter.addEventListener("input", () => {
       this.query = this.queryFilter.value.trim().toLowerCase();
-      this.renderResults();
+      window.clearTimeout(this.filterTimer);
+      this.filterTimer = window.setTimeout(() => this.renderResults(), 200);
+    });
+    this.queryFilter.addEventListener("keydown", event => {
+      if (event.key === "Enter") this.renderResults();
     });
     const clear = button("清除筛选", () => this.clearFilters(), "filter-clear");
     clear.className = "btn btn-ghost btn-inline problem-clear-filter";
@@ -220,7 +219,7 @@ export class ProblemPanel {
   get builtinDiagnostics(): RuleDiagnostic[] { return this.builtin; }
   get hasResults(): boolean { return !!this.result || this.builtinAnalyzed; }
   get indicator(): ProblemIndicator {
-    const counts = severityCounts(this.allDiagnostics());
+    const counts = this.diagnosticsData().counts;
     return {
       running: this.running || this.builtinRunning,
       errors: counts.error,
@@ -290,6 +289,11 @@ export class ProblemPanel {
     this.fileOptionsSignature = "";
     for (const group of this.groups.values()) group.dispose();
     this.groups.clear();
+    this.groupDiagnostics.clear();
+    this.allCache = undefined;
+    this.filteredCache = undefined;
+    this.renderedAll = undefined;
+    this.renderedFiltered = undefined;
     this.empty?.remove();
     this.empty = undefined;
     this.clearFilters();
@@ -307,6 +311,7 @@ export class ProblemPanel {
 
   private renderSummary(): void {
     this.callbacks.onIndicator?.(this.indicator);
+    this.summary.removeAttribute("title");
     this.cancelButton.hidden = !this.running;
     this.cancelButton.disabled = !this.running || this.cancelling;
     this.cancelButton.textContent = this.cancelling ? "正在取消…" : "取消";
@@ -330,7 +335,8 @@ export class ProblemPanel {
       return;
     }
     if (this.error) {
-      this.summary.textContent = `检查失败：${this.error}`;
+      this.summary.textContent = /backend unavailable/i.test(this.error) ? "检查失败：后端不可用" : "检查失败：请悬停查看原始错误";
+      this.summary.title = `原始错误：${this.error}`;
       return;
     }
     if (!this.hasResults) {
@@ -341,17 +347,18 @@ export class ProblemPanel {
       this.summary.textContent = "内置分析进行中，完成后可导出报告。";
       return;
     }
-    const all = this.allDiagnostics();
-    const counts = severityCounts(all);
+    const data = this.diagnosticsData();
+    const all = data.diagnostics;
     const filtered = this.filteredDiagnostics();
     const status = this.result ? this.result.cancelled ? "已取消，结果可能不完整" : `已检查 ${this.result.checkedFiles} 个文件` : "内置分析";
-    const environment = all.filter(isEnvironmentDiagnostic).length;
-    const environmentText = environment ? ` · ${environment} 分析环境` : "";
+    const environmentText = data.environment ? ` · ${data.environment} 分析环境` : "";
     const stale = this.stale ? " · 外部结果为上次快照，等待自动复查" : "";
-    this.summary.textContent = `${status} · ${counts.error} 错误 · ${counts.warning} 警告 · ${counts.info} 提示${environmentText} · 显示 ${filtered.length}/${all.length} 条${stale}`;
+    this.summary.textContent = `${status} · ${data.counts.error} 错误 · ${data.counts.warning} 警告 · ${data.counts.info} 提示${environmentText} · 显示 ${filtered.length}/${all.length} 条${stale}`;
   }
 
   private renderResults(): void {
+    window.clearTimeout(this.filterTimer);
+    this.filterTimer = undefined;
     this.callbacks.onIndicator?.(this.indicator);
     if (this.root.hidden) return;
     this.renderFileOptions();
@@ -366,18 +373,23 @@ export class ProblemPanel {
       item.title = backend.version;
       this.backends.append(item);
     }
+    const data = this.diagnosticsData();
+    const all = data.diagnostics;
+    this.configureButton.hidden = !data.needsConfiguration;
+    const filtered = this.filteredDiagnostics();
+    if (all === this.renderedAll && filtered === this.renderedFiltered) return;
+    this.renderedAll = all;
+    this.renderedFiltered = filtered;
     const scrollTop = this.list.scrollTop;
     const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const focusKey = active?.dataset.diagnosticKey;
     const focusGroup = active?.closest("details")?.getAttribute("data-group-key");
-    const all = this.allDiagnostics();
-    this.configureButton.hidden = !all.some(needsConfiguration);
-    const filtered = this.filteredDiagnostics();
     this.empty?.remove();
     this.empty = undefined;
     if (!filtered.length) {
       for (const group of this.groups.values()) group.dispose();
       this.groups.clear();
+      this.groupDiagnostics.clear();
       this.empty = document.createElement("p");
       this.empty.className = "problem-empty";
       this.empty.textContent = all.length
@@ -386,21 +398,26 @@ export class ProblemPanel {
       this.list.append(this.empty);
       return;
     }
-    const labels = fileLabels(all.map(item => item.file));
-    this.labels = labels;
+    this.labels = data.labels;
     const nextGroups = new Map<string, Diagnostic[]>();
-    for (const diagnostic of filtered.filter(item => !isStubHint(item))) {
+    const stubs: Diagnostic[] = [];
+    for (const diagnostic of filtered) {
+      if (isStubHint(diagnostic)) {
+        stubs.push(diagnostic);
+        continue;
+      }
       const key = `${isEnvironmentDiagnostic(diagnostic) ? "environment" : diagnostic.severity}|${diagnostic.file}|${diagnostic.ruleId}`;
       const group = nextGroups.get(key) ?? [];
       group.push(diagnostic);
       nextGroups.set(key, group);
     }
     const nextKeys = new Set(nextGroups.keys());
-    if (filtered.some(isStubHint)) nextKeys.add("stubs");
+    if (stubs.length) nextKeys.add("stubs");
     for (const [key, group] of this.groups) {
       if (!nextKeys.has(key)) {
         group.dispose();
         this.groups.delete(key);
+        this.groupDiagnostics.delete(key);
       }
     }
     const ordered = [...nextGroups.entries()].sort((left, right) => {
@@ -408,18 +425,19 @@ export class ProblemPanel {
       const rightRank = isEnvironmentDiagnostic(right[1][0]) ? 2 : severityRank(right[1][0].severity);
       return leftRank - rightRank || left[0].localeCompare(right[0]);
     });
+    let position = 0;
     for (const [key, diagnostics] of ordered) {
       const first = diagnostics[0];
       const environment = isEnvironmentDiagnostic(first);
       const severity = environment ? "environment" : first.severity;
       const type = environment ? "分析环境" : SEVERITY_LABELS[severity] ?? severity;
-      const title = `${type} · ${labels.get(first.file) ?? "工程级"} · ${diagnosticRuleLabel(first)} · ${diagnostics.length} 条`;
-      const fingerprint = diagnostics.map(diagnosticFingerprint).join("\n");
-      this.syncGroup(key, `problem-${severity}-group`, title, `${first.file}\n${first.ruleId}: ${first.message}`, fingerprint, () => diagnostics.map(item => this.createRow(item)), first.file ? () => this.callbacks.onOpen(first) : undefined);
+      const title = `${type} · ${this.labels.get(first.file) ?? "工程级"} · ${diagnosticDisplayMessage(first)} · ${diagnostics.length} 条`;
+      const group = this.syncGroup(key, `problem-${severity}-group`, title, `${first.file}\n${first.ruleId}: ${diagnosticHoverMessage(first)}`, diagnostics, item => this.createRow(item), first.file ? () => this.callbacks.onOpen(first) : undefined);
+      this.placeGroup(group, position++);
     }
-    const stubs = filtered.filter(isStubHint);
     if (stubs.length) {
-      this.syncGroup("stubs", "problem-stub-group", `黑盒／生成文件提示 · ${stubs.length} 条`, "黑盒或生成文件产生的提示", stubs.map(diagnosticFingerprint).join("\n"), () => stubs.map(item => this.createRow(item)));
+      const group = this.syncGroup("stubs", "problem-stub-group", `黑盒／生成文件提示 · ${stubs.length} 条`, "黑盒或生成文件产生的提示", stubs, item => this.createRow(item));
+      this.placeGroup(group, position);
     }
     this.list.scrollTop = scrollTop;
     if (focusKey) {
@@ -437,20 +455,24 @@ export class ProblemPanel {
     }
   }
 
-  private syncGroup(key: string, className: string, title: string, tooltip: string, fingerprint: string, rows: () => HTMLButtonElement[], onJump?: () => void): void {
+  private syncGroup(key: string, className: string, title: string, tooltip: string, diagnostics: Diagnostic[], rows: ProblemRows, onJump?: () => void): ProblemGroupElement {
     let group = this.groups.get(key);
+    const previous = this.groupDiagnostics.get(key);
+    this.groupDiagnostics.set(key, diagnostics);
+    if (group && previous && sameDiagnostics(previous, diagnostics)) return group;
     if (!group) {
-      group = diagnosticGroup(className, title, rows, onJump);
+      group = diagnosticGroup(className, title, diagnostics, rows, onJump);
       group.dataset.groupKey = key;
       this.groups.set(key, group);
-    } else if (group.dataset.fingerprint === fingerprint) {
-      this.list.append(group);
-      return;
     }
-    group.dataset.fingerprint = fingerprint;
     group.title = tooltip;
-    group.update(title, rows, onJump);
-    this.list.append(group);
+    group.update(title, diagnostics, rows, onJump);
+    return group;
+  }
+
+  private placeGroup(group: ProblemGroupElement, position: number): void {
+    const current = this.list.children[position];
+    if (current !== group) this.list.insertBefore(group, current ?? null);
   }
 
   private createRow(diagnostic: Diagnostic): HTMLButtonElement {
@@ -459,7 +481,9 @@ export class ProblemPanel {
     row.className = `problem-row problem-${diagnostic.severity}`;
     row.dataset.diagnosticKey = `${diagnostic.file}|${diagnostic.line}|${diagnostic.column}|${diagnostic.ruleId}`;
     row.disabled = !diagnostic.file || stub;
-    row.title = diagnostic.file ? `${diagnostic.file}:${diagnostic.line}:${diagnostic.column}\n${diagnostic.ruleId}: ${diagnostic.message}` : diagnostic.message;
+    const displayMessage = diagnosticDisplayMessage(diagnostic);
+    const hoverMessage = diagnosticHoverMessage(diagnostic);
+    row.title = diagnostic.file ? `${diagnostic.file}:${diagnostic.line}:${diagnostic.column}\n${diagnostic.ruleId}: ${hoverMessage}` : hoverMessage;
     const severity = document.createElement("span");
     severity.className = "problem-severity";
     severity.textContent = SEVERITY_LABELS[diagnostic.severity] ?? diagnostic.severity;
@@ -472,7 +496,7 @@ export class ProblemPanel {
     location.textContent = stub ? `黑盒 ${locationLabel}:${diagnostic.line}:${diagnostic.column}` : diagnostic.file ? `${locationLabel}:${diagnostic.line}:${diagnostic.column}` : "工程级";
     const message = document.createElement("span");
     message.className = "problem-message";
-    message.textContent = `${diagnostic.ruleId} · ${diagnostic.message}`;
+    message.textContent = `${diagnostic.ruleId} · ${displayMessage}`;
     row.append(severity, source, location, message);
     if (diagnostic.file && !stub) row.addEventListener("click", () => this.callbacks.onOpen(diagnostic));
     return row;
@@ -500,18 +524,43 @@ export class ProblemPanel {
   }
 
   private filteredDiagnostics(): Diagnostic[] {
-    return this.allDiagnostics().filter(diagnostic => {
+    const all = this.allDiagnostics();
+    const key = `${SEVERITIES.filter(item => this.severities.has(item)).join(",")}|${SOURCES.filter(item => this.sources.has(item)).join(",")}|${this.file}|${this.query}`;
+    if (this.filteredCache?.all === all && this.filteredCache.key === key) return this.filteredCache.diagnostics;
+    const diagnostics = all.filter(diagnostic => {
       if (!this.severities.has(diagnostic.severity)) return false;
       if (!this.sources.has(sourceGroup(diagnostic))) return false;
       if (this.file !== "all" && diagnostic.file !== this.file) return false;
-      if (this.query && !`${diagnostic.ruleId}\n${diagnostic.message}\n${diagnostic.file}`.toLowerCase().includes(this.query)) return false;
+      if (this.query && !`${diagnostic.ruleId}\n${diagnosticDisplayMessage(diagnostic)}\n${diagnostic.message}\n${diagnostic.file}`.toLowerCase().includes(this.query)) return false;
       return true;
     });
+    this.filteredCache = { all, key, diagnostics };
+    return diagnostics;
   }
 
   private allDiagnostics(): Diagnostic[] {
-    return [...this.builtin, ...this.result?.diagnostics ?? []];
+    return this.diagnosticsData().diagnostics;
   }
+
+  private diagnosticsData(): NonNullable<ProblemPanel["allCache"]> {
+    const external = this.result?.diagnostics;
+    if (this.allCache?.builtin === this.builtin && this.allCache.external === external) return this.allCache;
+    const diagnostics = [...this.builtin, ...external ?? []].filter(diagnostic => !isVerilatorExitSummary(diagnostic));
+    this.allCache = {
+      builtin: this.builtin,
+      external,
+      diagnostics,
+      counts: severityCounts(diagnostics),
+      environment: diagnostics.filter(isEnvironmentDiagnostic).length,
+      needsConfiguration: diagnostics.some(needsConfiguration),
+      labels: fileLabels(diagnostics.map(item => item.file)),
+    };
+    return this.allCache;
+  }
+}
+
+function sameDiagnostics(previous: Diagnostic[], next: Diagnostic[]): boolean {
+  return previous.length === next.length && previous.every((diagnostic, index) => diagnostic === next[index]);
 }
 
 function needsConfiguration(diagnostic: Diagnostic): boolean {
@@ -546,22 +595,9 @@ function severityCounts(diagnostics: Diagnostic[]): Record<"error" | "warning" |
   return counts;
 }
 
-function diagnosticRuleLabel(diagnostic: Diagnostic): string {
-  if (diagnostic.source === "verilator") {
-    const label = VERILATOR_RULE_LABELS[diagnostic.ruleId.replace(/^VERILATOR-/, "")];
-    if (label) return label;
-    if (/^Exiting due to/i.test(diagnostic.message)) return "检查因错误停止";
-    if (/cannot find file containing|undefined module|module not found/i.test(diagnostic.message)) return "缺少模块定义";
-    if (/include file.*not found|cannot open.*include|CANNOTOPEN|INCLUDE/i.test(diagnostic.message)) return "include 文件缺失";
-    if (/top-level module|TOPLEVEL/i.test(diagnostic.message)) return "无法确定顶层";
-    if (/cannot find.*(?:library|package)/i.test(diagnostic.message)) return "VHDL library／package 缺失";
-    return diagnostic.message;
-  }
-  if (diagnostic.source === "ghdl") {
-    if (/unit\s+"[^"]+"\s+not found in library/i.test(diagnostic.message)) return "VHDL 依赖单元缺失";
-    return "VHDL 语法或语义检查";
-  }
-  return diagnostic.message;
+function diagnosticHoverMessage(diagnostic: Diagnostic): string {
+  const display = diagnosticDisplayMessage(diagnostic);
+  return isUnclassifiedDisplayMessage(display) ? `${display}\n原始诊断：${diagnostic.message}` : display;
 }
 
 function severityRank(severity: string): number {
@@ -602,7 +638,7 @@ function fileLabels(files: string[]): Map<string, string> {
   return labels;
 }
 
-function diagnosticGroup(className: string, title: string, rows: () => HTMLButtonElement[], onJump?: () => void): ProblemGroupElement {
+function diagnosticGroup(className: string, title: string, items: Diagnostic[], rows: ProblemRows, onJump?: () => void): ProblemGroupElement {
   const details = document.createElement("details") as ProblemGroupElement;
   details.className = `problem-group ${className}`;
   const summary = document.createElement("summary");
@@ -614,23 +650,21 @@ function diagnosticGroup(className: string, title: string, rows: () => HTMLButto
   summary.append(glyph, titleElement);
   let jump: HTMLButtonElement | undefined;
   let rowFactory = rows;
-  let rowElements: HTMLButtonElement[] = [];
+  let diagnostics = items;
   let loaded = false;
   let offset = 0;
   let loadMore: HTMLButtonElement | undefined;
   let observer: IntersectionObserver | undefined;
 
-  const appendBatch = () => {
-    for (const row of rowElements.slice(offset, offset + 500)) details.insertBefore(row, loadMore ?? null);
-    offset = Math.min(offset + 500, rowElements.length);
+  const syncLoadMore = () => {
     loadMore?.remove();
     observer?.disconnect();
-    const remaining = rowElements.length - offset;
+    const remaining = diagnostics.length - offset;
     if (!remaining) {
       loadMore = undefined;
       return;
     }
-    loadMore = button(`继续加载（剩余 ${remaining} 条）`, appendBatch, "chevron-down");
+    loadMore = button(`继续加载（剩余 ${remaining} 条）`, () => appendBatch(), "chevron-down");
     loadMore.className = "problem-empty problem-load-more";
     details.append(loadMore);
     if (typeof IntersectionObserver !== "undefined") {
@@ -641,7 +675,52 @@ function diagnosticGroup(className: string, title: string, rows: () => HTMLButto
     }
   };
 
-  details.update = (nextTitle, nextRows, onJump) => {
+  const appendBatch = (limit = 500) => {
+    const end = Math.min(offset + limit, diagnostics.length);
+    while (offset < end) {
+      details.insertBefore(rowFactory(diagnostics[offset]), loadMore ?? null);
+      offset++;
+    }
+    syncLoadMore();
+  };
+
+  const updateRows = (nextItems: Diagnostic[]) => {
+    const previousItems = diagnostics;
+    const loadedRows = Math.min(offset, nextItems.length);
+    let loadedItemsUnchanged = loadedRows === offset;
+    for (let index = 0; loadedItemsUnchanged && index < loadedRows; index++) loadedItemsUnchanged = previousItems[index] === nextItems[index];
+    if (loadedItemsUnchanged) {
+      diagnostics = nextItems;
+      syncLoadMore();
+      return;
+    }
+    const previousRows = [...details.children].filter((child): child is HTMLButtonElement => child.classList.contains("problem-row"));
+    const available = new Map<string, HTMLButtonElement[]>();
+    for (const [index, row] of previousRows.entries()) {
+      const key = diagnosticFingerprint(previousItems[index]);
+      const matches = available.get(key) ?? [];
+      matches.push(row);
+      available.set(key, matches);
+    }
+    const desired: HTMLButtonElement[] = [];
+    for (let index = 0; index < loadedRows; index++) {
+      const item = nextItems[index];
+      const row = available.get(diagnosticFingerprint(item))?.shift() ?? rowFactory(item);
+      desired.push(row);
+    }
+    const retained = new Set(desired);
+    for (const row of previousRows) if (!retained.has(row)) row.remove();
+    let reference = summary.nextSibling;
+    for (const row of desired) {
+      if (row === reference) reference = reference.nextSibling;
+      else details.insertBefore(row, reference);
+    }
+    diagnostics = nextItems;
+    offset = loadedRows;
+    syncLoadMore();
+  };
+
+  details.update = (nextTitle, nextItems, nextRows, onJump) => {
     titleElement.textContent = nextTitle;
     rowFactory = nextRows;
     if (onJump) {
@@ -662,14 +741,8 @@ function diagnosticGroup(className: string, title: string, rows: () => HTMLButto
       jump?.remove();
       jump = undefined;
     }
-    if (loaded) {
-      offset = 0;
-      for (const child of [...details.children]) if (child !== summary) child.remove();
-      loadMore = undefined;
-      observer?.disconnect();
-      rowElements = rowFactory();
-      appendBatch();
-    }
+    if (loaded) updateRows(nextItems);
+    else diagnostics = nextItems;
   };
   details.dispose = () => {
     observer?.disconnect();
@@ -679,12 +752,11 @@ function diagnosticGroup(className: string, title: string, rows: () => HTMLButto
     setIcon(glyph, details.open ? "chevron-down" : "chevron-right");
     if (details.open && !loaded) {
       loaded = true;
-      rowElements = rowFactory();
       appendBatch();
     }
   });
   details.append(summary);
-  details.update(title, rows, onJump);
+  details.update(title, items, rows, onJump);
   return details;
 }
 

@@ -41,6 +41,14 @@ export function findInstancesOf(
   return sites;
 }
 
+export interface DefinitionCandidate {
+  file: string;
+  line: number;
+  recommended?: boolean;
+  match?: "match" | "mismatch" | "unknown";
+  reason?: string;
+}
+
 export interface TreeNode {
   /** 树内唯一键：例化路径 */
   key: string;
@@ -55,7 +63,7 @@ export interface TreeNode {
   instLine?: number;
   recursive: boolean;
   problem?: string;
-  definitionCandidates?: { file: string; line: number }[];
+  definitionCandidates?: DefinitionCandidate[];
   children: TreeNode[];
 }
 

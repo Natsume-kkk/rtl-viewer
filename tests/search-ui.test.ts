@@ -68,3 +68,23 @@ it("零结果说明搜索范围，切换正则同步匹配方式与可访问状�
   expect(root.querySelector(".search-scope")?.textContent).toContain("正则文本匹配");
   expect(root.querySelector('[title="正则表达式"]')?.getAttribute("aria-pressed")).toBe("true");
 });
+
+it("大文件搜索结果按百条创建，高亮和定位随批次保留", async () => {
+  const root = document.createElement("section"), onOpen = vi.fn();
+  const highlights = Array.from({ length: 200 }, (_, index) => ({ index: index * 10, length: 1 }));
+  const matches = Array.from({ length: 250 }, (_, index) => ({ line: index + 1, column: 1, length: 1, text: "a".repeat(2000), highlights }));
+  const panel = new SearchPanel(root, { onSearch: () => [{ file: "large.v", matches }], onOpen, displayPath: file => file });
+  panel.searchAll("a");
+  await vi.waitFor(() => expect(root.querySelectorAll(".search-match")).toHaveLength(100));
+  expect(root.querySelectorAll("mark")).toHaveLength(20000);
+  expect(root.querySelector(".search-count")!.textContent).toContain("250 个命中行");
+  root.querySelector<HTMLButtonElement>(".search-load-more")!.click();
+  expect(root.querySelectorAll(".search-match")).toHaveLength(200);
+  expect(root.querySelectorAll("mark")).toHaveLength(40000);
+  root.querySelector<HTMLButtonElement>(".search-load-more")!.click();
+  expect(root.querySelectorAll(".search-match")).toHaveLength(250);
+  expect(root.querySelectorAll("mark")).toHaveLength(50000);
+  expect(root.querySelector(".search-load-more")).toBeNull();
+  root.querySelectorAll<HTMLButtonElement>(".search-match")[249].click();
+  expect(onOpen).toHaveBeenCalledWith("large.v", 250, 1, 1);
+});

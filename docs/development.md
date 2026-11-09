@@ -87,9 +87,9 @@ npm run dev
 
 `tools/windows-x64/` 保存随应用发布的 Verilator 5.050、GHDL 6.0.0 及其运行库，`tools/licenses/` 保存对应许可。开发构建直接调用该目录；`scripts/Build-Release.ps1` 通过 `bundled-tools` 特性让 `src-tauri/build.rs` 将运行文件嵌入单 exe，首次检查时按内容修订号释放到应用数据目录，不写入用户源码工程。更新工具后需通过正式入口重建并核对版本，不能用裸 `cargo build` 验收发布行为。
 
-`src-tauri/src/syntax.rs` 管理检查请求、进程、超时与取消。Verilator 使用响应文件传入当前范围内 Verilog／SystemVerilog 编译单元、配置的 include 与宏，以及按 IP／VHDL 端口和参数接口生成的临时黑盒，默认范围为当前顶层可达模块，可切换全部工程；顶层按配置覆盖、手动选择、`autoTop` 顺序确定。`src/app/syntax-stubs.ts` 负责 Verilog／VHDL 黑盒转换，保留输入输出方向和常见位宽，不编译 IP 内部实现；`vhdlStubs` 独立传给 GHDL，避免与 Verilator 的 `stubs` 混用。GHDL 根据 library、package、entity／architecture 定义及 `entity work.xxx`／component 引用进行稳定拓扑排序，循环依赖保持原顺序兜底；先分析 IP 接口声明，再逐文件分析真实源码，Stub 不计入检查文件数，并将所有相关 library 工作目录加入 `-P` 搜索路径。`src/app/syntax-options.ts` 按工程保存宏、include、library 映射和附加参数，路径在传参前解析，参数不经过 shell。Verilator 的 `PINCONNECTEMPTY` 统一降为提示，其他端口规则保持原程度；版本查询超时为 10 秒，Verilator 超时为 120 秒，GHDL 单文件超时为 60 秒；版本查询与实际检查共用取消入口，执行前到达的取消同样有效，切换工程或退出会取消任务。Windows 下版本查询和实际检查统一使用 `CREATE_NO_WINDOW`，不能只隐藏主检查进程而遗漏逐文件 GHDL 或版本查询。
+`src-tauri/src/syntax.rs` 管理检查请求、进程、超时与取消。Verilator 使用响应文件传入当前范围内 Verilog／SystemVerilog 编译单元、配置的 include 与宏，以及按 IP／VHDL 端口和参数接口生成的临时黑盒，默认范围为当前顶层可达模块，可切换全部工程；顶层按配置覆盖、手动选择、`autoTop` 顺序确定。`src/app/syntax-stubs.ts` 负责 Verilog／VHDL 黑盒转换，保留输入输出方向和常见位宽，不编译 IP 内部实现；`vhdlStubs` 独立传给 GHDL，避免与 Verilator 的 `stubs` 混用。GHDL 根据 library、package、entity／architecture 定义及 `entity work.xxx`／component 引用进行稳定拓扑排序，循环依赖保持原顺序兜底；先分析 IP 接口声明，再逐文件分析真实源码，Stub 不计入检查文件数，并将所有相关 library 工作目录加入 `-P` 搜索路径。`src/app/syntax-options.ts` 按工程保存宏、include、library 映射和附加参数，路径在传参前解析，参数不经过 shell。Verilator 的 `PINCONNECTEMPTY` 统一降为提示，其他端口规则保持原程度；桌面与 Node 解析均过滤末尾 `Exiting due to … error(s)` 进程摘要，问题面板再次排除该重复项，不将其计入诊断；版本查询超时为 10 秒，Verilator 超时为 120 秒，GHDL 单文件超时为 60 秒；版本查询与实际检查共用取消入口，执行前到达的取消同样有效，切换工程或退出会取消任务。Windows 下版本查询和实际检查统一使用 `CREATE_NO_WINDOW`，不能只隐藏主检查进程而遗漏逐文件 GHDL 或版本查询。
 
-工程载入、顶层／范围切换及配置保存会自动调度外部检查，连续编辑在停顿 2 秒后复查；启动检查不展开问题面板，顶部“问题”只控制面板显示。外部检查通过隔离工作区读取工程内已打开文件的未保存快照，不写回原工程；Verilog include 同时保留原源码目录与快照目录。未打开文件仍读取磁盘。前端统一诊断位于 `src/ipc.ts`，`src/ui/problems.ts` 负责显示筛选、分组折叠、进度条与取消状态，`src/app/problem-markers.ts` 管理 Monaco 标记，`src/app/syntax-report.ts` 生成包含内置与外部诊断的 HTML／CSV。筛选只改变显示，报告始终包含当前顶层或全部工程范围内的全部诊断、实际配置、统计和后端状态。错误、警告和提示统一按文件＋规则分组并默认折叠，依赖缺失、重复定义和 Stub 另标为分析环境；常见 Verilator 规则在组标题显示中文摘要，原始英文和规则 ID 保留在明细、悬停与报告中。重名文件只增加最短区分目录。分组按诊断指纹协调更新，未变化组复用 DOM，变化组才更新明细；自动复查保留展开状态、滚动位置和焦点。大组展开按 500 条一批生成，滚动到末尾自动继续直到全部结果，不使用结果截断提示。单文件 Monaco 标记最多 500 条，后端最多保留 5000 条诊断；截断前先收集并排序，不能在排序前按到达顺序丢弃晚期错误。内置队列完成后才允许导出，CSV 在诊断表后附加后端、配置、统计和过期状态。
+工程载入、顶层／范围切换及配置保存会自动调度外部检查，连续编辑在停顿 2 秒后复查；启动检查不展开问题面板，顶部“问题”只控制面板显示。外部检查通过隔离工作区读取工程内已打开文件的未保存快照，不写回原工程；Verilog include 同时保留原源码目录与快照目录。未打开文件仍读取磁盘。前端统一诊断位于 `src/ipc.ts`，`src/ui/problems.ts` 负责显示筛选、分组折叠、进度条与取消状态，`src/app/problem-markers.ts` 管理 Monaco 标记，`src/app/syntax-report.ts` 生成包含内置与外部诊断的 HTML／CSV。筛选只改变显示，报告始终包含当前顶层或全部工程范围内的全部诊断、实际配置、统计和后端状态。错误、警告和提示统一按文件＋规则分组并默认折叠，依赖缺失、重复定义和 Stub 另标为分析环境；常见 Verilator 规则及 GHDL 缺分号、case 分支不完整、声明缺失、类型不匹配、端口不可赋值和重复声明在组标题与明细显示具体中文原因，标识和规则 ID 保留原文；未识别消息明确标为未分类诊断，原始消息保留在筛选数据和报告中。重名文件只增加最短区分目录。分组按诊断指纹协调更新，未变化组复用 DOM，变化组才更新明细；自动复查保留展开状态、滚动位置和焦点。大组展开只创建当前 500 条明细，滚动到末尾自动继续直到全部结果，不预建整组 DOM，也不使用结果截断提示；自动复查保留已加载数量，按诊断指纹差量复用未变化行，不将大组退回首批或整组重建。文本筛选按 200 ms 去抖，Enter 立即执行。单文件 Monaco 标记最多 500 条，后端最多保留 5000 条诊断；截断前先收集并排序，不能在排序前按到达顺序丢弃晚期错误。内置队列完成后才允许导出，CSV 在诊断表后附加后端、配置、统计和过期状态。
 
 常规 Rust 测试不启动外部工具。以下命令分别显式运行开发目录和内嵌资源的真实后端检查，均覆盖 Verilog include、VHDL 标准库及诊断返回：
 
@@ -104,13 +104,13 @@ pwsh -NoProfile -Command "& './scripts/Invoke-Cargo.ps1' -CargoArgs 'test','--lo
 
 `src/analysis/facts.ts` 统一生成轻量文件事实：物理行、代码行、纯注释行、行内注释行、空白行、注释比例、行宽／Tab／行尾空白、定义、设计单元作用域、过程、敏感列表、赋值、分支、例化端口连接、声明位宽和检查边界。过程、赋值、`case`、声明、端口与参数保留源码偏移对应的作用域，同一行多个设计单元也不能只靠行号归并。解析器为 Verilog／VHDL 端口和参数保留真实声明行，非 ANSI 端口还会从模块体声明补齐方向和位宽，命名规则不得再回退写死为文件第 1 行。`case` 事实支持单行写法、常量参数与表达式、`begin...end` 和嵌套分支后的标签边界、VHDL `=>` 标签及枚举值，并记录各分支目标、default 和可证明的完整覆盖；条件覆盖按目标拆分普通条件与 `case` 分支，不能只凭 default 判为完整。边沿签名按匹配偏移保存作用域，连续赋值保留 RHS 引用，SystemVerilog `logic` 纳入声明。复位只从条件与敏感列表中的完整标识符识别，不按赋值文本中的名称子串猜测。`instanceReads` 复用 `parseFileDetail` 的端口连接，冗余声明判断同时纳入连接、敏感列表和条件使用，避免 Wrapper 误报。过程范围与轻量赋值扫描统一复用 `src/parser/procedural.ts`，复杂更新值推导由 `src/analysis/process.ts` 负责，不再由每条规则独立猜测；`src/analysis/facts.ts` 不依赖跨层信号流。注释比例按“纯注释行＋行内注释行”除以“代码行＋纯注释行＋行内注释行”计算，混合行同时计入代码和注释；工程总比例分别累加分子与分母，不平均各文件百分比。
 
-`src/app/facts-scheduler.ts` 在工程结构载入后按文件调度，当前文件优先。`src/analysis/facts-worker.ts` 在独立 Worker 中计算内容摘要、文件事实、通用／GJB 规则和去重，前台只接收结果，按动画帧合并刷新；`src/analysis/project-rules.ts` 在队列完成或单文件刷新结束时合并跨文件例化与参数诊断，冲突定义不猜绑定。过程分析边界生成 `ANALYSIS-BOUNDARY`，Worker 失败生成 `ANALYSIS-FAILED`，不得删除旧结果后冒充无问题；后台队列中的刷新失败必须恢复剩余文件分析。界面运行状态同时使用 `factsScheduler.running`、刷新定时器和队列计数，完成、失败与恢复均触发刷新，不能只靠旧计数允许导出。隐藏面板不重建 DOM，统计孙级节点仅在展开时物化。编辑刷新、取消、切换工程或退出会终止旧 Worker，避免旧任务继续占用资源。统计、诊断和外部检查默认限定当前顶层可达模块，切换顶层或全部工程会同步更新队列和旧结果状态。结果不保存整份源码或语法树，只保留结构事实、诊断与内容摘要。相关回归为 `tests/facts.test.ts` 与 `tests/facts-scheduler.test.ts`，构建需确认独立 `facts-worker` 产物。
+`src/app/facts-scheduler.ts` 在工程结构载入后按文件调度，当前文件优先。`src/analysis/facts-worker.ts` 在独立 Worker 中计算内容摘要、文件事实、通用／GJB 规则和去重；前台结果与进度按 250 ms 时间窗合并刷新，队列完成立即刷新，问题面板复用未变化的诊断视图与分组 DOM，Monaco 仅在诊断版本、范围或过期状态变化时重算标记；`src/analysis/project-rules.ts` 在队列完成或单文件刷新结束时合并跨文件例化与参数诊断，冲突定义不猜绑定。过程分析边界生成 `ANALYSIS-BOUNDARY`，Worker 失败生成 `ANALYSIS-FAILED`，不得删除旧结果后冒充无问题；后台队列中的刷新失败必须恢复剩余文件分析。界面运行状态同时使用 `factsScheduler.running`、刷新定时器和队列计数，完成、失败与恢复均触发刷新，不能只靠旧计数允许导出。隐藏面板不重建 DOM，统计孙级节点仅在展开时物化。编辑刷新、取消、切换工程或退出会终止旧 Worker，避免旧任务继续占用资源。统计、诊断和外部检查默认限定当前顶层可达模块，切换顶层或全部工程会同步更新队列和旧结果状态。结果不保存整份源码或语法树，只保留结构事实、诊断与内容摘要。相关回归为 `tests/facts.test.ts` 与 `tests/facts-scheduler.test.ts`，构建需确认独立 `facts-worker` 产物。
 
 ## 通用规则与统计
 
 `src/analysis/general-rules.ts` 消费共享事实，输出统一 `RuleDiagnostic`。当前实现 Verilog／VHDL 各 7 条风格规则和 9 条可综合性规则，全部随事实队列执行。多驱动按设计单元比较过程与连续赋值中的完整简单标识符，位选和局部对象不按模块级完整信号合并；条件覆盖按赋值目标和互补条件路径判断，不能用其他目标的无条件赋值掩盖缺失路径；`case` 还要求每个分支均给目标赋值，default 只覆盖其自身分支，完整枚举必须有可证明的有限范围。复位只识别定义的条件分支，不把名称搜索当作完整语义证明。
 
-`src/ui/stats.ts` 复用事实及内置／外部诊断生成工程汇总、结构统计与文件明细，合计固定在表头下、明细前，支持当前顶层／全部工程范围、模块拓扑展开、简短文件列表排序、定义行定位和按严重程度或文件进入显示筛选；拓扑保留展开状态，长路径仅在悬停提示中显示，未分析文件明确标记待分析。`src/ui/problems.ts` 合并诊断并提供程度、来源、文件和文本显示筛选，提示与 Stub 分组折叠，筛选不改变检查集合。对应回归为 `tests/general-rules.test.ts`、`tests/stats.test.ts`、`tests/problems.test.ts` 和 `tests/bottom-panels.test.ts`。
+`src/ui/stats.ts` 复用事实及内置／外部诊断生成工程汇总、结构统计与文件明细，合计固定在表头下、明细前，支持当前顶层／全部工程范围、模块拓扑展开、简短文件列表排序、定义行定位和按严重程度或文件进入显示筛选；拓扑引用不变时复用节点 DOM，文件列表按 200 行分批，拓扑保留展开状态，长路径仅在悬停提示中显示；按节点类型与失败诊断区分待分析、分析失败、IP／原语短标记和未解析，黑盒完整说明保留在悬停提示中，失败入口可直接筛选对应文件诊断。`src/ui/problems.ts` 合并诊断并提供程度、来源、文件和文本显示筛选，提示与 Stub 分组折叠，筛选不改变检查集合。`src/app/diagnostic-display.ts` 统一格式化 Verilator／GHDL 消息，问题面板与 Monaco 共用；位宽类消息按实际句式转换期望位宽、实际位宽、操作数角色、拼接／复制未定宽和未使用位范围，不再机械截取 `VARREF` 片段；保留端口、信号和规则 ID，未知消息提供悬停原文，面板失败摘要默认中文并保留原始错误悬停。文本筛选同时查询中文和原始消息，报告仍输出原始诊断。对应回归为 `tests/general-rules.test.ts`、`tests/stats.test.ts`、`tests/problems.test.ts`、`tests/diagnostic-display.test.ts`、`tests/problem-markers.test.ts` 和 `tests/bottom-panels.test.ts`。
 
 `src/analysis/gjb-catalog.ts` 收录 GJB 10157 全部 110 条与 GJB 9765 全部 81 条作为规则依据；`src/analysis/gjb-rules.ts` 当前分别自动检查 87 和 56 条，按语言全部执行。字面量只检查非法数字或可能截断，反馈区分 Verilog 大小写和真实位选，函数区分局部与全局赋值且递归只检查实现体，状态机规则先要求时序 `case` 证据；异步复位边沿不计入时钟集合，行波时钟只在来源由时序过程驱动时报警。VHDL 并发语句不按文本行号判断先后，只有过程局部变量检查首次赋值前使用。`src/analysis/width.ts` 只对简单信号、位选／切片、拼接和定宽字面量提供确定宽度，未知类型和表达式不报警；跨文件例化与同名参数由 `src/analysis/project-rules.ts` 检查。需要顶层约束、完整类型推导、完整 CDC、器件资源或人工设计判断的条款不自动判定，未实现条款不显示为人工任务，也不计算合规率。`src/analysis/rule-preferences.ts` 使用固定全量配置和空格 Tab 约定合并通用与 GJB 重复问题，行宽去重不受各规则定位列不同的影响，不再提供规则执行配置。相关回归为 `tests/gjb-rules.test.ts`、`tests/rule-regressions.test.ts`、`tests/project-rules.test.ts` 和 `tests/rule-preferences.test.ts`。
 
@@ -160,7 +160,7 @@ release/     便携 exe、CLI 与检查工具交付物（Build-Release.ps1 生�
 
 ### 解析与层级
 
-解析入口在 [src/parser/](../src/parser/)，采用文本级扫描。`scanStructure` 提取定义名与例化边，`parseFile` 按需补端口，`parseFileDetail` 按需补端口连接；扩展语法前先补失败测试，不在打开工程时全量解析。
+解析入口在 [src/parser/](../src/parser/)，采用文本级扫描。`scanStructure` 提取定义名与例化边，`parseFile` 按需补端口，`parseFileDetail` 按需补端口连接；扩展语法前先补失败测试，不在打开工程时全量解析。冷扫描通过 `src/app/structure-scanner.ts` 将逐文件 `scanStructure` 放入独立可终止 Worker，读取、解析结果仍按工程代际提交，完成、取消和切换工程均释放 Worker；对应回归为 `tests/project-scanner.test.ts` 与 `tests/structure-scanner.test.ts`，构建需确认独立 `structure-worker` 产物。
 
 以下限制属于现有解析范围，扩展前需评估索引、定位与信号分析的共同影响：
 
@@ -183,7 +183,7 @@ release/     便携 exe、CLI 与检查工具交付物（Build-Release.ps1 生�
 
 冷扫描与目录增量检查共用 `src/app/project-files.ts` 的 IP 目录及明确网表筛选；文件名规则在读取前应用，导出命令头只检查前 16 KiB 的设计单元前缀，不按原语数量推断。新增 XCI 或已索引文件变成明确网表时退出索引，已打开的编辑缓冲区保留；增量检查按 mtime 记忆被排除的文件头，版本变化后重新判定，换工程时清空。回归见 `tests/project-scanner.test.ts`、`tests/watcher.test.ts`。
 
-VHDL 结构元数据显式保留 entity 和 architecture 身份。`src/model/index.ts` 的 `bindModuleParts` 由索引、层级和信号模型共同使用：唯一 entity 提供定义与端口，唯一 architecture 提供例化；重复定义或多个实现保留冲突边界。用户通过右键明确选择后，`selectModuleParts` 只使用指定实现，选择按工程保存到 `rtl-viewer.definitionPreferences.<工程路径>`，层级、导航、统计与外部检查文件范围同步，不按日期或路径猜选。层级的被例化集合只来自有效绑定，冲突实现不能影响其他模块的顶层判断；详细信号解析仍保持按需。回归见 `tests/hierarchy.test.ts`、`tests/ui-tree.test.ts`、`tests/module-metadata.test.ts`、`tests/signal-flow.test.ts`。
+VHDL 结构元数据显式保留 entity 和 architecture 身份。`src/model/index.ts` 的 `bindModuleParts` 由索引、层级和信号模型共同使用：唯一 entity 提供定义与端口，唯一 architecture 提供例化；重复定义或多个实现保留冲突边界。用户通过可点击冲突徽章或右键明确选择后，节点保留可点击的“多定义”标识以便改选；`selectModuleParts` 只使用指定实现，选择按工程保存到 `rtl-viewer.definitionPreferences.<工程路径>`，层级、导航、统计与外部检查文件范围同步，不按日期或路径猜选。`src/app/definition-choices.ts` 在打开候选菜单时读取当前缓冲区或扫描缓存，以例化命名端口／参数收窄候选；唯一完整匹配且其他候选均可排除时才推荐，位置连接、多个匹配或未知接口不推荐；候选菜单分别提供定义行预览和绑定操作，预览不改变选择，绑定始终由用户确认。层级的被例化集合只来自有效绑定，冲突实现不能影响其他模块的顶层判断；详细信号解析仍保持按需。回归见 `tests/hierarchy.test.ts`、`tests/ui-tree.test.ts`、`tests/definition-choices.test.ts`、`tests/module-metadata.test.ts`、`tests/signal-flow.test.ts`。
 
 Rust 扫描结果可携带 `issues`，目录读取失败和深度上限都显式报告。前端扫描合并逐文件读取／解析错误，通过完成回调交给界面显示部分载入摘要，不中断其他文件；旧请求的错误与结果同样受代际检查约束。
 
@@ -209,7 +209,7 @@ Rust 扫描结果可携带 `issues`，目录读取失败和深度上限都显式
 
 “查找同名文本”沿用 `rtl.find-references` 动作 ID 和 `Shift+F12`，仅修改用户可见名称，仍使用字面整词搜索；匹配方式和扫描范围在结果面板中显式展示。`PathBreadcrumb` 接收当前工程根，以 Windows 路径身份显示工程相对路径，完整路径操作仍使用原始目标，工程外文件单独标记。回归见 `tests/search-ui.test.ts` 和 `tests/breadcrumb.test.ts`。
 
-`src/app/project-search.ts` 管理单次查询 Worker，`src/model/search-worker.ts` 执行匹配与高亮；`src/ui/search.ts` 仅渲染返回区间，不在主线程执行用户正则。查询替换、面板收起、超时和异常均终止 Worker；界面按请求序号丢弃旧结果。单次预算 2 秒，最多 500 行，每行预览 2000 字符、200 处高亮。回归入口为 `tests/project-search.test.ts`、`tests/search-ui.test.ts` 和 `tests/search-history.test.ts`。
+`src/app/project-search.ts` 管理单次查询 Worker，`src/model/search-worker.ts` 执行匹配与高亮；`src/ui/search.ts` 仅渲染返回区间，不在主线程执行用户正则，每个文件按 100 行一批创建结果与高亮。查询替换、面板收起、超时和异常均终止 Worker；界面按请求序号丢弃旧结果。单次预算 2 秒，最多 500 行，每行预览 2000 字符、200 处高亮。回归入口为 `tests/project-search.test.ts`、`tests/search-ui.test.ts` 和 `tests/search-history.test.ts`。
 
 `src/file-path.ts` 统一 Windows 路径身份，标签、共享模型、索引查找与保存队列使用相同规则，展示保留原路径。保存按目标文件和共享模型串行，模型迁移属于保存操作；关闭等待保存完成，失败保留标签。watcher 回填前检查缓存基准和保存状态，显式重载另检查模型版本与保存修订，模块元数据缓存同时检查模型身份和版本。回归入口为 `tests/tabs.test.ts`、`tests/watcher.test.ts`、`tests/definition-models.test.ts` 和 `tests/module-metadata.test.ts`。
 

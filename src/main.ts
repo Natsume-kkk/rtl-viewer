@@ -10,6 +10,7 @@ import type { Hierarchy, TreeNode, InstanceSite } from "./model/hierarchy";
 import { extractOutline, breadcrumbAt, OUTLINE_KIND_LABELS } from "./model/outline";
 import type { OutlineItem } from "./model/outline";
 import { createProjectSearch } from "./app/project-search";
+import { analyzeDefinitionChoices } from "./app/definition-choices";
 import { scanStructure } from "./parser";
 import type { ModuleInfo, IpInfo } from "./parser";
 import { openFolderDialog, openFileDialog, pathExists, showInFolder, isDirectory, normalizePath, runSyntaxCheck, cancelSyntaxCheck, saveReportDialog, writeFile, type SyntaxCheckResult } from "./ipc";
@@ -43,6 +44,7 @@ import { verilogStub, vhdlStub } from "./app/syntax-stubs";
 import { loadSyntaxOptions, saveSyntaxOptions, configuredPath, validateSyntaxOptions } from "./app/syntax-options";
 import { showSyntaxOptionsDialog } from "./ui/syntax-options";
 import { createFactsScheduler } from "./app/facts-scheduler";
+import { createCoalescedRefresh } from "./app/coalesced-refresh";
 import { StatsPanel } from "./ui/stats";
 import { emptySyntaxCheckOptions } from "./ipc";
 import { createExternalWatcher, type CachedFile } from "./app/watcher";
@@ -221,8 +223,9 @@ const tree = new HierarchyTree(treeRootEl, {
     void factsScheduler.start();
     scheduleProjectSyntaxCheck();
   },
+  onDefinitionChoices: node => analyzeDefinitionChoices(node, fileContent),
   onSelectDefinition: (node, file) => selectDefinition(node.moduleName, file),
-  onOpenFile: (path) => void navigateTo(path),
+  onOpenFile: (path, line) => void navigateTo(path, line),
   onFindInstances: (name) => {
     document.getElementById("ref-panel")?.remove();
     const sites = findInstancesOf(state.structures, name);
@@ -323,12 +326,23 @@ function updateProblemIndicator(state: ProblemIndicator): void {
   button.setAttribute("aria-label", `问题，${status}${detailed ? `，${counts}` : ""}`);
 }
 
-function refreshProblemMarkers(): void {
+let markerFactsRevision = -1;
+let markerExternal: SyntaxCheckResult | undefined;
+let markerStale: boolean | undefined;
+let markerScope: "top" | "project" | undefined;
+let markerTopFiles: Set<string> | undefined;
+function refreshProblemMarkers(force = false): void {
+  if (!force && markerFactsRevision === factsScheduler.diagnosticsRevision && markerExternal === lastSyntaxResult && markerStale === problemPanel.isStale && markerScope === analysisScope && markerTopFiles === activeTopFiles) return;
   const models = new Map<string, { path: string; model: import("./editor/monaco").monaco.editor.ITextModel }>();
   for (const group of groups) for (const tab of group.tabs.allTabs) {
     if (tab.path) models.set(tab.uriKey, { path: tab.path, model: tab.model });
   }
   syncProblemMarkers(models.values(), (lastSyntaxResult?.diagnostics ?? []).filter(item => inAnalysisScope(item.file)), problemPanel.isStale, problemPanel.builtinDiagnostics);
+  markerFactsRevision = factsScheduler.diagnosticsRevision;
+  markerExternal = lastSyntaxResult;
+  markerStale = problemPanel.isStale;
+  markerScope = analysisScope;
+  markerTopFiles = activeTopFiles;
 }
 
 async function configureSyntaxCheck(): Promise<void> {
@@ -772,7 +786,7 @@ const workspace = createEditorWorkspace([editor, editor2], {
     const pos = tab && group.editor.getPosition();
     if (pos) statusbar.setPosition(`行 ${pos.lineNumber}，列 ${pos.column}`);
     refreshOutline();
-    refreshProblemMarkers();
+    refreshProblemMarkers(true);
   },
   onContentChange: active => { markResultsStale(); if (active) { refreshOutline(); scheduleFactsRefresh(); scheduleProjectSyntaxCheck(2000); } },
   onCursorChange: line => {
@@ -788,12 +802,9 @@ const workspace = createEditorWorkspace([editor, editor2], {
 });
 const { groups, activeGroup, focusGroup, navigateTo, navBack, navForward,
   openInOtherGroup, openFile: openProjectFile } = workspace;
-let factsViewFrame = 0;
+const factsViewRefresh = createCoalescedRefresh(() => refreshFactsViews());
 function refreshFactsViews(): void {
-  if (factsViewFrame) {
-    cancelAnimationFrame(factsViewFrame);
-    factsViewFrame = 0;
-  }
+  factsViewRefresh.cancel();
   const files = analysisHdlFiles();
   const facts = factsScheduler.values().filter(item => inAnalysisScope(item.file));
   const diagnostics = factsScheduler.diagnosticValues().filter(item => inAnalysisScope(item.file));
@@ -813,14 +824,6 @@ function refreshFactsViews(): void {
     topology: activeTopology,
   });
   refreshProblemMarkers();
-}
-
-function queueFactsViewsRefresh(): void {
-  if (factsViewFrame) return;
-  factsViewFrame = requestAnimationFrame(() => {
-    factsViewFrame = 0;
-    refreshFactsViews();
-  });
 }
 
 function setAnalysisScope(scope: "top" | "project"): void {
@@ -849,9 +852,9 @@ function projectHdlFiles(): string[] {
 const factsScheduler = createFactsScheduler({
   files: () => analysisHdlFiles().map(file => ({ file, content: fileContent(file) ?? state.contents.get(file)!.content })),
   priorityFile: () => activeGroup().tabs.activeTab?.path,
-  result: queueFactsViewsRefresh,
-  progress: (done, total) => { factsDone = done; factsTotal = total; queueFactsViewsRefresh(); },
-  complete: queueFactsViewsRefresh,
+  result: factsViewRefresh.schedule,
+  progress: (done, total) => { factsDone = done; factsTotal = total; factsViewRefresh.schedule(); },
+  complete: factsViewRefresh.flush,
 });
 let factsRefreshTimer: number | undefined;
 function scheduleFactsRefresh(): void {
@@ -1139,7 +1142,7 @@ const projectScanner = createProjectScanner({
     await appAlert(`打开工程失败：${String(error)}`);
   },
 });
-window.addEventListener("pagehide", () => { cancelAnimationFrame(factsViewFrame); projectScanner.cancel(); watcher.stop(); cancelProjectSyntaxCheck(); factsScheduler.dispose(); }, { once: true });
+window.addEventListener("pagehide", () => { factsViewRefresh.cancel(); projectScanner.cancel(); watcher.stop(); cancelProjectSyntaxCheck(); factsScheduler.dispose(); }, { once: true });
 
 // ---------- 树节点打开 ----------
 

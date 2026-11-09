@@ -616,6 +616,7 @@ fn parse_verilator_output(output: &str, root: &Path, diagnostics: &mut Vec<Synta
         let rule = header.split_once('-').map(|(_, tag)| tag).unwrap_or("GENERAL");
         let severity = if rule == "PINCONNECTEMPTY" { "info" } else { severity };
         let body = line[header_end + 1..].trim();
+        if body.starts_with("Exiting due to ") && body.ends_with(" error(s)") { continue; }
         let (file, line_number, column, message) = split_location(body)
             .map(|(file, line, column, message)| (reported_path(root, &file), line, column, message))
             .unwrap_or_else(|| (String::new(), 1, 1, body.to_owned()));
@@ -933,6 +934,9 @@ mod tests {
         assert_eq!(diagnostics.last().unwrap().severity, "info");
         parse_verilator_output("%Warning-PINMISSING: D:/project/top.sv:4:8: Cell has missing pin: 'empty'\n", &root, &mut diagnostics);
         assert_eq!(diagnostics.last().unwrap().severity, "warning");
+        let before = diagnostics.len();
+        parse_verilator_output("%Error: Exiting due to 4 error(s)\n", &root, &mut diagnostics);
+        assert_eq!(diagnostics.len(), before);
     }
 
     #[test]

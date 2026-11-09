@@ -17,7 +17,7 @@ it("诊断按文件落到 Monaco，过期结果清除标记", () => {
   syncProblemMarkers([{ path: "D:/project/a.sv", model: model as never }], [diagnostic], false);
   expect(mocks.setModelMarkers).toHaveBeenCalledOnce();
   expect(mocks.setModelMarkers.mock.calls[0][2]).toHaveLength(1);
-  expect(mocks.setModelMarkers.mock.calls[0][2][0]).toMatchObject({ startLineNumber: 2, startColumn: 3, severity: 4 });
+  expect(mocks.setModelMarkers.mock.calls[0][2][0]).toMatchObject({ startLineNumber: 2, startColumn: 3, severity: 4, message: "VERILATOR-TEST: Verilator 未分类诊断（悬停查看原文）\n原始诊断：example" });
   syncProblemMarkers([{ path: "D:/project/a.sv", model: model as never }], [diagnostic], true);
   expect(mocks.setModelMarkers.mock.calls[1][2]).toHaveLength(0);
 });

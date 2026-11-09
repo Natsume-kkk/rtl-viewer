@@ -38,6 +38,52 @@ describe("HierarchyTree", () => {
     document.querySelector(".ctx-menu")?.remove();
   });
 
+  it("已选定的多定义模块保留标识和重新选择入口", () => {
+    const onSelectDefinition = vi.fn();
+    const selected = node({ key: "core", label: "core", moduleName: "core", file: "new/core.v", definitionCandidates: [{ file: "old/core.v", line: 1 }, { file: "new/core.v", line: 1 }] });
+    const { rootEl, tree } = makeTree({ onOpen: vi.fn(), onSelectDefinition });
+    tree.render({ tops: [selected], topCandidates: ["core"], unused: [] });
+    const badge = rootEl.querySelector<HTMLButtonElement>("button.tree-badge")!;
+    expect(badge.textContent).toBe("多定义");
+    expect(badge.title).toBe("查看候选并重新选择定义");
+    badge.click();
+    const items = [...document.querySelectorAll<HTMLButtonElement>(".ctx-item")];
+    expect(items.map(item => item.textContent)).toEqual(["查看此定义：core.v（old）", "使用此定义：core.v（old）", "查看此定义：core.v（new）", "使用此定义：core.v（new）"]);
+    expect(items[1].getAttribute("aria-checked")).toBe("false");
+    expect(items[3].getAttribute("aria-checked")).toBe("true");
+    items[1].click();
+    expect(onSelectDefinition).toHaveBeenCalledExactlyOnceWith(selected, "old/core.v");
+  });
+
+  it("定义冲突徽章提供候选预览和选择入口，预览不改变绑定", () => {
+    const onSelectDefinition = vi.fn();
+    const onOpenFile = vi.fn();
+    const onDefinitionChoices = vi.fn(() => [
+      { file: "new/core.v", line: 1, recommended: true, match: "match" as const, reason: "例化端口／参数仅与此定义完全匹配" },
+      { file: "old/core.v", line: 1, match: "mismatch" as const, reason: "缺少端口：data" },
+    ]);
+    const selected = node({ key: "top/u_core", label: "u_core", moduleName: "core", kind: "unresolved", problem: "存在多个同名定义", instFile: "top.v", instLine: 2, definitionCandidates: [{ file: "old/core.v", line: 1 }, { file: "new/core.v", line: 1 }] });
+    const { rootEl, tree } = makeTree({ onOpen: vi.fn(), onOpenFile, onDefinitionChoices, onSelectDefinition });
+    tree.render({ tops: [node({ key: "top", label: "top", moduleName: "top", children: [selected] })], topCandidates: ["top"], unused: [] });
+    const badge = rootEl.querySelector<HTMLButtonElement>("button.tree-badge")!;
+    expect(badge.textContent).toBe("定义冲突");
+    expect(badge.title).toBe("分析候选并选择要使用的定义");
+    badge.click();
+    expect(onDefinitionChoices).toHaveBeenCalledExactlyOnceWith(selected);
+    expect(onSelectDefinition).not.toHaveBeenCalled();
+    const items = [...document.querySelectorAll<HTMLButtonElement>(".ctx-item")];
+    expect(items.map(item => item.textContent)).toEqual(["查看此定义：core.v（new）", "使用此定义：core.v（new）（推荐）", "查看此定义：core.v（old）", "使用此定义：core.v（old）"]);
+    expect(items[0].title).toContain("不改变当前绑定");
+    expect(items[1].title).toContain("例化端口／参数仅与此定义完全匹配");
+    expect(items[3].title).toContain("缺少端口：data");
+    items[0].click();
+    expect(onOpenFile).toHaveBeenCalledExactlyOnceWith("new/core.v", 1);
+    expect(onSelectDefinition).not.toHaveBeenCalled();
+    badge.click();
+    document.querySelectorAll<HTMLButtonElement>(".ctx-item")[1].click();
+    expect(onSelectDefinition).toHaveBeenCalledExactlyOnceWith(selected, "new/core.v");
+  });
+
   it("同时显示实例、模块与定义文件，复用实例及同名实例不丢失身份", () => {
     const onOpen = vi.fn(), onOpenInst = vi.fn();
     const { rootEl, tree } = makeTree({ onOpen, onOpenInst });
@@ -355,5 +401,18 @@ describe("HierarchyTree", () => {
     expect(rootEl.querySelectorAll(".tree-label")).toHaveLength(1);
     // 收起后重渲染为 chevron-right
     expect(rootEl.querySelector(".tree-toggle")!.classList.contains("icon-chevron-right")).toBe(true);
+  });
+
+  it("未使用模块按二百项分批显示并保留定位", () => {
+    const onOpen = vi.fn();
+    const { rootEl, tree } = makeTree({ onOpen });
+    const unused = Array.from({ length: 250 }, (_, index) => ({ name: `unused_${index}`, file: `rtl/unused-${index}.v`, line: index + 1 }));
+    tree.render({ tops: [], topCandidates: [], unused });
+    expect(rootEl.querySelectorAll(".kind-module")).toHaveLength(200);
+    rootEl.querySelector<HTMLElement>(".tree-load-more")!.click();
+    expect(rootEl.querySelectorAll(".kind-module")).toHaveLength(250);
+    expect(rootEl.querySelector(".tree-load-more")).toBeNull();
+    rootEl.querySelectorAll<HTMLElement>(".kind-module")[249].click();
+    expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ moduleName: "unused_249", line: 250 }));
   });
 });

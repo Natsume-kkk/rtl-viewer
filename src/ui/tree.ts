@@ -1,4 +1,4 @@
-import type { Hierarchy, TreeNode } from "../model/hierarchy";
+import type { DefinitionCandidate, Hierarchy, TreeNode } from "../model/hierarchy";
 import { setIcon } from "./icons";
 import {
   copyText,
@@ -16,10 +16,12 @@ export interface TreeCallbacks {
   onRevealFile?(path: string): void;
   /** 多顶层时用户选定顶层模块 */
   onSelectTop?(name: string): void;
-  /** 点击约束文件：打开查看 */
-  onOpenFile?(path: string): void;
+  /** 打开约束文件或候选定义，可指定行号 */
+  onOpenFile?(path: string, line?: number): void;
   /** 右键「查看例化处」：列出工程内例化该模块的位置 */
   onFindInstances?(moduleName: string): void;
+  /** 打开冲突选择菜单时按需分析候选接口 */
+  onDefinitionChoices?(node: TreeNode): DefinitionCandidate[];
   /** 同名定义中明确指定一个实现 */
   onSelectDefinition?(node: TreeNode, file: string): void;
 }
@@ -97,7 +99,7 @@ export class HierarchyTree {
     title.textContent = `约束 (${files.length})`;
     box.appendChild(title);
     const ul = document.createElement("ul");
-    for (const file of files) {
+    appendTreeBatch(ul, files, file => {
       const li = document.createElement("li");
       li.className = "tree-row kind-constraint";
       li.dataset.key = `constraint/${file}`;
@@ -113,8 +115,8 @@ export class HierarchyTree {
           ...filePathMenuItems(file, this.callbacks.onRevealFile),
         ]);
       });
-      ul.appendChild(li);
-    }
+      return li;
+    });
     box.appendChild(ul);
     this.rootEl.appendChild(box);
   }
@@ -222,10 +224,24 @@ export class HierarchyTree {
     row.appendChild(label);
     // 深层行可能宽于侧栏；聚焦时把名称而非行的空白缩进滚入视口。
     row.addEventListener("focus", () => label.scrollIntoView?.({ block: "nearest", inline: "nearest" }));
-    if (node.kind === "ip" || node.problem) {
-      const badge = document.createElement("span");
+    const hasDefinitionChoices = (node.definitionCandidates?.length ?? 0) > 1;
+    if (node.kind === "ip" || node.problem || hasDefinitionChoices) {
+      const interactive = !!node.problem || hasDefinitionChoices;
+      const badge = document.createElement(interactive ? "button" : "span");
       badge.className = "tree-badge";
-      badge.textContent = node.problem ? "定义冲突" : "IP";
+      badge.textContent = node.problem ? "定义冲突" : hasDefinitionChoices ? "多定义" : "IP";
+      if (interactive) {
+        const button = badge as HTMLButtonElement;
+        button.type = "button";
+        button.title = node.problem ? "分析候选并选择要使用的定义" : "查看候选并重新选择定义";
+        button.setAttribute("aria-label", `${node.problem ? "选择" : "重新选择"} ${node.moduleName} 的定义`);
+        button.addEventListener("click", event => {
+          event.stopPropagation();
+          const rect = button.getBoundingClientRect();
+          const keyboard = event.detail === 0;
+          showCtxMenu(keyboard ? rect.left : event.clientX, keyboard ? rect.bottom : event.clientY, this.definitionMenuItems(node), button);
+        });
+      }
       row.appendChild(badge);
     }
 
@@ -254,14 +270,7 @@ export class HierarchyTree {
 
     row.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      const items: MenuItem[] = [];
-      for (const candidate of node.definitionCandidates ?? []) {
-        items.push({
-          label: `使用此定义：${definitionLabel(candidate.file, node.definitionCandidates!.map(item => item.file))}`,
-          checked: candidate.file === node.file,
-          action: () => this.callbacks.onSelectDefinition?.(node, candidate.file),
-        });
-      }
+      const items: MenuItem[] = this.definitionMenuItems(node);
       if (node.file) {
         items.push({ label: "打开定义", action: () => this.callbacks.onOpen(node) });
       }
@@ -287,6 +296,27 @@ export class HierarchyTree {
       li.appendChild(this.renderChildren(node, depth));
     }
     return li;
+  }
+
+  private definitionMenuItems(node: TreeNode): MenuItem[] {
+    const candidates = this.callbacks.onDefinitionChoices?.(node) ?? node.definitionCandidates ?? [];
+    const files = candidates.map(candidate => candidate.file);
+    return candidates.flatMap(candidate => {
+      const label = definitionLabel(candidate.file, files);
+      return [
+        {
+          label: `查看此定义：${label}`,
+          title: `${candidate.file}\n只打开源码，不改变当前绑定`,
+          action: () => this.callbacks.onOpenFile?.(candidate.file, candidate.line),
+        },
+        {
+          label: `使用此定义：${label}${candidate.recommended ? "（推荐）" : ""}`,
+          title: `${candidate.file}${candidate.reason ? `\n${candidate.reason}` : ""}`,
+          checked: candidate.file === node.file,
+          action: () => this.callbacks.onSelectDefinition?.(node, candidate.file),
+        },
+      ];
+    });
   }
 
   private renderChildren(node: TreeNode, depth: number): HTMLUListElement {
@@ -341,7 +371,7 @@ export class HierarchyTree {
     title.textContent = `未使用 (${unused.length})`;
     box.appendChild(title);
     const ul = document.createElement("ul");
-    for (const u of unused) {
+    appendTreeBatch(ul, unused, u => {
       const li = document.createElement("li");
       li.className = "tree-row kind-module";
       li.dataset.key = `unused/${u.name}`;
@@ -384,11 +414,35 @@ export class HierarchyTree {
           ...filePathMenuItems(u.file, this.callbacks.onRevealFile),
         ]);
       });
-      ul.appendChild(li);
-    }
+      return li;
+    });
     box.appendChild(ul);
     this.rootEl.appendChild(box);
   }
+}
+
+function appendTreeBatch<T>(list: HTMLUListElement, items: T[], renderItem: (item: T) => HTMLLIElement): void {
+  let offset = 0;
+  let loadMore: HTMLLIElement | undefined;
+  const appendBatch = () => {
+    const end = Math.min(offset + 200, items.length);
+    for (const item of items.slice(offset, end)) list.insertBefore(renderItem(item), loadMore ?? null);
+    offset = end;
+    loadMore?.remove();
+    const remaining = items.length - offset;
+    if (!remaining) return;
+    loadMore = document.createElement("li");
+    loadMore.className = "tree-row tree-load-more";
+    loadMore.textContent = `继续加载（剩余 ${remaining} 项）`;
+    loadMore.tabIndex = 0;
+    loadMore.setAttribute("role", "button");
+    loadMore.addEventListener("click", appendBatch);
+    loadMore.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") appendBatch();
+    });
+    list.appendChild(loadMore);
+  };
+  appendBatch();
 }
 
 function definitionLabel(file: string, candidates: string[]): string {

@@ -66,8 +66,89 @@ it("后台进度、取消、定位和过期状态共用同一份诊断结果", (
   expect(root.querySelector(".problem-summary")!.textContent).toContain("结果可能不完整");
   panel.start();
   panel.fail(new Error("backend unavailable"));
-  expect(root.querySelector(".problem-summary")!.textContent).toContain("backend unavailable");
+  expect(root.querySelector(".problem-summary")!.textContent).toContain("后端不可用");
+  expect(root.querySelector(".problem-summary")!.textContent).not.toContain("backend unavailable");
+  expect(root.querySelector<HTMLElement>(".problem-summary")!.title).toContain("backend unavailable");
   expect(progress.hidden).toBe(true);
+});
+
+it("外部诊断明细和提示使用中文，保留标识并支持中英文筛选", async () => {
+  const { root, panel } = setup();
+  const external = result();
+  external.diagnostics = [
+    { file: "D:/project/pins.sv", line: 8, column: 3, severity: "warning", ruleId: "VERILATOR-PINMISSING", source: "verilator", message: "Cell has missing pin: 'aclen'" },
+    { file: "D:/project/missing.sv", line: 4, column: 3, severity: "error", ruleId: "VERILATOR-MODMISSING", source: "verilator", message: "Cannot find file containing module: 'missing'" },
+    { file: "D:/project/consumer.vhd", line: 8, column: 12, severity: "error", ruleId: "GHDL", source: "ghdl", message: "error: unit \"fifo_256x8\" not found in library \"work\"" },
+    { file: "D:/project/other.sv", line: 2, column: 1, severity: "warning", ruleId: "VERILATOR-OTHER", source: "verilator", message: "Unexpected token 'ready'" },
+  ];
+  panel.finish(external);
+  for (const group of root.querySelectorAll<HTMLDetailsElement>(".problem-group")) {
+    group.open = true;
+    group.dispatchEvent(new Event("toggle"));
+  }
+  const messages = [...root.querySelectorAll(".problem-message")].map(item => item.textContent);
+  expect(messages).toEqual(expect.arrayContaining([
+    "VERILATOR-PINMISSING · 例化缺少端口连接：'aclen'",
+    "VERILATOR-MODMISSING · 缺少模块定义：'missing'",
+    "GHDL · VHDL 库 \"work\" 中未找到单元 \"fifo_256x8\"",
+    "VERILATOR-OTHER · 遇到意外标记：'ready'",
+  ]));
+  expect(root.textContent).not.toContain("Cell has missing pin");
+  expect(root.textContent).not.toContain("Cannot find file containing module");
+  expect(root.textContent).not.toContain("Unexpected token");
+  for (const group of root.querySelectorAll<HTMLDetailsElement>(".problem-group")) expect(group.title).not.toContain("Cell has missing pin");
+
+  const search = root.querySelector<HTMLInputElement>('input[aria-label="搜索规则或诊断"]')!;
+  search.value = "例化缺少端口";
+  search.dispatchEvent(new Event("input"));
+  expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 4/4 条");
+  await vi.waitFor(() => expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 1/4 条"));
+  search.value = "Cell has missing pin";
+  search.dispatchEvent(new Event("input"));
+  await vi.waitFor(() => expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 1/4 条"));
+  search.value = "aclen";
+  search.dispatchEvent(new Event("input"));
+  await vi.waitFor(() => expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 1/4 条"));
+});
+
+it("GHDL 常见诊断显示具体原因，未识别消息明确标记未分类", () => {
+  const { root, panel } = setup();
+  const external = result();
+  const ghdl = (file: string, message: string) => ({ file: `D:/project/${file}.vhd`, line: 2, column: 1, severity: "error" as const, ruleId: "GHDL", source: "ghdl" as const, message });
+  external.diagnostics = [
+    ghdl("syntax", "error: missing \";\" at end of statement"),
+    ghdl("choices", "error: missing choice(s)"),
+    ghdl("unknown", "error: no declaration for \"missing_name\""),
+    ghdl("type", "error: can't match integer literal with type bit"),
+    ghdl("input", "error: port \"a\" can't be assigned"),
+    ghdl("duplicate", "error: identifier \"value\" already used for a declaration"),
+    ghdl("previous", "error: previous declaration: signal \"value\""),
+    ghdl("other", "error: custom analysis failure \"detail\""),
+    { file: "D:/project/new.sv", line: 2, column: 1, severity: "warning", ruleId: "VERILATOR-NEW", source: "verilator", message: "New backend condition 'flag'" },
+  ];
+  panel.finish(external);
+  for (const group of root.querySelectorAll<HTMLDetailsElement>(".problem-group")) {
+    group.open = true;
+    group.dispatchEvent(new Event("toggle"));
+  }
+  const messages = [...root.querySelectorAll(".problem-message")].map(item => item.textContent);
+  expect(messages).toEqual(expect.arrayContaining([
+    "GHDL · 语句末尾缺少 \";\"",
+    "GHDL · case 分支未覆盖全部可能取值",
+    "GHDL · 未找到 \"missing_name\" 的声明",
+    "GHDL · 值与类型 bit 不匹配",
+    "GHDL · 端口 \"a\" 不可赋值",
+    "GHDL · 标识符 \"value\" 已被其他声明使用",
+    "GHDL · 此前声明：信号 \"value\"",
+    "GHDL · 未分类诊断（悬停查看原文）：\"detail\"",
+    "VERILATOR-NEW · Verilator 未分类诊断（悬停查看原文）：'flag'",
+  ]));
+  expect(root.textContent).not.toContain("语法或语义");
+  expect(root.textContent).not.toContain("检查问题");
+  expect(root.textContent).not.toContain("no declaration for");
+  expect(root.textContent).not.toContain("can't be assigned");
+  const unclassifiedGroup = [...root.querySelectorAll<HTMLDetailsElement>(".problem-group")].find(group => group.title.includes("custom analysis failure"));
+  expect(unclassifiedGroup?.title).toContain("原始诊断：error: custom analysis failure");
 });
 
 it("多选、文件和文本筛选只改变显示，清除后恢复全部诊断", () => {
@@ -90,6 +171,7 @@ it("多选、文件和文本筛选只改变显示，清除后恢复全部诊断"
   const search = root.querySelector<HTMLInputElement>('input[aria-label="搜索规则或诊断"]')!;
   search.value = "10157";
   search.dispatchEvent(new Event("input"));
+  search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
   expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 1/4 条");
   [...root.querySelectorAll("button")].find(button => button.textContent === "清除筛选")!.click();
   expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 4/4 条");
@@ -135,7 +217,8 @@ it("所有诊断按规则折叠，黑盒提示独立折叠且错误按严重程�
   const stubErrorGroup = [...root.querySelectorAll<HTMLDetailsElement>(".problem-environment-group")].find(group => group.textContent?.includes("语法错误"))!;
   stubErrorGroup.querySelector("summary")!.click();
   stubErrorGroup.dispatchEvent(new Event("toggle"));
-  expect(stubErrorGroup.textContent).toContain("Bad stub");
+  expect(stubErrorGroup.textContent).toContain("语法错误");
+  expect(stubErrorGroup.textContent).not.toContain("Bad stub");
   expect(stubErrorGroup).not.toBe(stubGroup);
 });
 
@@ -182,7 +265,7 @@ it("常规状态隐藏检查设置，依赖错误和范围切换提供明确入�
   expect(scope.title).toContain("demo");
 });
 
-it("同规则大量警告默认折叠，展开后显示全部诊断", () => {
+it("同规则大量警告按批创建并显示全部诊断，刷新保留已加载数量", () => {
   const { root, panel } = setup();
   const external = result();
   external.diagnostics = Array.from({ length: 1200 }, (_, index) => ({
@@ -195,9 +278,16 @@ it("同规则大量警告默认折叠，展开后显示全部诊断", () => {
   expect(group.querySelector("summary")!.textContent).toContain("1200 条");
   expect(group.querySelectorAll(".problem-row")).toHaveLength(0);
   expect(root.textContent).not.toContain("仅显示前");
+  const createElement = document.createElement.bind(document);
+  let createdButtons = 0;
+  const elementSpy = vi.spyOn(document, "createElement").mockImplementation(((tagName: string, options?: ElementCreationOptions) => {
+    if (tagName === "button") createdButtons++;
+    return createElement(tagName, options);
+  }) as typeof document.createElement);
   group.querySelector("summary")!.click();
   group.dispatchEvent(new Event("toggle"));
   expect(group.querySelectorAll(".problem-row")).toHaveLength(500);
+  expect(createdButtons).toBe(501);
   group.querySelector<HTMLButtonElement>(".problem-load-more")!.click();
   expect(group.querySelectorAll(".problem-row")).toHaveLength(1000);
   group.querySelector<HTMLButtonElement>(".problem-load-more")!.click();
@@ -205,6 +295,15 @@ it("同规则大量警告默认折叠，展开后显示全部诊断", () => {
   expect(group.querySelector(".problem-load-more")).toBeNull();
   expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 1200/1200 条");
   expect(root.textContent).not.toContain("仅显示前");
+  createdButtons = 0;
+  panel.finish({ ...external, diagnostics: [...external.diagnostics, { file: "D:/project/a.sv", line: 1201, column: 1, severity: "warning", ruleId: "VERILATOR-WIDTH", source: "verilator", message: "warning 1200" }] });
+  expect(createdButtons).toBe(1);
+  expect(group.querySelectorAll(".problem-row")).toHaveLength(1200);
+  expect(group.querySelector(".problem-load-more")!.textContent).toContain("剩余 1 条");
+  group.querySelector<HTMLButtonElement>(".problem-load-more")!.click();
+  expect(createdButtons).toBe(2);
+  expect(group.querySelectorAll(".problem-row")).toHaveLength(1201);
+  elementSpy.mockRestore();
 });
 
 it("刷新只更新变化分组并保留展开、滚动位置和焦点", () => {
@@ -229,7 +328,8 @@ it("刷新只更新变化分组并保留展开、滚动位置和焦点", () => {
   expect(root.querySelector(".problem-error-group")).toBe(group);
   expect(group.open).toBe(true);
   expect(list.scrollTop).toBe(120);
-  expect(group.textContent).toContain("Changed width diagnostic");
+  expect(group.textContent).toContain("位宽不匹配");
+  expect(group.textContent).not.toContain("Changed width diagnostic");
   expect(document.activeElement).toBe(group.querySelector(".problem-row"));
 });
 
@@ -250,9 +350,11 @@ it("依赖环境、重名最短目录和工程级中文摘要清晰可辨", () =
   const environmentText = environments.map(group => group.textContent).join("\n");
   expect(environmentText).toContain("project_2.srcs");
   expect(environmentText).toContain("HWDCMCS.srcs");
-  expect(environmentText).toContain("VHDL 依赖单元缺失");
+  expect(environmentText).toContain("VHDL 库 \"work\" 中未找到单元 \"fifo_256x8\"");
   expect(environmentText).toContain("缺少模块定义");
-  expect(root.querySelector(".problem-error-group summary")!.textContent).toContain("检查因错误停止");
+  expect(root.querySelector(".problem-error-group")).toBeNull();
+  expect(root.textContent).not.toContain("Exiting due to");
+  expect(root.querySelector(".problem-summary")!.textContent).toContain("显示 4/4 条");
   const options = [...root.querySelectorAll('select[aria-label="文件筛选"] option')].map(option => option.textContent);
   expect(options.some(text => text?.includes("project_2.srcs"))).toBe(true);
   expect(options.some(text => text?.includes("HWDCMCS.srcs"))).toBe(true);

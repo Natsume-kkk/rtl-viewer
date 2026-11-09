@@ -22,7 +22,7 @@ export class BottomPanels {
   private endDrag?: () => void;
   private onPageHide = () => this.dispose();
 
-  constructor(private root: HTMLElement, private panels: Record<Panel, HTMLElement>, private changed: () => void) {
+  constructor(private root: HTMLElement, private panels: Record<Panel, HTMLElement>, private changed: () => void, private activate: (panel: Panel) => void = () => {}) {
     this.resize = document.createElement("div");
     this.resize.className = "panel-resize";
     this.resize.tabIndex = 0;
@@ -156,16 +156,20 @@ export class BottomPanels {
     this.simultaneous.title = canShare && this.companion ? `左右并列查看${this.buttons.get(this.companion)?.textContent ?? "两个面板"}` : "空间不足，暂用切换；放大窗口后可同时查看";
     this.hint.textContent = this.together && this.companion && !canShare ? "空间不足，暂用切换" : "";
     this.hint.hidden = !this.hint.textContent;
+    const activated: Panel[] = [];
     for (const [id, button] of this.buttons) {
       const visible = !!this.active && (id === this.active || shared && id === this.companion);
       const panel = this.panels[id];
+      const wasVisible = !panel.hidden;
       const hadFocus = !visible && (panel.contains(document.activeElement) || id === "flow" && this.header.contains(document.activeElement));
       panel.hidden = !visible;
+      if (visible && !wasVisible) activated.push(id);
       button.setAttribute("aria-pressed", String(visible));
       if (hadFocus && this.active) this.buttons.get(this.active)!.focus();
     }
     this.header.hidden = this.panels.flow.hidden;
     this.changed();
+    for (const panel of activated) this.activate(panel);
   }
 
   dispose(): void {

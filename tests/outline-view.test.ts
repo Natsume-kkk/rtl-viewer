@@ -1,0 +1,26 @@
+// @vitest-environment jsdom
+import { afterEach, expect, it } from "vitest";
+import { OutlineView } from "../src/ui/outline";
+
+afterEach(() => { localStorage.clear(); document.body.replaceChildren(); });
+
+it("大纲分隔条支持方向键、Home 和分隔条语义", () => {
+  const parent = document.createElement("aside"), root = document.createElement("section");
+  root.id = "outline-root"; parent.append(root); document.body.append(parent);
+  Object.defineProperty(parent, "clientHeight", { get: () => 625 });
+  new OutlineView(root, { onJump: () => {} });
+  const resizer = root.querySelector<HTMLElement>(".outline-resizer")!;
+  expect(resizer.getAttribute("role")).toBe("separator");
+  expect(resizer.tabIndex).toBe(0);
+  root.style.height = "200px";
+  resizer.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp" }));
+  expect(root.style.height).toBe("224px");
+  expect(resizer.getAttribute("aria-valuenow")).toBe("224");
+  expect(localStorage.getItem("rtl.outlineHeight")).toBe("224");
+  resizer.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
+  expect(root.style.height).toBe("200px");
+  resizer.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp" }));
+  resizer.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
+  expect(root.style.height).toBe("200px");
+  expect(localStorage.getItem("rtl.outlineHeight")).toBe("200");
+});

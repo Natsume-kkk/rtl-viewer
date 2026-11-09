@@ -13,7 +13,7 @@ import { createProjectSearch } from "./app/project-search";
 import { scanStructure } from "./parser";
 import type { ModuleInfo, IpInfo } from "./parser";
 import { openFolderDialog, openFileDialog, pathExists, showInFolder, isDirectory, normalizePath, runSyntaxCheck, cancelSyntaxCheck, saveReportDialog, writeFile, type SyntaxCheckResult } from "./ipc";
-import { ProblemPanel } from "./ui/problems";
+import { ProblemPanel, type ProblemIndicator } from "./ui/problems";
 import { syncProblemMarkers } from "./app/problem-markers";
 import { syntaxReportHtml, syntaxReportCsv } from "./app/syntax-report";
 import { registerAppShortcuts } from "./ui/shortcuts";
@@ -48,6 +48,7 @@ import { emptySyntaxCheckOptions } from "./ipc";
 import { createExternalWatcher, type CachedFile } from "./app/watcher";
 import { attachSidebarWidth } from "./ui/sidebar-width";
 import { BottomPanels } from "./ui/bottom-panels";
+import { attachToolbarOverflow } from "./ui/toolbar-overflow";
 import { showCtxMenu } from "./ui/menu";
 import { filePathKey, indexedFilePath } from "./file-path";
 import type { FileVersion } from "./app/module-metadata";
@@ -69,7 +70,7 @@ const state = {
 const sidebarEl = document.getElementById("sidebar")!;
 const editorContainer = document.getElementById("editor-container")!;
 const statusbarEl = document.getElementById("statusbar")!;
-attachSidebarWidth(sidebarEl, document.getElementById("splitter")!);
+attachSidebarWidth(sidebarEl, document.getElementById("splitter")!, document.querySelector<HTMLButtonElement>("#sidebar-toggle")!);
 
 // 全局工具栏与侧栏容器只建一次，各组件渲染进对应容器。
 function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlineRoot: HTMLElement } {
@@ -145,8 +146,20 @@ function initSidebar(): { treeRoot: HTMLElement; searchRoot: HTMLElement; outlin
   problemBtn.id = "problems-action";
   problemBtn.title = "查看自动检查问题与后台进度";
   problemBtn.setAttribute("aria-expanded", "false");
+  const indicator = document.createElement("span");
+  indicator.id = "problem-indicator";
+  indicator.className = "problem-indicator";
+  indicator.hidden = true;
+  indicator.setAttribute("aria-hidden", "true");
+  problemBtn.append(indicator);
   end.append(searchBtn, splitBtn, flowBtn, statsBtn, problemBtn);
   bar.append(openWrap, newBtn, saveBtn, editBtn, end);
+  attachToolbarOverflow(bar, end, [
+    { button: problemBtn, label: "问题" },
+    { button: statsBtn, label: "统计" },
+    { button: flowBtn, label: "信号链" },
+    { button: searchBtn, label: "搜索 (Ctrl+Shift+F)" },
+  ]);
   const progress = document.createElement("div");
   progress.id = "progress";
   progress.className = "progress";
@@ -292,7 +305,23 @@ const problemPanel = new ProblemPanel(document.getElementById("problem-root")!, 
   onExport: format => void exportSyntaxReport(format),
   onOpen: diagnostic => { bottomPanels.restoreEditor(); void navigateTo(diagnostic.file, diagnostic.line, diagnostic.column); },
   onClose: () => { setProblemsVisible(false); activeGroup().editor.focus(); },
+  onIndicator: updateProblemIndicator,
 });
+
+function updateProblemIndicator(state: ProblemIndicator): void {
+  const badge = document.getElementById("problem-indicator")!;
+  const button = document.getElementById("problems-action")!;
+  const counts = `${state.errors} 错误 · ${state.warnings} 警告 · ${state.infos} 提示`;
+  const kind = state.running ? "running" : state.failed ? "error" : state.errors ? "error" : state.warnings ? "warning" : state.infos ? "info" : state.stale ? "stale" : "";
+  const text = state.running ? "…" : state.failed ? "!" : state.errors ? String(state.errors) : state.warnings ? String(state.warnings) : state.infos ? String(state.infos) : state.stale ? "•" : "";
+  badge.hidden = !text;
+  badge.textContent = text;
+  badge.className = `problem-indicator${kind ? ` ${kind}` : ""}`;
+  const status = state.running ? "后台检查进行中" : state.failed ? "检查失败" : state.stale ? "结果等待复查" : counts;
+  const detailed = state.running || state.failed || state.stale;
+  button.title = `查看自动检查问题与后台进度\n${status}${detailed ? `\n${counts}` : ""}`;
+  button.setAttribute("aria-label", `问题，${status}${detailed ? `，${counts}` : ""}`);
+}
 
 function refreshProblemMarkers(): void {
   const models = new Map<string, { path: string; model: import("./editor/monaco").monaco.editor.ITextModel }>();
@@ -445,7 +474,7 @@ async function exportSyntaxReport(format: "html" | "csv"): Promise<void> {
     await writeFile(path, content, "utf8");
     statusbar.hint(`检查报告已导出：${path}`);
   } catch (error) {
-    statusbar.hint(`导出检查报告失败：${String(error)}`);
+    statusbar.error(`导出检查报告失败：${String(error)}`);
   }
 }
 
@@ -483,6 +512,9 @@ const bottomPanels = new BottomPanels(document.getElementById("bottom-panels")!,
   document.getElementById("flow-action")!.setAttribute("aria-expanded", String(bottomPanels.isVisible("flow")));
   document.getElementById("stats-action")!.setAttribute("aria-expanded", String(bottomPanels.isVisible("stats")));
   document.getElementById("problems-action")!.setAttribute("aria-expanded", String(bottomPanels.isVisible("problems")));
+}, panel => {
+  if (panel === "problems") problemPanel.refresh();
+  else if (panel === "stats") statsPanel.refresh();
 });
 
 function setSearchVisible(visible: boolean, focus = true): void {
@@ -492,17 +524,13 @@ function setSearchVisible(visible: boolean, focus = true): void {
 }
 
 function setProblemsVisible(visible: boolean): void {
-  if (visible) {
-    bottomPanels.show("problems");
-    problemPanel.refresh();
-  } else bottomPanels.hide("problems");
+  if (visible) bottomPanels.show("problems");
+  else bottomPanels.hide("problems");
 }
 
 function setStatsVisible(visible: boolean): void {
-  if (visible) {
-    bottomPanels.show("stats");
-    statsPanel.refresh();
-  } else bottomPanels.hide("stats");
+  if (visible) bottomPanels.show("stats");
+  else bottomPanels.hide("stats");
 }
 
 // ---------- 按需模块元数据（补全与 IP stub） ----------
@@ -849,7 +877,7 @@ if (!new URLSearchParams(location.search).has("e2e") && (await import("@tauri-ap
       return TabManager.confirmExit(groups.map(group => group.tabs));
     }, message => statusbar.hint(message));
     window.addEventListener("pagehide", disposeControls, { once: true });
-  } catch (error) { statusbar.hint(`窗口控制初始化失败：${String(error)}`); }
+  } catch (error) { statusbar.error(`窗口控制初始化失败：${String(error)}`); }
 }
 
 function updateStructure(path: string, content: string): void {
@@ -1152,7 +1180,7 @@ async function openSourceFile(): Promise<void> {
     const file = await openFileDialog(activeGroup().tabs.activeTab?.path || state.folder || undefined);
     if (file) { bottomPanels.restoreEditor(); await openProjectFile(file, undefined, idx); }
   } catch (error) {
-    statusbar.hint(`打开文件失败：${String(error)}`);
+    statusbar.error(`打开文件失败：${String(error)}`);
   }
 }
 
@@ -1175,5 +1203,5 @@ registerAppShortcuts({
   search: () => searchPanel.focus(),
   back: navBack,
   forward: navForward,
-  error: error => statusbar.hint(`快捷操作失败：${String(error)}`),
+  error: error => statusbar.error(`快捷操作失败：${String(error)}`),
 });

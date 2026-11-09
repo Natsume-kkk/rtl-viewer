@@ -9,6 +9,16 @@ interface ProblemPanelCallbacks {
   onExport(format: "html" | "csv"): void;
   onOpen(diagnostic: SyntaxDiagnostic): void;
   onClose(): void;
+  onIndicator?(indicator: ProblemIndicator): void;
+}
+
+export interface ProblemIndicator {
+  running: boolean;
+  errors: number;
+  warnings: number;
+  infos: number;
+  stale: boolean;
+  failed: boolean;
 }
 
 export interface ProblemDisplayFilter {
@@ -209,6 +219,17 @@ export class ProblemPanel {
 
   get builtinDiagnostics(): RuleDiagnostic[] { return this.builtin; }
   get hasResults(): boolean { return !!this.result || this.builtinAnalyzed; }
+  get indicator(): ProblemIndicator {
+    const counts = severityCounts(this.allDiagnostics());
+    return {
+      running: this.running || this.builtinRunning,
+      errors: counts.error,
+      warnings: counts.warning,
+      infos: counts.info,
+      stale: this.stale,
+      failed: !!this.error || !!this.result?.backends.some(backend => backend.status === "failed" || backend.status === "timed_out"),
+    };
+  }
 
   fail(error: unknown): void {
     this.running = false;
@@ -285,6 +306,7 @@ export class ProblemPanel {
   }
 
   private renderSummary(): void {
+    this.callbacks.onIndicator?.(this.indicator);
     this.cancelButton.hidden = !this.running;
     this.cancelButton.disabled = !this.running || this.cancelling;
     this.cancelButton.textContent = this.cancelling ? "正在取消…" : "取消";
@@ -330,6 +352,7 @@ export class ProblemPanel {
   }
 
   private renderResults(): void {
+    this.callbacks.onIndicator?.(this.indicator);
     if (this.root.hidden) return;
     this.renderFileOptions();
     this.renderSummary();

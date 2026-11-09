@@ -31,6 +31,7 @@
 
   --fg: #d6d9dd;
   --fg-secondary: #969da5;
+  --fg-muted: #858d96;
   --fg-faint: #646b73;
 
   --accent: #4e9de6;
@@ -76,6 +77,7 @@
 
   --fg: #3b3b3b;
   --fg-secondary: #616161;
+  --fg-muted: #6a6a6a;
   --fg-faint: #767676;
 
   --accent: #0b5cad;
@@ -206,6 +208,10 @@ body.resizing {
     "sidebar splitter main"
     "status status status";
   height: 100vh;
+}
+
+#app.sidebar-collapsed {
+  grid-template-columns: 0 0 minmax(0, 1fr);
 }
 
 /* ---------- 图标（setIcon 注入的内联 SVG） ---------- */
@@ -744,11 +750,18 @@ body.resizing {
 }
 
 .ref-loc {
-  color: var(--fg-faint);
+  color: var(--fg-muted);
 }
 
 .status-hint {
   color: var(--sem-hint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-hint.status-error {
+  color: var(--sem-error);
 }
 
 .status-breadcrumb {
@@ -1060,7 +1073,7 @@ body.resizing {
 }
 
 .search-input::placeholder {
-  color: var(--fg-faint);
+  color: var(--fg-muted);
 }
 
 .search-input:focus {
@@ -1141,7 +1154,7 @@ body.resizing {
 }
 
 .search-line-no {
-  color: var(--fg-faint);
+  color: var(--fg-muted);
   min-width: 28px;
   text-align: right;
   flex: none;
@@ -1186,7 +1199,7 @@ body.resizing {
 .problem-group > summary .icon { flex: none; }
 .problem-group > summary .problem-group-jump { margin-left: auto; width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
 .problem-group .problem-row { width: 100%; margin: 0; }
-.problem-stub-group { color: var(--fg-faint); }
+.problem-stub-group { color: var(--fg-muted); }
 .problem-progress { flex: none; width: 100%; height: 3px; border: 0; appearance: none; background: var(--surface-active); color: var(--accent); }
 .problem-progress[hidden] { display: none; }
 .problem-progress::-webkit-progress-bar { background: var(--surface-active); }
@@ -1369,7 +1382,7 @@ body.resizing {
 }
 
 .outline-filter::placeholder {
-  color: var(--fg-faint);
+  color: var(--fg-muted);
 }
 
 .outline-filter:focus {
@@ -1439,7 +1452,7 @@ body.resizing {
 
 .outline-line {
   margin-left: auto;
-  color: var(--fg-faint);
+  color: var(--fg-muted);
   font-size: var(--fs-caption);
   font-family: var(--font-mono);
   flex: none;
@@ -1466,13 +1479,20 @@ button:focus-visible, [tabindex]:focus-visible, select:focus-visible, input:focu
 .brand strong { font-size: 13px; font-weight: 600; }
 .brand > span { color: var(--fg-secondary); font-size: var(--fs-caption); margin-left: 8px; }
 #project-title { margin: 0 auto; color: var(--fg-secondary); font: var(--fs-body) var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#project-switch { display: flex; align-items: center; gap: 10px; padding-right: 20px; margin-right: 8px; border-right: 1px solid var(--border-strong); min-width: 0; max-width: 30%; }
+#project-switch { display: flex; align-items: center; gap: 8px; padding-right: 12px; margin-right: 8px; border-right: 1px solid var(--border-strong); min-width: 0; max-width: 30%; }
 #project-switch strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #project-icon { color: var(--accent); flex: none; }
+.sidebar-toggle { width: 30px; padding: 0; justify-content: center; }
 .toolbar-end { margin-left: auto; display: flex; align-items: center; gap: 5px; }
 .btn { white-space: nowrap; flex: none; }
 .shortcut { font: var(--fs-caption) var(--font-ui); color: var(--fg-secondary); margin-left: 8px; }
 .btn[aria-pressed="true"], .btn[aria-expanded="true"] { background: var(--surface-active); color: var(--accent); }
+.problem-indicator { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; font: 600 10px/1 var(--font-ui); pointer-events: none; }
+.problem-indicator.error { background: var(--sem-error); color: var(--surface-editor); }
+.problem-indicator.warning { background: var(--sem-warning); color: var(--surface-editor); }
+.problem-indicator.info { background: var(--accent); color: var(--surface-editor); }
+.problem-indicator.running, .problem-indicator.stale { border: 1px solid var(--accent); color: var(--accent); }
+.problem-indicator.stale { border-color: var(--sem-hint); color: var(--sem-hint); }
 .icon-button { border: 0; background: transparent; color: var(--fg-secondary); width: 28px; height: 28px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; }
 .icon-button:hover { background: var(--surface-hover); color: var(--fg); }
 .micro { margin-left: auto; color: var(--fg-secondary); font: var(--fs-caption) var(--font-mono); font-weight: 400; }

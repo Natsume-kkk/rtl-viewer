@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { BottomPanels } from "../src/ui/bottom-panels";
+import { StatsPanel } from "../src/ui/stats";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(fn => fn()); vi.unstubAllGlobals(); document.body.replaceChildren(); });
@@ -19,10 +20,11 @@ function setup(height = 710, width = 1000) {
   Object.defineProperty(root, "clientHeight", { get: () => Number.parseFloat(root.style.height) || 0 });
   const search = document.getElementById("search")!, flow = document.getElementById("flow")!, problems = document.getElementById("problems")!, stats = document.getElementById("stats")!;
   const changed = vi.fn();
-  const panels = new BottomPanels(root, { search, flow, problems, stats }, changed);
+  const activated: string[] = [];
+  const panels = new BottomPanels(root, { search, flow, problems, stats }, changed, panel => activated.push(panel));
   cleanup.push(() => panels.dispose());
   const share = [...root.querySelectorAll("button")].find(button => button.textContent === "同时查看")!;
-  return { panels, root, search, flow, problems, share, changed, disconnect, resize: (next: number, nextWidth = width) => { height = next; width = nextWidth; resized(); } };
+  return { panels, root, search, flow, problems, share, changed, activated, disconnect, resize: (next: number, nextWidth = width) => { height = next; width = nextWidth; resized(); } };
 }
 
 it("默认切换保留查询、追踪节点与滚动状态，收起后可重新打开", () => {
@@ -126,4 +128,31 @@ it("问题、统计及其他面板可按当前与上一面板组合查看", () =
   expect(problems.hidden).toBe(true);
   panels.show("flow"); share.click();
   expect(search.hidden).toBe(false); expect(flow.hidden).toBe(false);
+});
+
+
+it("底部标签激活真实统计面板时刷新隐藏期间的数据", () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  document.body.innerHTML = '<div id="workspace"><section id="panels" hidden><div><section id="search" hidden></section><aside id="flow" hidden></aside><section id="problems" hidden></section><section id="stats" hidden></section></div></section></div>';
+  const workspace = document.getElementById("workspace")!, root = document.getElementById("panels")!;
+  Object.defineProperty(workspace, "clientHeight", { get: () => 710 });
+  Object.defineProperty(workspace, "clientWidth", { get: () => 1000 });
+  Object.defineProperty(root, "clientHeight", { get: () => Number.parseFloat(root.style.height) || 0 });
+  const stats = document.getElementById("stats")!;
+  const view = new StatsPanel(stats, {
+    displayPath: file => file,
+    onOpenFile: () => {}, onOpenProblems: () => {}, onScopeChange: () => {}, onClose: () => {},
+  });
+  view.render({ facts: [], files: [], diagnostics: [], done: 0, total: 0, running: false, stale: false, scope: "top" });
+  expect(stats.querySelector(".stats-summary")!.textContent).toBe("");
+  const activated: string[] = [];
+  const panels = new BottomPanels(root, {
+    search: document.getElementById("search")!, flow: document.getElementById("flow")!,
+    problems: document.getElementById("problems")!, stats,
+  }, () => {}, id => { activated.push(id); if (id === "stats") view.refresh(); });
+  cleanup.push(() => panels.dispose());
+  root.querySelector<HTMLButtonElement>('button[aria-controls="stats"]')!.click();
+  expect(activated).toEqual(["stats"]);
+  expect(stats.querySelector(".stats-summary")!.textContent).toContain("HDL 文件 0");
+  expect(stats.querySelector(".stats-table")!.textContent).toContain("合计");
 });

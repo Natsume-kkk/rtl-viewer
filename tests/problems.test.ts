@@ -26,7 +26,7 @@ function builtin(ruleId: string, category: RuleDiagnostic["category"]): RuleDiag
 function setup() {
   const root = document.createElement("section");
   document.body.append(root);
-  const callbacks = { onConfigure: vi.fn(), onCancel: vi.fn(), onScopeChange: vi.fn(), onExport: vi.fn(), onOpen: vi.fn(), onClose: vi.fn() };
+  const callbacks = { onConfigure: vi.fn(), onCancel: vi.fn(), onScopeChange: vi.fn(), onExport: vi.fn(), onOpen: vi.fn(), onClose: vi.fn(), onIndicator: vi.fn() };
   const panel = new ProblemPanel(root, callbacks);
   return { root, panel, callbacks };
 }
@@ -281,4 +281,28 @@ it("隐藏问题面板不重建结果，恢复显示时刷新最新诊断", () =
   panel.refresh();
   expect(root.querySelector(".problem-summary")!.textContent).toContain("1 错误");
   expect(root.querySelectorAll(".problem-group").length).toBeGreaterThan(0);
+});
+
+
+it("顶部指示状态汇总诊断、运行、过期和失败", () => {
+  const { panel, callbacks } = setup();
+  const latest = () => callbacks.onIndicator.mock.calls.at(-1)?.[0];
+  panel.setBuiltins([builtin("VLG-ST-001", "style"), builtin("10157-A-1-1", "gjb10157")], true, false);
+  expect(latest()).toMatchObject({ running: false, errors: 0, warnings: 0, infos: 2, stale: false, failed: false });
+  panel.start();
+  expect(latest()).toMatchObject({ running: true });
+  panel.finish(result());
+  expect(latest()).toMatchObject({ running: false, errors: 1, warnings: 1, infos: 2 });
+  panel.markStale();
+  expect(latest()).toMatchObject({ stale: true });
+  panel.fail(new Error("backend unavailable"));
+  expect(latest()).toMatchObject({ running: false, failed: true });
+});
+
+
+it("面板隐藏时仍向顶部按钮推送检查结果", () => {
+  const { root, panel, callbacks } = setup();
+  root.hidden = true;
+  panel.finish(result());
+  expect(callbacks.onIndicator).toHaveBeenCalledWith(expect.objectContaining({ errors: 1, warnings: 1, running: false }));
 });

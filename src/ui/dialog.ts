@@ -6,6 +6,10 @@
  */
 /** 弹窗栈：仅栈顶弹窗响应键盘，堆叠时一次按键不得同时驱动多个弹窗。 */
 const dialogStack: object[] = [];
+let dialogSequence = 0;
+let modalApp: HTMLElement | null = null;
+let appWasInert = false;
+let appAriaHidden: string | null = null;
 
 export function choiceDialog(message: string, options: string[], defaultIndex = 0): Promise<number> {
   return new Promise((resolve) => {
@@ -13,8 +17,12 @@ export function choiceDialog(message: string, options: string[], defaultIndex = 
     overlay.className = "choice-overlay";
     const box = document.createElement("div");
     box.className = "choice-box";
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
     const msg = document.createElement("div");
     msg.className = "choice-msg";
+    msg.id = `rtl-dialog-message-${++dialogSequence}`;
+    box.setAttribute("aria-labelledby", msg.id);
     msg.textContent = message;
     const buttons = document.createElement("div");
     buttons.className = "choice-buttons";
@@ -24,6 +32,16 @@ export function choiceDialog(message: string, options: string[], defaultIndex = 
     let done = false;
     const token = {};
     dialogStack.push(token);
+    if (dialogStack.length === 1) {
+      modalApp = document.getElementById("app");
+      if (modalApp) {
+        appWasInert = modalApp.hasAttribute("inert");
+        appAriaHidden = modalApp.getAttribute("aria-hidden");
+        modalApp.inert = true;
+        modalApp.setAttribute("inert", "");
+        modalApp.setAttribute("aria-hidden", "true");
+      }
+    }
     const finish = (index: number) => {
       if (done) return;
       done = true;
@@ -31,6 +49,14 @@ export function choiceDialog(message: string, options: string[], defaultIndex = 
       if (at >= 0) dialogStack.splice(at, 1);
       document.removeEventListener("keydown", onKey, true);
       overlay.remove();
+      if (!dialogStack.length && modalApp) {
+        modalApp.inert = appWasInert;
+        if (appWasInert) modalApp.setAttribute("inert", "");
+        else modalApp.removeAttribute("inert");
+        if (appAriaHidden === null) modalApp.removeAttribute("aria-hidden");
+        else modalApp.setAttribute("aria-hidden", appAriaHidden);
+        modalApp = null;
+      }
       prevFocus?.focus();
       resolve(index);
     };

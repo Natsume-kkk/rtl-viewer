@@ -16,7 +16,7 @@ export type IconName =
   | "module" | "folder" | "file" | "plus" | "save" | "search" | "split" | "ports"
   | "minimize" | "maximize" | "restore"
   | "check" | "cancel" | "settings" | "export" | "filter" | "filter-clear"
-  | "error" | "info" | "sort-asc" | "sort-desc" | "stats";
+  | "error" | "info" | "sort-asc" | "sort-desc" | "stats" | "more" | "sidebar";
 
 const SW = `stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"`;
 
@@ -56,6 +56,8 @@ const ICONS: Record<IconName, string> = {
   "sort-asc": `<path d="m4 10 4-4 4 4M8 6v7" ${SW}/>`,
   "sort-desc": `<path d="m4 6 4 4 4-4M8 3v7" ${SW}/>`,
   "stats": `<path d="M3 13V9M8 13V3M13 13V6" ${SW}/>`,
+  "more": `<path d="M3 8h.01M8 8h.01M13 8h.01" ${SW}/>`,
+  "sidebar": `<rect x="2" y="2.5" width="12" height="11" rx="2" ${SW}/><path d="M6 2.5v11M3.5 5.5h1M3.5 8h1" ${SW}/>`,
 };
 
 /** 把 el 设置为指定图标：加 icon 基类与 icon-<name> 修饰类，注入内联 SVG（静态可信字符串，CSP 安全）。

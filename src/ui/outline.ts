@@ -32,7 +32,13 @@ export class OutlineView {
     // 顶部拖拽调高
     this.resizerEl = document.createElement("div");
     this.resizerEl.className = "outline-resizer";
-    this.resizerEl.title = "拖拽调整大纲高度";
+    this.resizerEl.title = "拖拽调整大纲高度；方向键微调，Home 恢复默认";
+    this.resizerEl.tabIndex = 0;
+    this.resizerEl.setAttribute("role", "separator");
+    this.resizerEl.setAttribute("aria-label", "调整大纲高度");
+    this.resizerEl.setAttribute("aria-orientation", "horizontal");
+    this.resizerEl.setAttribute("aria-controls", rootEl.id);
+    this.resizerEl.setAttribute("aria-valuemin", "100");
     this.initResizer();
     this.rootEl.appendChild(this.resizerEl);
 
@@ -92,9 +98,19 @@ export class OutlineView {
     const max = window.innerHeight * 0.6;
     const height = Math.min(Math.max(px, 100), max);
     this.rootEl.style.height = `${height}px`;
+    this.resizerEl.setAttribute("aria-valuemax", String(Math.round(max)));
+    this.resizerEl.setAttribute("aria-valuenow", String(Math.round(height)));
   }
 
   private initResizer(): void {
+    this.resizerEl.addEventListener("keydown", event => {
+      if (!["ArrowUp", "ArrowDown", "Home"].includes(event.key)) return;
+      event.preventDefault();
+      const current = Number.parseFloat(this.rootEl.style.height) || this.rootEl.clientHeight;
+      const preferred = event.key === "Home" ? this.rootEl.parentElement!.clientHeight * 0.32 : current + (event.key === "ArrowUp" ? 24 : -24);
+      this.applyHeight(preferred);
+      localStorage.setItem(LS_HEIGHT, this.rootEl.style.height.replace("px", ""));
+    });
     this.resizerEl.addEventListener("mousedown", (e) => {
       e.preventDefault();
       const onMove = (ev: MouseEvent) => {

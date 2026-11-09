@@ -184,3 +184,24 @@ describe("对话框入站路径归一", () => {
     await expect(saveFileDialog()).resolves.toBeNull();
   });
 });
+
+
+describe("对话框无障碍边界", () => {
+  it("暴露模态语义并隔离背景，关闭后恢复", async () => {
+    const app = document.createElement("div"); app.id = "app";
+    document.body.append(app);
+    const result = choiceDialog("确认保存", ["确定", "取消"]);
+    const dialog = document.querySelector<HTMLElement>(".choice-box")!;
+    const message = document.querySelector<HTMLElement>(".choice-msg")!;
+    expect(dialog.getAttribute("role")).toBe("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.getAttribute("aria-labelledby")).toBe(message.id);
+    expect(app.inert).toBe(true);
+    expect(app.getAttribute("aria-hidden")).toBe("true");
+    dialogButtons()[0].click();
+    await expect(result).resolves.toBe(0);
+    expect(app.inert).toBe(false);
+    expect(app.hasAttribute("aria-hidden")).toBe(false);
+    app.remove();
+  });
+});

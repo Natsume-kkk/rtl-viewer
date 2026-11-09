@@ -46,10 +46,22 @@ export class StatusBar {
 
   /** 瞬态提示（找不到跳转目标等），3 秒后自动消失。 */
   hint(text: string): void {
+    this.showHint(text, false);
+  }
+
+  /** 需要用户处理的失败保持可见，直到下一次操作反馈。 */
+  error(text: string): void {
+    this.showHint(text, true);
+  }
+
+  private showHint(text: string, persistent: boolean): void {
     window.clearTimeout(this.hintTimer);
     this.hintEl.textContent = text;
-    this.hintTimer = window.setTimeout(() => {
+    this.hintEl.title = text;
+    this.hintEl.classList.toggle("status-error", persistent);
+    if (!persistent) this.hintTimer = window.setTimeout(() => {
       this.hintEl.textContent = "";
+      this.hintEl.title = "";
     }, 3000);
   }
 
@@ -87,6 +99,9 @@ export class StatusBar {
     this.bcEl.className = "status-item status-breadcrumb";
     this.hintEl = document.createElement("span");
     this.hintEl.className = "status-item status-hint";
+    this.hintEl.setAttribute("role", "status");
+    this.hintEl.setAttribute("aria-live", "polite");
+    this.hintEl.setAttribute("aria-atomic", "true");
     left.append(this.bcEl, this.hintEl);
     const right = document.createElement("div");
     right.className = "status-right";

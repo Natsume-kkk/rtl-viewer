@@ -44,6 +44,8 @@ import { verilogStub, vhdlStub } from "./app/syntax-stubs";
 import { loadSyntaxOptions, saveSyntaxOptions, configuredPath, validateSyntaxOptions } from "./app/syntax-options";
 import { showSyntaxOptionsDialog } from "./ui/syntax-options";
 import { createFactsScheduler } from "./app/facts-scheduler";
+import { explainVerilatorSyntax } from "./app/diagnostic-display";
+import { syntaxDependencyFiles } from "./app/syntax-order";
 import { createCoalescedRefresh } from "./app/coalesced-refresh";
 import { StatsPanel } from "./ui/stats";
 import { emptySyntaxCheckOptions } from "./ipc";
@@ -299,6 +301,7 @@ let projectReady = false;
 let syntaxSerial = 0;
 let runningSyntaxRequest = 0;
 let lastSyntaxResult: SyntaxCheckResult | undefined;
+let lastSyntaxOptions: typeof emptySyntaxCheckOptions | undefined;
 let syntaxOptions = { ...emptySyntaxCheckOptions };
 let syntaxRefreshTimer: number | undefined;
 const problemPanel = new ProblemPanel(document.getElementById("problem-root")!, {
@@ -337,7 +340,7 @@ function refreshProblemMarkers(force = false): void {
   for (const group of groups) for (const tab of group.tabs.allTabs) {
     if (tab.path) models.set(tab.uriKey, { path: tab.path, model: tab.model });
   }
-  syncProblemMarkers(models.values(), (lastSyntaxResult?.diagnostics ?? []).filter(item => inAnalysisScope(item.file)), problemPanel.isStale, problemPanel.builtinDiagnostics);
+  syncProblemMarkers(models.values(), lastSyntaxResult?.diagnostics ?? [], problemPanel.isStale, problemPanel.builtinDiagnostics);
   markerFactsRevision = factsScheduler.diagnosticsRevision;
   markerExternal = lastSyntaxResult;
   markerStale = problemPanel.isStale;
@@ -359,9 +362,15 @@ async function configureSyntaxCheck(): Promise<void> {
     browseLibrary: async () => configurationPath(await openFileDialog(state.folder)),
   });
   if (!next) return;
+  const topChanged = syntaxOptions.top !== next.top;
   syntaxOptions = next;
   saveSyntaxOptions(state.folder, next);
   problemPanel.markStale();
+  if (topChanged) {
+    renderTree();
+    factsDone = factsTotal = 0;
+    void factsScheduler.start();
+  }
   refreshFactsViews();
   scheduleProjectSyntaxCheck();
 }
@@ -397,12 +406,22 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
       snapshots.set(tab.path, { file: tab.path, content: tab.model.getValue(), encoding: tab.encoding });
     }
   }
+  const top = analysisScope === "top" ? effectiveAnalysisTop() : undefined;
+  const libraries = new Map(syntaxOptions.vhdlLibraries.map(mapping => [filePathKey(configuredPath(folder, mapping.file)), mapping.library]));
+  const projectFiles = projectHdlFiles();
+  const selected = new Set(analysisHdlFiles());
+  const dependencySources = projectFiles.map(actual => ({ actual, library: libraries.get(filePathKey(actual)) ?? "work" }));
+  const dependencies = analysisScope === "top"
+    ? syntaxDependencyFiles(dependencySources, selected, file => fileContent(file.actual) ?? "")
+    : [...selected];
   const files = [...new Set([
-    ...analysisHdlFiles(),
+    ...dependencies,
+    ...projectFiles.filter(file => /\.(?:vh|svh)$/i.test(file)),
     ...syntaxOptions.vhdlLibraries.map(mapping => configuredPath(folder, mapping.file)),
   ])];
   if (!files.length) {
     lastSyntaxResult = { requestId: syntaxSerial, checkedFiles: 0, cancelled: false, backends: [], diagnostics: [] };
+    lastSyntaxOptions = undefined;
     syntaxChangedWhileRunning = false;
     problemPanel.finish(lastSyntaxResult);
     refreshFactsViews();
@@ -429,7 +448,7 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
       return { name: ip.name, source: ports.length ? verilogStub(ip.name, ports, parameters) : "" };
     }))).filter(stub => stub.source);
     const vhdlModules = new Map<string, ModuleInfo>();
-    for (const file of analysisHdlFiles()) for (const module of state.structures.get(file) ?? []) {
+    for (const file of files) for (const module of state.structures.get(file) ?? []) {
       if (module.vhdl?.entity && !vhdlModules.has(module.name.toLowerCase())) vhdlModules.set(module.name.toLowerCase(), module);
     }
     const verilogVhdlStubs = await Promise.all([...vhdlModules.values()].map(async module => ({
@@ -444,15 +463,20 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
     if (request !== syntaxSerial || folder !== state.folder) return false;
     const options = {
       ...syntaxOptions,
+      top: top ?? "",
       includeDirs: syntaxOptions.includeDirs.map(path => configuredPath(folder, path)),
       vhdlLibraries: syntaxOptions.vhdlLibraries.map(mapping => ({ ...mapping, file: configuredPath(folder, mapping.file) })),
     };
-    const result = await runSyntaxCheck(folder, files, options.top || state.topName || state.autoTop, request, progress => {
+    const checkedSources = new Map([...state.contents].map(([file, value]) => [filePathKey(file), value.content]));
+    for (const snapshot of snapshots.values()) checkedSources.set(filePathKey(snapshot.file), snapshot.content);
+    const result = await runSyntaxCheck(folder, files, top, request, progress => {
       if (request === syntaxSerial) problemPanel.update(progress);
     }, stubs, options, [...snapshots.values()], vhdlStubs);
     if (request !== syntaxSerial || folder !== state.folder) return false;
+    if (!syntaxChangedWhileRunning) explainVerilatorSyntax(result.diagnostics, file => checkedSources.get(filePathKey(file)));
     runningSyntaxRequest = 0;
     lastSyntaxResult = result;
+    lastSyntaxOptions = options;
     problemPanel.finish(result, syntaxChangedWhileRunning);
     refreshFactsViews();
     return !result.cancelled;
@@ -485,8 +509,8 @@ async function exportSyntaxReport(format: "html" | "csv"): Promise<void> {
     const path = await saveReportDialog(format, `${state.folder}/${reportFileName(state.folder, format, generated)}`);
     if (!path) return;
     const external: SyntaxCheckResult = lastSyntaxResult ?? { requestId: 0, checkedFiles: 0, cancelled: false, backends: [], diagnostics: [] };
-    const reportResult = { ...external, diagnostics: [...problemPanel.builtinDiagnostics, ...external.diagnostics.filter(item => inAnalysisScope(item.file))] };
-    const context = { options: syntaxOptions, facts: factsScheduler.values().filter(item => inAnalysisScope(item.file)), stale: problemPanel.isStale, failure: problemPanel.failureMessage };
+    const reportResult = { ...external, diagnostics: [...problemPanel.builtinDiagnostics, ...external.diagnostics] };
+    const context = { options: lastSyntaxOptions ?? syntaxOptions, facts: factsScheduler.values().filter(item => inAnalysisScope(item.file)), stale: problemPanel.isStale, failure: problemPanel.failureMessage };
     const content = format === "html" ? syntaxReportHtml(state.folder, reportResult, generated, context) : syntaxReportCsv(reportResult, context);
     await writeFile(path, content, "utf8");
     statusbar.hint(`检查报告已导出：${path}`);
@@ -812,19 +836,19 @@ function refreshFactsViews(): void {
   const files = analysisHdlFiles();
   const facts = factsScheduler.values().filter(item => inAnalysisScope(item.file));
   const diagnostics = factsScheduler.diagnosticValues().filter(item => inAnalysisScope(item.file));
-  problemPanel.setScope(analysisScope, state.topName || state.autoTop);
+  problemPanel.setScope(analysisScope, effectiveAnalysisTop());
   problemPanel.setBuiltins(diagnostics, factsDone > 0, factsScheduler.running || factsTotal > 0 && factsDone < factsTotal);
   statsPanel.render({
     facts,
     files,
-    diagnostics: [...diagnostics, ...(lastSyntaxResult?.diagnostics ?? []).filter(item => inAnalysisScope(item.file))],
+    diagnostics: [...diagnostics, ...(lastSyntaxResult?.diagnostics ?? [])],
     done: factsDone,
     total: factsTotal,
     external: lastSyntaxResult,
     running: runningSyntaxRequest !== 0,
     stale: problemPanel.isStale,
     scope: analysisScope,
-    topName: state.topName || state.autoTop,
+    topName: effectiveAnalysisTop(),
     topology: activeTopology,
   });
   refreshProblemMarkers();
@@ -843,6 +867,10 @@ function setAnalysisScope(scope: "top" | "project"): void {
 
 function inAnalysisScope(file: string): boolean {
   return analysisScope === "project" || !activeTopFiles.size || activeTopFiles.has(filePathKey(file));
+}
+
+function effectiveAnalysisTop(): string | undefined {
+  return syntaxOptions.top || state.topName || state.autoTop;
 }
 
 function analysisHdlFiles(): string[] {
@@ -925,9 +953,10 @@ function selectDefinition(name: string, file: string): void {
 function renderTree(): void {
   const h: Hierarchy = buildHierarchy(state.index, state.structures, state.topName);
   state.autoTop = h.autoTop;
-  activeTopology = h.tops;
+  const analysisTop = effectiveAnalysisTop();
+  activeTopology = analysisTop === (state.topName || state.autoTop) ? h.tops : buildHierarchy(state.index, state.structures, analysisTop).tops;
   activeTopModules = new Set<string>();
-  const pending = h.tops.length ? [h.tops[0]] : [];
+  const pending = [...activeTopology];
   while (pending.length) {
     const node = pending.pop()!;
     const key = node.moduleName.toLowerCase();
@@ -1049,6 +1078,7 @@ async function openFolder(folder: string): Promise<void> {
   factsScheduler.clear();
   projectReady = false;
   lastSyntaxResult = undefined;
+  lastSyntaxOptions = undefined;
   problemPanel.clear();
   setProblemsVisible(false);
   setStatsVisible(false);

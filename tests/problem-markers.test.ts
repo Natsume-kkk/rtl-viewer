@@ -35,6 +35,31 @@ it("外部结果过期时保留当前内置诊断标记", () => {
 it("单文件 Monaco 标记最多保留 500 条", () => {
   const model = { isDisposed: () => false, getLineCount: () => 2 };
   const diagnostics = Array.from({ length: 501 }, (_, index) => ({ file: "D:/project/a.sv", line: 1, column: 1, severity: "info", ruleId: `RULE-${index}`, source: "builtin", message: "current" }));
-  syncProblemMarkers([{ path: "D:/project/a.sv", model: model as never }], diagnostics, false);
+  const error = { ...diagnostics[0], severity: "error", ruleId: "GHDL", source: "ghdl" };
+  syncProblemMarkers([{ path: "D:/project/a.sv", model: model as never }], [error], false, diagnostics);
   expect(mocks.setModelMarkers.mock.calls[0][2]).toHaveLength(500);
+  expect(mocks.setModelMarkers.mock.calls[0][2][0].severity).toBe(8);
+});
+
+it("Monaco 显示缺少实例名的具体原因并保留错误级别", () => {
+  const model = { isDisposed: () => false, getLineCount: () => 2 };
+  syncProblemMarkers([{ path: "D:/project/a.sv", model: model as never }], [{
+    file: "D:/project/a.sv", line: 2, column: 20, severity: "error", ruleId: "VERILATOR-GENERAL",
+    source: "verilator", message: "syntax error, unexpected '('", syntaxKind: "missing-instance-name",
+  }], false);
+  expect(mocks.setModelMarkers.mock.calls[0][2][0]).toMatchObject({
+    severity: 8, message: "VERILATOR-GENERAL: 模块例化缺少实例名：请在参数列表 #(...) 与端口列表之间填写实例名。\n原始诊断：syntax error, unexpected '('",
+  });
+});
+
+it("已分类的位宽诊断仍可在 Monaco 查看完整原文", () => {
+  const model = { isDisposed: () => false, getLineCount: () => 1 };
+  const message = "Operator ASSIGNW expects 4 bits on the Assign RHS, but Assign RHS's CONST '8'hff' generates 8 bits.";
+  syncProblemMarkers([{ path: "D:/project/a.sv", model: model as never }], [{
+    file: "D:/project/a.sv", line: 1, column: 1, severity: "warning", ruleId: "VERILATOR-WIDTHTRUNC", source: "verilator", message,
+  }], false);
+  const marker = mocks.setModelMarkers.mock.calls[0][2][0];
+  expect(marker.message).toContain("要求 4 位，但常量 '8'hff' 实际为 8 位");
+  expect(marker.message).toContain(`原始诊断：${message}`);
+  expect(marker.severity).toBe(4);
 });

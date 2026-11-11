@@ -41,6 +41,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
   let generation = 0;
   let running = false;
   let diagnosticsRevision = 0;
+  let scopedFiles = new Set<string>();
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   const refreshFiles = new Set<string>();
 
@@ -65,6 +66,10 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     for (const cache of [facts, diagnostics, failures, versions]) {
       for (const file of cache.keys()) if (!current.has(file)) cache.delete(file);
     }
+  }
+
+  function refreshProjectRules(): void {
+    projectDiagnostics = runProjectRules([...facts.values()].filter(item => scopedFiles.has(item.file)));
   }
 
   function resetWorker(): void {
@@ -113,6 +118,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     projectDiagnostics = [];
     const priority = context.priorityFile();
     const allInputs = context.files();
+    scopedFiles = new Set(allInputs.map(input => input.file));
     const inputs = selected && !resume ? allInputs.filter(input => selected.has(input.file)) : allInputs;
     context.progress(0, inputs.length);
     inputs.sort((a, b) => Number(b.file === priority) - Number(a.file === priority) || a.file.localeCompare(b.file));
@@ -133,6 +139,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
         if (request !== generation) return;
         facts.delete(input.file);
         diagnostics.delete(input.file);
+        versions.delete(input.file);
         failures.set(input.file, analysisFailure(input.file, error));
       }
       diagnosticsRevision++;
@@ -140,13 +147,14 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     }
     if (request === generation) {
       running = false;
-      projectDiagnostics = runProjectRules([...facts.values()]);
+      refreshProjectRules();
       diagnosticsRevision++;
       context.complete(false);
     }
   }
 
   async function refresh(file: string, content: string): Promise<void> {
+    scopedFiles.add(file);
     const resume = running;
     const request = ++generation;
     resetWorker();
@@ -165,7 +173,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
       running = false;
       if (resume) void start();
       else {
-        projectDiagnostics = runProjectRules([...facts.values()]);
+        refreshProjectRules();
         diagnosticsRevision++;
         context.complete(false);
       }
@@ -173,12 +181,13 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
       if (request === generation) {
         facts.delete(file);
         diagnostics.delete(file);
+        versions.delete(file);
         failures.set(file, analysisFailure(file, error));
         diagnosticsRevision++;
         running = false;
         if (resume) void start();
         else {
-          projectDiagnostics = runProjectRules([...facts.values()]);
+          refreshProjectRules();
           diagnosticsRevision++;
           context.complete(false);
         }
@@ -201,6 +210,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     diagnostics.clear();
     failures.clear();
     versions.clear();
+    scopedFiles.clear();
     projectDiagnostics = [];
   }
 

@@ -62,6 +62,9 @@ export function runGeneralRules(facts: FileFacts, includeStyle = false): RuleDia
   for (const process of facts.processes) {
     for (const issue of process.issues) emit("info", "ANALYSIS-BOUNDARY", "analysis", process.startLine, 1, `静态检查受限：${issue}；相关区域未按完整语义判定。`);
   }
+  if (facts.conditionalCompilationLine !== undefined) {
+    emit("info", "ANALYSIS-BOUNDARY", "analysis", facts.conditionalCompilationLine, 1, "内置规则检查条件编译的全部源码分支，外部检查按实际宏配置选择分支。");
+  }
   return diagnostics;
 }
 

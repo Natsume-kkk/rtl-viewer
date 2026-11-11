@@ -39,3 +39,26 @@ it("重复定义冲突时不猜测例化端口绑定", () => {
   ];
   expect(runProjectRules(files).filter(item => item.ruleId === "10157-R-10-1")).toHaveLength(0);
 });
+
+it("省略带默认值的 VHDL 输入时，仅报告真正缺少连接的输入", () => {
+  const child = analyzeFileFacts("child.vhd", "entity child is port(a : in bit := '0'; b : in bit; y : out bit); end;");
+  const top = analyzeFileFacts("top.vhd", "entity top is port(y : out bit); end; architecture rtl of top is begin u: entity work.CHILD port map(Y => y); end;");
+  const diagnostics = runProjectRules([child, top]);
+  expect(diagnostics.map(item => item.message)).toEqual(["输入端口“b”悬空。"]);
+});
+
+it("Verilog 同名大小写变体的模块和端口分别匹配", () => {
+  const child = analyzeFileFacts("child.sv", "module child(input wire A, input wire [7:0] a); endmodule");
+  const other = analyzeFileFacts("CHILD.sv", "module CHILD(input wire a); endmodule");
+  const top = analyzeFileFacts("top.sv", "module top(input wire scalar, input wire [3:0] vector); child u(.A(scalar), .a(vector)); endmodule");
+  expect(runProjectRules([child, other, top]).filter(item => item.ruleId === "10157-R-10-1").map(item => item.message))
+    .toEqual(["端口“a”位宽为 8，连接信号位宽为 4。"]);
+});
+
+it("Verilog 例化 VHDL 实体时继续检查黑盒接口的确定位宽", () => {
+  const entity = analyzeFileFacts("vchild.vhd", "entity vchild is port(data : in bit_vector(7 downto 0)); end;");
+  const top = analyzeFileFacts("top.sv", "module top(input wire [3:0] data); vchild u(.data(data)); endmodule");
+  expect(runProjectRules([entity, top])).toContainEqual(expect.objectContaining({
+    ruleId: "10157-R-10-1", message: "端口“data”位宽为 8，连接信号位宽为 4。",
+  }));
+});

@@ -92,6 +92,7 @@ export async function saveFileDialog(defaultPath?: string): Promise<string | nul
 }
 
 export interface SyntaxDiagnostic {
+  syntaxKind?: "missing-instance-name";
   file: string;
   line: number;
   column: number;

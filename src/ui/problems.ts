@@ -1,6 +1,6 @@
 import type { SyntaxCheckResult, SyntaxDiagnostic, SyntaxProgress } from "../ipc";
 import type { RuleDiagnostic } from "../analysis/general-rules";
-import { diagnosticDisplayMessage, isUnclassifiedDisplayMessage, isVerilatorExitSummary } from "../app/diagnostic-display";
+import { diagnosticDisplayMessage, diagnosticGroupMessage, diagnosticHoverMessage, isVerilatorExitSummary } from "../app/diagnostic-display";
 import { setIcon, type IconName } from "./icons";
 
 interface ProblemPanelCallbacks {
@@ -352,7 +352,9 @@ export class ProblemPanel {
     const data = this.diagnosticsData();
     const all = data.diagnostics;
     const filtered = this.filteredDiagnostics();
-    const status = this.result ? this.result.cancelled ? "已取消，结果可能不完整" : `已检查 ${this.result.checkedFiles} 个文件` : "内置分析";
+    const status = this.result?.cancelled ? "已取消，结果可能不完整"
+      : this.result?.backends.some(backend => backend.status === "failed" || backend.status === "timed_out") ? `外部检查未完成 · 已检查 ${this.result.checkedFiles} 个文件`
+        : this.result ? `已检查 ${this.result.checkedFiles} 个文件` : "内置分析";
     const environmentText = data.environment ? ` · ${data.environment} 分析环境` : "";
     const stale = this.stale ? " · 外部结果为上次快照，等待自动复查" : "";
     this.summary.textContent = `${status} · ${data.counts.error} 错误 · ${data.counts.warning} 警告 · ${data.counts.info} 提示${environmentText} · 显示 ${filtered.length}/${all.length} 条${stale}`;
@@ -433,7 +435,7 @@ export class ProblemPanel {
       const environment = isEnvironmentDiagnostic(first);
       const severity = environment ? "environment" : first.severity;
       const type = environment ? "分析环境" : SEVERITY_LABELS[severity] ?? severity;
-      const title = `${type} · ${this.labels.get(first.file) ?? "工程级"} · ${diagnosticDisplayMessage(first)} · ${diagnostics.length} 条`;
+      const title = `${type} · ${this.labels.get(first.file) ?? "工程级"} · ${diagnosticGroupMessage(diagnostics)} · ${diagnostics.length} 条`;
       const group = this.syncGroup(key, `problem-${severity}-group`, title, `${first.file}\n${first.ruleId}: ${diagnosticHoverMessage(first)}`, diagnostics, item => this.createRow(item), first.file ? () => this.callbacks.onOpen(first) : undefined);
       this.placeGroup(group, position++);
     }
@@ -566,7 +568,7 @@ function sameDiagnostics(previous: Diagnostic[], next: Diagnostic[]): boolean {
 }
 
 function needsConfiguration(diagnostic: Diagnostic): boolean {
-  return /cannot find file containing|include file.*not found|cannot open.*include|cannot find.*(?:library|package)|unit\s+"[^"]+"\s+not found in library|top-level module|TOPLEVEL|CANNOTOPEN|INCLUDE/i.test(diagnostic.message);
+  return /cannot find file containing|include file.*not found|cannot open.*include|cannot find.*(?:library|package)|unit\s+"[^"]+"\s+not found in library|top[- ]level module|TOPLEVEL|CANNOTOPEN|INCLUDE/i.test(diagnostic.message);
 }
 
 function isEnvironmentDiagnostic(diagnostic: Diagnostic): boolean {
@@ -574,7 +576,8 @@ function isEnvironmentDiagnostic(diagnostic: Diagnostic): boolean {
 }
 
 function diagnosticFingerprint(diagnostic: Diagnostic): string {
-  return `${diagnostic.file}|${diagnostic.line}|${diagnostic.column}|${diagnostic.severity}|${diagnostic.ruleId}|${diagnostic.message}`;
+  const syntaxKind = "syntaxKind" in diagnostic ? diagnostic.syntaxKind ?? "" : "";
+  return `${diagnostic.file}|${diagnostic.line}|${diagnostic.column}|${diagnostic.severity}|${diagnostic.ruleId}|${diagnostic.message}|${syntaxKind}`;
 }
 
 function sourceGroup(diagnostic: Diagnostic): string {
@@ -595,11 +598,6 @@ function severityCounts(diagnostics: Diagnostic[]): Record<"error" | "warning" |
     else counts.info++;
   }
   return counts;
-}
-
-function diagnosticHoverMessage(diagnostic: Diagnostic): string {
-  const display = diagnosticDisplayMessage(diagnostic);
-  return isUnclassifiedDisplayMessage(display) ? `${display}\n原始诊断：${diagnostic.message}` : display;
 }
 
 function severityRank(severity: string): number {

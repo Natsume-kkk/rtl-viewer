@@ -42,13 +42,14 @@ function main(argv: string[]): number {
     return 2;
   }
   const root = path.resolve(options.root);
+  const resolvedOptions = syntaxOptions(options);
   const external = options.external ? runNodeSyntaxCheck({
     requestId: 1,
     root,
-    files,
+    files: [...new Set([...files, ...resolvedOptions.vhdlLibraries.map(mapping => mapping.file)])],
     top: options.top,
     ...buildStubs(scanned),
-    options: syntaxOptions(options),
+    options: resolvedOptions,
   }) : { requestId: 1, diagnostics: [], checkedFiles: 0, backends: [], cancelled: false };
   const facts = files.map(file => analyzeFileFacts(file, readNodeSource(file)));
   const builtin = facts.flatMap(fact => runGeneralRules(fact, true));
@@ -69,12 +70,12 @@ function main(argv: string[]): number {
   console.log(`Summary: ${diagnostics.filter(item => item.severity === "error").length} errors, ${diagnostics.filter(item => item.severity === "warning").length} warnings, ${diagnostics.filter(item => item.severity === "info").length} info across ${files.length} file(s); ${codeLines} code lines; comment ratio ${ratio}%.`);
   if (options.html) {
     fs.mkdirSync(path.dirname(path.resolve(options.html)), { recursive: true });
-    fs.writeFileSync(options.html, syntaxReportHtml(root, result, new Date(), { options: syntaxOptions(options), facts }));
+    fs.writeFileSync(options.html, syntaxReportHtml(root, result, new Date(), { options: resolvedOptions, facts }));
     console.log(`HTML report: ${options.html}`);
   }
   if (options.csv) {
     fs.mkdirSync(path.dirname(path.resolve(options.csv)), { recursive: true });
-    fs.writeFileSync(options.csv, syntaxReportCsv(result, { options: syntaxOptions(options), facts, stale: false }));
+    fs.writeFileSync(options.csv, syntaxReportCsv(result, { options: resolvedOptions, facts, stale: false }));
     console.log(`CSV report: ${options.csv}`);
   }
   return diagnostics.some(item => item.severity === "error") ? 1 : 0;

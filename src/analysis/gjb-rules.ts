@@ -73,7 +73,7 @@ export function runGjb10157Rules(facts: FileFacts): RuleDiagnostic[] {
       emit("R-6-2", process.startLine, 1, "时序 always 未识别到规则所定义的复位初始化分支。");
       if (process.caseCount) emit("R-14-3", process.startLine, 1, "状态机过程未识别到初始状态复位或初始化。");
     }
-    if (process.hasResetBranch && process.assignments.some(assignment => assignment.conditions.some(condition => /rst|reset/i.test(condition))) && process.assignments.some(assignment => !assignment.conditions.some(condition => /rst|reset/i.test(condition)))) {
+    if (hasMixedResetTargets(process)) {
       emit("R-6-1", process.startLine, 1, "同一 always 中混用了有复位和无复位的触发器。");
     }
     if (process.resets.some(name => /set/.test(name)) && process.resets.some(name => /rst|reset/.test(name))) emit("A-5-4", process.startLine, 1, "同时使用了异步置位和异步复位信号，建议避免。");
@@ -141,14 +141,20 @@ export function runGjb10157Rules(facts: FileFacts): RuleDiagnostic[] {
   const fileBase = facts.file.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "");
   if (modules[0] && fileBase && fileBase !== modules[0].name) emit("A-2-1", modules[0].line, 1, `模块名“${modules[0].name}”与文件名“${fileBase}”不一致。`);
   const edges = new Map<string, Set<string>>();
-  for (const signature of facts.signatures.filter(item => item.kind === "posedge" || item.kind === "negedge")) {
-    const scope = moduleScopeAt(facts, signature.line, signature.scope);
+  const fallingClockLines = new Map<string, number>();
+  for (const process of facts.processes) {
+    const scope = moduleScopeAt(facts, process.startLine, process.scope);
     const kinds = edges.get(scope) ?? new Set<string>();
-    kinds.add(signature.kind);
+    for (const event of process.sensitivity) {
+      const edge = /^(posedge|negedge)\s+([A-Za-z_]\w*)\b/.exec(event);
+      if (!edge || !process.clocks.includes(edge[2])) continue;
+      kinds.add(edge[1]);
+      if (edge[1] === "negedge" && !fallingClockLines.has(scope)) fallingClockLines.set(scope, process.startLine);
+    }
     edges.set(scope, kinds);
   }
-  for (const [scope, kinds] of edges) {
-    if (kinds.size > 1) emit("A-4-1", facts.signatures.find(item => item.kind === "negedge" && moduleScopeAt(facts, item.line, item.scope) === scope)?.line ?? 1, 1, "同一模块同时使用了 posedge 和 negedge，建议避免混用时钟边沿。");
+  for (const [scope, line] of fallingClockLines) {
+    if (edges.get(scope)?.has("posedge")) emit("A-4-1", line, 1, "同一模块同时使用了 posedge 和 negedge，建议避免混用时钟边沿。");
   }
   for (const parameter of facts.parameters) {
     if (parameter.defaultValue && /^\d+$/.test(parameter.defaultValue.trim())) emit("A-9-2", parameter.line ?? 1, 1, `参数“${parameter.name}”未显式指定进制和位宽。`);
@@ -432,6 +438,25 @@ function allNames(facts: FileFacts): { name: string; line: number; kind: string 
     ...facts.ports.map(item => ({ name: item.name, line: item.line ?? 1, kind: "port" })),
     ...facts.parameters.map(item => ({ name: item.name, line: item.line ?? 1, kind: "parameter" })),
   ];
+}
+
+function hasMixedResetTargets(process: ProcessFacts): boolean {
+  if (!process.sequential || !process.hasResetBranch) return false;
+  const assignments = process.assignments.filter(item => item.targetText === item.target);
+  const condition = assignments.find(item => item.conditions.length)?.conditions[0];
+  if (!condition) return false;
+  const simple = /^!?\s*([A-Za-z_]\w*)(?:\s*={2,3}\s*(?:1'b[01]|[01]))?$/.exec(condition);
+  if (!simple || !process.resets.includes(simple[1].toLowerCase())) return false;
+  const resetTargets = new Map<string, "reset" | "normal" | "unknown">();
+  const normalTargets = new Set<string>();
+  for (const item of assignments) {
+    const branch = item.conditions[0];
+    if (branch === undefined || branch === `!(${condition})`) normalTargets.add(item.target);
+    if (branch === undefined) resetTargets.set(item.target, "normal");
+    if (branch === condition) resetTargets.set(item.target, item.conditions.length === 1 ? "reset" : "unknown");
+  }
+  return [...resetTargets.values()].includes("reset")
+    && [...normalTargets].some(target => (resetTargets.get(target) ?? "normal") === "normal");
 }
 
 function resetPolarityMismatch(process: ProcessFacts, reset: string): boolean {

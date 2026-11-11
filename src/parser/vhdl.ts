@@ -87,11 +87,11 @@ function parseVhdlPorts(portListSrc: string, lineStarts?: number[], baseOffset =
   const ports: PortInfo[] = [];
   let entryStart = 0;
   for (const entry of portListSrc.split(";")) {
-    const m = /^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*:\s*(in|out|inout|buffer|linkage)\s+([\s\S]+?)\s*$/i.exec(
+    const m = /^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*:\s*(?:(in|out|inout|buffer|linkage)\s+)?([\s\S]+?)\s*$/i.exec(
       entry,
     );
     if (m) {
-      const type = m[3].trim();
+      const [type, defaultValue] = m[3].split(":=", 2).map(part => part.trim());
       const widthMatch = /\([^)]*\)/.exec(type);
       const namesStart = m[0].indexOf(m[1]);
       let nameStart = 0;
@@ -100,8 +100,9 @@ function parseVhdlPorts(portListSrc: string, lineStarts?: number[], baseOffset =
         const leading = rawName.search(/\S|$/);
         ports.push({
           name,
-          direction: m[2].toLowerCase(),
+          direction: m[2]?.toLowerCase() ?? "in",
           width: widthMatch ? type : undefined,
+          ...(defaultValue !== undefined ? { hasDefault: true } : {}),
           line: lineStarts ? lineAt(lineStarts, baseOffset + entryStart + namesStart + nameStart + leading) : undefined,
         });
         nameStart += rawName.length + 1;

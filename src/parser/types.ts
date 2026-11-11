@@ -4,6 +4,7 @@ export interface PortInfo {
   name: string;
   direction?: string;
   width?: string;
+  hasDefault?: boolean;
   line?: number;
 }
 

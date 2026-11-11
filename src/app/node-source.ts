@@ -25,15 +25,3 @@ export function decodeNodeSource(bytes: Buffer): string {
     return strictGbk.decode(body);
   }
 }
-
-export function encodeNodeSnapshot(content: string, encoding: string): Buffer {
-  if (encoding === "utf8") return Buffer.from(content, "utf8");
-  if (encoding === "utf8-bom") return Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(content, "utf8")]);
-  if (encoding === "utf16le") return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(content, "utf16le")]);
-  if (encoding === "utf16be") {
-    const body = Buffer.from(content, "utf16le");
-    body.swap16();
-    return Buffer.concat([Buffer.from([0xfe, 0xff]), body]);
-  }
-  throw new Error(`Node CLI 暂不支持 ${encoding} 快照编码；磁盘源码仍支持自动 UTF-8／GBK 解码`);
-}

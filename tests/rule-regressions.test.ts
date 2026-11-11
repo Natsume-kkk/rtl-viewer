@@ -8,6 +8,27 @@ const vhdl = (source: string, file = "demo.vhd") => runGjb9765Rules(analyzeFileF
 const ids = (source: string, file = "demo.v") => verilog(source, file).map(item => item.ruleId);
 const vhdlIds = (source: string, file = "demo.vhd") => vhdl(source, file).map(item => item.ruleId);
 
+it("异步复位边沿不计作时钟，只有不同目标混用复位才报警", () => {
+  const source = `module demo(input logic clk, rst, d, output logic q, r);
+always @(posedge clk or negedge rst) begin
+  if (!rst) q <= 1'b0;
+  else q <= d;
+end
+endmodule`;
+  expect(ids(source)).not.toContain("10157-A-4-1");
+  expect(ids(source)).not.toContain("10157-R-6-1");
+  expect(ids(source.replace("else q <= d;", "else q <= d; q <= d;"))).not.toContain("10157-R-6-1");
+  expect(ids(source.replace("else q <= d;", "else q <= d; r <= d;"))).toContain("10157-R-6-1");
+  expect(ids(source.replace("  if (!rst)", "  q <= d; r <= d; if (!rst)"))).toContain("10157-R-6-1");
+});
+
+it("内置规则明确标注条件编译的检查范围", () => {
+  const source = "module demo;\n`ifdef OTHER\ninitial q = 0;\n`endif\nendmodule\n";
+  const diagnostics = runGeneralRules(analyzeFileFacts("demo.sv", source));
+  expect(diagnostics).toContainEqual(expect.objectContaining({ ruleId: "ANALYSIS-BOUNDARY", message: expect.stringContaining("全部源码分支") }));
+  expect(diagnostics).toContainEqual(expect.objectContaining({ ruleId: "VLG-SY-003" }));
+});
+
 it("字面量只在非法数字或可能截断时报告位宽问题", () => {
   const valid = `module demo;
 reg [7:0] a;

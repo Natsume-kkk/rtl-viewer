@@ -150,6 +150,25 @@ it("队列完成后合并跨文件项目级诊断", async () => {
   expect(queue.diagnosticValues().filter(item => item.ruleId === "10157-A-2-7")).toHaveLength(1);
 });
 
+it("收窄范围后项目级规则不使用范围外的缓存事实", async () => {
+  const first = { file: "a.sv", content: "module a; parameter WIDTH = 8; endmodule" };
+  const second = { file: "b.sv", content: "module b; parameter WIDTH = 16; endmodule" };
+  let inputs = [first, second];
+  const queue = scheduler({
+    files: () => [...inputs],
+    priorityFile: () => undefined,
+    result: () => undefined,
+    progress: () => undefined,
+    complete: () => undefined,
+  });
+  await queue.start();
+  expect(queue.diagnosticValues().some(item => item.ruleId === "10157-A-2-7")).toBe(true);
+  inputs = [second];
+  await queue.start();
+  expect(queue.get(first.file)).toBeDefined();
+  expect(queue.diagnosticValues().some(item => item.ruleId === "10157-A-2-7")).toBe(false);
+});
+
 it("后台队列中的刷新失败会恢复并分析剩余文件", async () => {
   const calls: { file: string; resolve: (result: { fingerprint: string; facts: ReturnType<typeof analyzeFileFacts>; diagnostics: never[] }) => void; reject: (error: Error) => void }[] = [];
   let finished: (() => void) | undefined;

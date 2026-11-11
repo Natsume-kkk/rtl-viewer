@@ -22,10 +22,11 @@ export function runProjectRules(files: FileFacts[]): RuleDiagnostic[] {
   }
 
   const definitions = new Map<string, { file: string; ports: FileFacts["ports"]; conflict: boolean }>();
+  const bindingKey = (facts: FileFacts, name: string) => `${facts.language}:${facts.language === "vhdl" ? name.toLowerCase() : name}`;
   for (const facts of files) {
     for (const port of facts.ports) {
-      const key = port.scope?.toLowerCase();
-      if (!key) continue;
+      if (!port.scope) continue;
+      const key = bindingKey(facts, port.scope);
       const definition = definitions.get(key) ?? { file: facts.file, ports: [], conflict: false };
       if (definition.file !== facts.file) definition.conflict = true;
       definition.ports.push(port);
@@ -35,14 +36,16 @@ export function runProjectRules(files: FileFacts[]): RuleDiagnostic[] {
   const seenDefinitions = new Set<string>();
   for (const facts of files) {
     for (const definition of facts.definitions.filter(item => item.kind !== "architecture")) {
-      const key = definition.name.toLowerCase();
+      const key = bindingKey(facts, definition.name);
       if (seenDefinitions.has(key) && definitions.has(key)) definitions.get(key)!.conflict = true;
       seenDefinitions.add(key);
     }
   }
   for (const facts of files) {
     for (const instance of facts.instances) {
-      const definition = definitions.get(instance.module.toLowerCase());
+      const key = bindingKey(facts, instance.module);
+      const definition = definitions.get(key) ?? (facts.language === "verilog" && !seenDefinitions.has(key)
+        ? definitions.get(`vhdl:${instance.module.toLowerCase()}`) : undefined);
       if (!definition || definition.conflict) continue;
       const childPorts = definition.ports;
       if (!childPorts.length) continue;
@@ -55,11 +58,11 @@ export function runProjectRules(files: FileFacts[]): RuleDiagnostic[] {
       }
       childPorts.forEach((port, index) => {
         const connection = named
-          ? instance.connections.find(item => item.port?.toLowerCase() === port.name.toLowerCase())
+          ? instance.connections.find(item => item.port && bindingKey(facts, item.port) === bindingKey(facts, port.name))
           : instance.connections[index];
         const direction = port.direction?.toLowerCase();
         if (facts.language === "vhdl") {
-          if ((direction === "in" || direction === "input") && (!connection || !connection.expr.trim() || connection.expr.trim().toLowerCase() === "open")) {
+          if ((direction === "in" || direction === "input") && !port.hasDefault && (!connection || !connection.expr.trim() || connection.expr.trim().toLowerCase() === "open")) {
             emit(diagnostics, GJB9765_RULES, facts, "4.1-b", connection?.line ?? instance.line, `输入端口“${port.name}”悬空。`);
           }
           if ((direction === "out" || direction === "output" || direction === "buffer") && (!connection || !connection.expr.trim())) {

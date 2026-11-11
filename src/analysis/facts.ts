@@ -126,6 +126,7 @@ export interface FileFacts {
   loopCount: number;
   generateCount: number;
   instanceCount: number;
+  conditionalCompilationLine?: number;
   issues: string[];
 }
 
@@ -139,6 +140,7 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
   const definitions = modules.flatMap(module => definitionFacts(module));
   const processes: ProcessFacts[] = [];
   const issues: string[] = [];
+  const conditionalCompilation = language === "verilog" ? /^[ \t]*`(?:ifdef|ifndef)\b/m.exec(clean) : null;
   let initialCount = 0;
   let functionTaskCount = 0;
   const initialLines: number[] = [];
@@ -246,6 +248,7 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
     loopCount,
     generateCount,
     instanceCount,
+    ...(conditionalCompilation ? { conditionalCompilationLine: lineAt(starts, conditionalCompilation.index) } : {}),
     issues,
   };
 }

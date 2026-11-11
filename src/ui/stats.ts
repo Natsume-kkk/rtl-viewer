@@ -165,7 +165,9 @@ export class StatsPanel {
     const builtin = document.createElement("span");
     builtin.textContent = view.done < view.total ? `内置分析：进行中 ${view.done}/${view.total}` : view.diagnostics.some(item => item.ruleId === "ANALYSIS-FAILED") ? "内置分析：部分文件失败" : "内置分析：已更新到当前源码";
     const external = document.createElement("span");
-    const externalStatus = view.running ? "检查中" : view.external ? view.external.cancelled ? "已取消，结果可能不完整" : `已检查 ${view.external.checkedFiles} 个文件` : "未运行";
+    const externalStatus = view.running ? "检查中" : view.external?.cancelled ? "已取消，结果可能不完整"
+      : view.external?.backends.some(backend => backend.status === "failed" || backend.status === "timed_out") ? `检查未完成 · 已检查 ${view.external.checkedFiles} 个文件`
+        : view.external ? `已检查 ${view.external.checkedFiles} 个文件` : "未运行";
     external.textContent = `外部检查：${externalStatus}${view.stale && view.external ? " · 上次快照，待重新检查" : ""}`;
     this.status.append(builtin, external);
     for (const severity of ["error", "warning", "info"] as const) {

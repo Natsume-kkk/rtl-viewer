@@ -1,7 +1,46 @@
+import type { SyntaxDiagnostic } from "../ipc";
+import { KEYWORDS, stripComments } from "../parser/verilog";
+
 export interface DiagnosticMessageLike {
   source: string;
   ruleId: string;
   message: string;
+  syntaxKind?: "missing-instance-name";
+}
+
+/** 仅在报错位置与源码形态均吻合时补充解释，保留后端原始消息和规则。 */
+export function explainVerilatorSyntax(diagnostics: SyntaxDiagnostic[], sourceFor: (file: string) => string | undefined): void {
+  const sources = new Map<string, { clean: string; starts: number[] } | undefined>();
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.source !== "verilator" || !/^(?:syntax error,\s*unexpected|Unexpected token)\s+'\('$/.test(diagnostic.message)) continue;
+    if (!sources.has(diagnostic.file)) {
+      const source = sourceFor(diagnostic.file);
+      if (source === undefined) sources.set(diagnostic.file, undefined);
+      else {
+        const starts = [0];
+        for (let i = 0; i < source.length; i++) if (source[i] === "\n") starts.push(i + 1);
+        sources.set(diagnostic.file, { clean: stripComments(source), starts });
+      }
+    }
+    const source = sources.get(diagnostic.file);
+    if (!source || diagnostic.column < 1 || source.starts[diagnostic.line - 1] === undefined) continue;
+    const offset = source.starts[diagnostic.line - 1] + diagnostic.column - 1;
+    if (offset >= (source.starts[diagnostic.line] ?? source.clean.length) || source.clean[offset] !== "(") continue;
+    const prefix = source.clean.slice(0, offset).trimEnd();
+    if (!prefix.endsWith(")")) continue;
+    let depth = 1, open = prefix.length - 2;
+    for (; open >= 0; open--) {
+      if (prefix[open] === ")") depth++;
+      if (prefix[open] === "(" && --depth === 0) break;
+    }
+    if (open < 0) continue;
+    const head = /\b([A-Za-z_]\w*)\s*#\s*$/.exec(prefix.slice(0, open));
+    if (!head || KEYWORDS.has(head[1]) || /^(?:r?[np]mos|r?cmos|r?tran(?:if[01])?)$/.test(head[1])) continue;
+    // 排除模块头、过程语句及带宏展开的未知上下文。
+    const beforeType = prefix.slice(0, head.index).trimEnd();
+    if (beforeType && !/(?:[;:]|\bbegin|\bend|\bgenerate)$/.test(beforeType)) continue;
+    diagnostic.syntaxKind = "missing-instance-name";
+  }
 }
 
 const VERILATOR_RULE_LABELS: Record<string, string> = {
@@ -40,6 +79,12 @@ export function isVerilatorExitSummary(diagnostic: DiagnosticMessageLike): boole
 
 export function diagnosticDisplayMessage(diagnostic: DiagnosticMessageLike): string {
   if (diagnostic.source === "verilator") {
+    if (diagnostic.syntaxKind === "missing-instance-name") return "模块例化缺少实例名：请在参数列表 #(...) 与端口列表之间填写实例名。";
+    if (/^Instance of module must be named\.?$/i.test(diagnostic.message)) return "模块例化缺少实例名";
+    const parameter = /^Parameter(?: pin)? not found:\s*(.+)$/i.exec(diagnostic.message);
+    if (parameter) return `参数未找到：${parameter[1]}`;
+    const variable = /^Can't find definition of variable:\s*(.+)$/i.exec(diagnostic.message);
+    if (variable) return `未找到变量 ${variable[1]} 的定义`;
     const unexpected = /^Unexpected token\s+(.+)$/i.exec(diagnostic.message);
     if (unexpected) return `遇到意外标记：${unexpected[1]}`;
     const syntaxUnexpected = /^syntax error,\s*unexpected\s+(.+)$/i.exec(diagnostic.message);
@@ -58,23 +103,51 @@ export function isUnclassifiedDisplayMessage(message: string): boolean {
   return message.startsWith("未分类诊断") || message.startsWith("Verilator 未分类诊断");
 }
 
+export function diagnosticHoverMessage(diagnostic: DiagnosticMessageLike): string {
+  const display = diagnosticDisplayMessage(diagnostic);
+  return (diagnostic.source === "verilator" || diagnostic.source === "ghdl") && display !== diagnostic.message
+    ? `${display}\n原始诊断：${diagnostic.message}` : display;
+}
+
+export function diagnosticGroupMessage(diagnostics: readonly DiagnosticMessageLike[]): string {
+  const first = diagnostics[0];
+  if (!first) return "";
+  if (diagnostics.length > 1) {
+    if (first.source === "ghdl") return "GHDL 语法与语义诊断";
+    if (first.source === "verilator" && first.ruleId === "VERILATOR-GENERAL") return "Verilator 语法与语义诊断";
+    if (first.source === "verilator" && first.ruleId === "VERILATOR-PINNOTFOUND") return "端口／参数未找到";
+  }
+  return diagnosticDisplayMessage(first);
+}
+
 function verilatorWidthMessage(message: string): string | undefined {
   if (/^Unsized numbers\/parameters not allowed in concatenations/i.test(message)) return "拼接中包含未指定位宽的数值或参数";
   if (/^Unsized numbers\/parameters not allowed in replications/i.test(message)) return "复制中包含未指定位宽的数值或参数";
   const unusedBits = /^Bits of signal are not used:\s*(.+)$/i.exec(message);
   if (unusedBits) return `部分信号位未使用：${unusedBits[1]}`;
-  const operator = /^Operator\s+(\w+)\s+expects\s+(.+?)\s+on the\s+(.+?),\s+but\s+.+?'s\s+VARREF\s+'([^']+)'\s+generates\s+(.+)$/i.exec(message);
+  const operator = /^Operator\s+(\w+)\s+expects\s+(.+?)\s+on the\s+(.+?),\s+but\s+(.+?)\s+generates\s+(.+)$/i.exec(message);
   if (operator) {
     const role = operandRole(operator[3]);
-    return `${operator[1]}${role ? ` 的${role}` : ""}要求 ${widthText(operator[2])}，但 '${operator[4]}' 实际为 ${widthText(operator[5])}`;
+    return `${operator[1]}${role ? ` 的${role}` : " "}要求 ${widthText(operator[2])}，但${widthSource(operator[4])}实际为 ${widthText(operator[5])}`;
   }
-  const port = /^(Input|Output)\s+port connection\s+'([^']+)'\s+expects\s+(.+?)\s+on the\s+.+?,\s+but\s+.+?'s\s+VARREF\s+'([^']+)'\s+generates\s+(.+)$/i.exec(message);
-  if (port) return `端口 '${port[2]}' 要求 ${widthText(port[3])}，但 '${port[4]}' 实际为 ${widthText(port[5])}`;
+  const port = /^(Input|Output)\s+port connection\s+'([^']+)'\s+expects\s+(.+?)\s+on the\s+.+?,\s+but\s+(.+?)\s+generates\s+(.+)$/i.exec(message);
+  if (port) return `端口 '${port[2]}' 要求 ${widthText(port[3])}，但${widthSource(port[4])}实际为 ${widthText(port[5])}`;
+  const range = /^Selection index out of range:\s*(.+?)\s+outside\s+(.+?)\.?$/i.exec(message);
+  if (range) return `选择索引 ${range[1]} 超出声明范围 ${range[2]}`;
   const index = /^Bit extraction of\s+(.+?)\s+requires\s+(\d+)\s+bit index,\s+not\s+(\d+)\s+bits?/i.exec(message);
   if (index) return `${index[1]} 的索引要求 ${index[2]} 位，实际为 ${index[3]} 位`;
   const digits = /^Too many digits for\s+(\d+)\s+bit number:\s*(.+)$/i.exec(message);
   if (digits) return `${digits[1]} 位数值包含过多数字：${digits[2]}`;
   return undefined;
+}
+
+function widthSource(expression: string): string {
+  const variable = /\bVARREF\s+'([^']+)'$/.exec(expression);
+  if (variable) return ` '${variable[1]}' `;
+  const constant = /\bCONST\s+(.+)$/.exec(expression);
+  if (constant) return `常量 ${constant[1]} `;
+  if (/\bREPLICATE$/.test(expression)) return "拼接／复制表达式";
+  return "表达式";
 }
 
 function operandRole(role: string): string {
@@ -99,8 +172,8 @@ function ghdlDisplayMessage(message: string): string {
   if (notAnalysed) return `实体 "${notAnalysed[1]}" 尚未分析，请先处理前序错误`;
   const hiddenEntity = /declaration of\s+"([^"]+)"\s+hides entity\s+"([^"]+)"/i.exec(message);
   if (hiddenEntity) return `声明 "${hiddenEntity[1]}" 隐藏了实体 "${hiddenEntity[2]}"`;
-  const missingToken = /missing\s+"([^"]+)"\s+at end of statement/i.exec(message);
-  if (missingToken) return `语句末尾缺少 "${missingToken[1]}"`;
+  const missingToken = /missing\s+"([^"]+)"\s+at end of (statement|(?:\w+\s+)?declaration)\b/i.exec(message);
+  if (missingToken) return `${missingToken[2].toLowerCase() === "statement" ? "语句" : "声明"}末尾缺少 "${missingToken[1]}"`;
   if (/missing choice\(s\)/i.test(message)) return "case 分支未覆盖全部可能取值";
   const noDeclaration = /no declaration for\s+"([^"]+)"/i.exec(message);
   if (noDeclaration) return `未找到 "${noDeclaration[1]}" 的声明`;
@@ -120,7 +193,7 @@ function declarationKind(kind: string): string {
 }
 
 function withQuotedDetails(label: string, message: string): string {
-  const details = [...message.matchAll(/'[^']+'|"[^"]+"/g)].map(match => match[0]).filter((detail, index, all) => all.indexOf(detail) === index);
+  const details = [...message.matchAll(/(?<![A-Za-z0-9_])'.+?'(?![A-Za-z0-9_])|"[^"]+"/g)].map(match => match[0]).filter((detail, index, all) => all.indexOf(detail) === index);
   return details.length ? `${label}：${details.join("、")}` : label;
 }
 
@@ -130,7 +203,7 @@ function diagnosticRuleLabel(diagnostic: DiagnosticMessageLike): string {
     if (label) return label;
     if (/cannot find file containing|undefined module|module not found/i.test(diagnostic.message)) return "缺少模块定义";
     if (/include file.*not found|cannot open.*include|CANNOTOPEN|INCLUDE/i.test(diagnostic.message)) return "include 文件缺失";
-    if (/top-level module|TOPLEVEL/i.test(diagnostic.message)) return "无法确定顶层";
+    if (/top[- ]level module|TOPLEVEL/i.test(diagnostic.message)) return "无法确定顶层";
     if (/cannot find.*(?:library|package)/i.test(diagnostic.message)) return "VHDL 库／包缺失";
     return "Verilator 未分类诊断（悬停查看原文）";
   }

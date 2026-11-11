@@ -56,6 +56,43 @@ it("未预先标记过期的结果在调用失败后也必须标记为旧结果"
   expect(panel.failureMessage).toBe("");
 });
 
+it("同一文件不同 GHDL 错误共组时使用中性标题，明细和悬停保留各自原因", () => {
+  const { root, panel, callbacks } = setup();
+  const external = result();
+  external.diagnostics = [
+    { ...external.diagnostics[0], source: "ghdl", ruleId: "GHDL", message: 'error: identifier "duplicate_signal" already used for a declaration' },
+    { ...external.diagnostics[0], source: "ghdl", ruleId: "GHDL", line: 9, message: 'error: no declaration for "missing_signal"' },
+  ];
+  panel.finish(external);
+  const group = root.querySelector<HTMLDetailsElement>(".problem-error-group")!;
+  expect(root.querySelectorAll(".problem-group")).toHaveLength(1);
+  expect(group.querySelector("summary")!.textContent).toContain("GHDL 语法与语义诊断 · 2 条");
+  group.querySelector("summary")!.click();
+  group.dispatchEvent(new Event("toggle"));
+  const rows = group.querySelectorAll<HTMLButtonElement>(".problem-row");
+  expect(rows[0].textContent).toContain('标识符 "duplicate_signal" 已被其他声明使用');
+  expect(rows[1].textContent).toContain('未找到 "missing_signal" 的声明');
+  expect(rows[1].title).toContain('原始诊断：error: no declaration for "missing_signal"');
+  rows[1].click();
+  expect(callbacks.onOpen).toHaveBeenCalledWith(external.diagnostics[1]);
+  panel.finish({ ...external, diagnostics: [external.diagnostics[1]] });
+  expect(group.open).toBe(true);
+  expect(group.querySelector("summary")!.textContent).toContain('未找到 "missing_signal" 的声明 · 1 条');
+});
+
+it("补充源码解释后问题组及已展开明细更新为缺少实例名", () => {
+  const { root, panel } = setup();
+  const initial = result();
+  initial.diagnostics = [{ ...initial.diagnostics[0], ruleId: "VERILATOR-GENERAL", message: "syntax error, unexpected '('" }];
+  panel.finish(initial);
+  const group = root.querySelector<HTMLDetailsElement>(".problem-error-group")!;
+  group.querySelector("summary")!.click();
+  group.dispatchEvent(new Event("toggle"));
+  panel.finish({ ...initial, diagnostics: [{ ...initial.diagnostics[0], syntaxKind: "missing-instance-name" }] });
+  expect(group.querySelector("summary")!.textContent).toContain("模块例化缺少实例名");
+  expect(group.querySelector(".problem-row")!.textContent).toContain("模块例化缺少实例名");
+});
+
 it("后台进度、取消、定位和过期状态共用同一份诊断结果", () => {
   const { root, panel, callbacks } = setup();
   expect([...root.querySelectorAll("button")].some(button => button.textContent === "检查")).toBe(false);
@@ -121,7 +158,8 @@ it("外部诊断明细和提示使用中文，保留标识并支持中英文筛�
   expect(root.textContent).not.toContain("Cell has missing pin");
   expect(root.textContent).not.toContain("Cannot find file containing module");
   expect(root.textContent).not.toContain("Unexpected token");
-  for (const group of root.querySelectorAll<HTMLDetailsElement>(".problem-group")) expect(group.title).not.toContain("Cell has missing pin");
+  const pinGroup = [...root.querySelectorAll<HTMLDetailsElement>(".problem-group")].find(group => group.title.includes("VERILATOR-PINMISSING"))!;
+  expect(pinGroup.title).toContain("原始诊断：Cell has missing pin: 'aclen'");
 
   const search = root.querySelector<HTMLInputElement>('input[aria-label="搜索规则或诊断"]')!;
   search.value = "例化缺少端口";

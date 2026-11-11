@@ -1,7 +1,7 @@
 import { monaco } from "../editor/monaco";
 import type { SyntaxDiagnostic } from "../ipc";
 import { filePathKey } from "../file-path";
-import { diagnosticDisplayMessage, isUnclassifiedDisplayMessage } from "./diagnostic-display";
+import { diagnosticHoverMessage } from "./diagnostic-display";
 
 interface MarkedModel {
   path: string;
@@ -28,7 +28,10 @@ export function syncProblemMarkers(models: Iterable<MarkedModel>, diagnostics: S
   }
   for (const { path, model } of models) {
     if (model.isDisposed()) continue;
-    const markers = (grouped.get(filePathKey(path)) ?? []).slice(0, 500).map(diagnostic => ({
+    const rank = (severity: string) => severity === "error" ? 0 : severity === "warning" ? 1 : 2;
+    const markers = (grouped.get(filePathKey(path)) ?? [])
+      .sort((left, right) => rank(left.severity) - rank(right.severity))
+      .slice(0, 500).map(diagnostic => ({
       severity: diagnostic.severity === "error" ? monaco.MarkerSeverity.Error
         : diagnostic.severity === "warning" ? monaco.MarkerSeverity.Warning
           : monaco.MarkerSeverity.Info,
@@ -44,7 +47,5 @@ export function syncProblemMarkers(models: Iterable<MarkedModel>, diagnostics: S
 }
 
 function markerMessage(diagnostic: SyntaxDiagnostic): string {
-  const display = diagnosticDisplayMessage(diagnostic);
-  const original = isUnclassifiedDisplayMessage(display) ? `\n原始诊断：${diagnostic.message}` : "";
-  return `${diagnostic.ruleId}: ${display}${original}`;
+  return `${diagnostic.ruleId}: ${diagnosticHoverMessage(diagnostic)}`;
 }

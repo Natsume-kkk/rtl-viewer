@@ -229,17 +229,24 @@ fn prepare_snapshots(snapshots: &[SourceSnapshot], root: &Path, work: &Path) -> 
         if !original.starts_with(root) {
             return Err(format!("快照文件不在当前工程内：{}", snapshot.file));
         }
-        let relative = original.strip_prefix(root).map_err(|_| format!("无法计算快照相对路径：{}", snapshot.file))?;
-        let overlay = work.join("snapshot").join(relative);
-        let parent = overlay.parent().ok_or_else(|| "快照目标路径无效".to_owned())?;
-        fs::create_dir_all(parent).map_err(|error| format!("创建快照目录失败：{error}"))?;
-        let bytes = crate::encode(&snapshot.content, &snapshot.encoding)?;
-        fs::write(&overlay, bytes).map_err(|error| format!("写入快照失败：{error}"))?;
+        if !matches!(snapshot.encoding.as_str(), "utf8" | "utf8-bom" | "utf16le" | "utf16be" | "gbk") {
+            return Err(format!("不支持的快照编码：{}", snapshot.encoding));
+        }
+        let overlay = stage_source(&original, root, work, &snapshot.content, &mut originals)?;
         let original_display = crate::normalize(&original);
         overlays.insert(original_display.clone(), overlay.clone());
-        originals.insert(crate::normalize(&overlay), original_display);
     }
     Ok(SnapshotFiles { overlays, originals })
+}
+
+fn stage_source(original: &Path, root: &Path, work: &Path, content: &str, originals: &mut HashMap<String, String>) -> Result<PathBuf, String> {
+    let relative = original.strip_prefix(root).map_err(|_| "无法计算检查文件相对路径".to_owned())?;
+    let target = work.join("snapshot").join(relative);
+    let parent = target.parent().ok_or_else(|| "检查文件目标路径无效".to_owned())?;
+    fs::create_dir_all(parent).map_err(|error| format!("创建检查文件目录失败：{error}"))?;
+    fs::write(&target, content).map_err(|error| format!("写入检查文件失败：{error}"))?;
+    originals.insert(crate::normalize(&target), crate::normalize(original));
+    Ok(target)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -278,13 +285,13 @@ fn execute_check_inner(
     progress: &dyn Fn(SyntaxProgress),
 ) -> Result<SyntaxCheckResult, String> {
     let root = fs::canonicalize(&request.root).map_err(|error| format!("读取工程目录失败：{error}"))?;
-    let snapshot_files = prepare_snapshots(&request.snapshots, &root, work)?;
+    let mut snapshot_files = prepare_snapshots(&request.snapshots, &root, work)?;
     let mut diagnostics = Vec::new();
     let mut library_mappings = HashMap::new();
     for mapping in &request.options.vhdl_libraries {
         match fs::canonicalize(&mapping.file) {
             Ok(path) if path.is_file() && path.starts_with(&root) && valid_identifier(&mapping.library) => {
-                library_mappings.insert(crate::normalize(&path), mapping.library.clone());
+                library_mappings.insert(crate::normalize(&path), mapping.library.to_ascii_lowercase());
             }
             _ => diagnostics.push(system_diagnostic(&mapping.file, &format!("VHDL library 映射无效：{}", mapping.library))),
         }
@@ -301,7 +308,17 @@ fn execute_check_inner(
             Ok(path) if path.is_file() && path.starts_with(&root) => {
                 let display = crate::normalize(&path);
                 let library = library_mappings.get(&display).cloned().unwrap_or_else(|| "work".into());
-                let path = snapshot_files.overlays.get(&display).cloned().unwrap_or(path);
+                let path = if let Some(overlay) = snapshot_files.overlays.get(&display) {
+                    overlay.clone()
+                } else {
+                    match crate::read_file_sync(display.clone(), None) {
+                        Ok(source) => stage_source(&path, &root, work, &source.content, &mut snapshot_files.originals)?,
+                        Err(error) => {
+                            diagnostics.push(system_diagnostic(&display, &error));
+                            continue;
+                        }
+                    }
+                };
                 files.push(SourceFile { display, path, kind, library });
             }
             _ => diagnostics.push(system_diagnostic(&file, "文件不存在、不可读或不在当前工程内")),
@@ -315,11 +332,12 @@ fn execute_check_inner(
     let mut backends = Vec::new();
     let verilator = tools.join("verilator/bin/verilator_bin.exe");
     let ghdl = tools.join("ghdl/bin/ghdl.exe");
-    let mut include_dirs: BTreeSet<PathBuf> = files.iter()
-        .filter(|file| file.kind != SourceKind::Vhdl)
-        .flat_map(|file| [file.path.parent(), Path::new(&file.display).parent()])
-        .filter_map(|path| path.map(Path::to_path_buf))
-        .collect();
+    let mut include_dirs: Vec<_> = files.iter().filter(|file| file.kind != SourceKind::Vhdl)
+        .map(|file| &file.path).chain(snapshot_files.overlays.values())
+        .filter_map(|path| path.parent().map(Path::to_path_buf))
+        .collect::<BTreeSet<_>>().into_iter().collect();
+    include_dirs.extend(files.iter().filter(|file| file.kind != SourceKind::Vhdl)
+        .filter_map(|file| Path::new(&file.display).parent().map(Path::to_path_buf)));
     include_dirs.extend(request.options.include_dirs.iter().map(PathBuf::from));
 
     if !verilogs.is_empty() {
@@ -334,14 +352,16 @@ fn execute_check_inner(
                 let before = diagnostics.len();
                 parse_verilator_output(&outcome.stdout, &root, &mut diagnostics);
                 parse_verilator_output(&outcome.stderr, &root, &mut diagnostics);
-                if !outcome.success && !outcome.cancelled && !outcome.timed_out && diagnostics.len() == before {
-                    diagnostics.push(system_diagnostic("", &format!("Verilator 检查失败：{}", output_summary(&outcome.stdout, &outcome.stderr))));
-                }
                 if outcome.cancelled || is_cancelled(jobs, request.request_id) {
                     status = "cancelled".into();
                 } else if outcome.timed_out {
                     status = "timed_out".into();
                     diagnostics.push(system_diagnostic("", "Verilator 检查超过 120 秒，已停止"));
+                } else if !outcome.success && !diagnostics[before..].iter().any(|item| item.severity == "error" && !item.file.is_empty()) {
+                    status = "failed".into();
+                    if !diagnostics[before..].iter().any(|item| item.severity == "error") {
+                        diagnostics.push(system_diagnostic("", &format!("Verilator 检查失败：{}", output_summary(&outcome.stdout, &outcome.stderr))));
+                    }
                 } else {
                     checked_files += count;
                 }
@@ -398,9 +418,6 @@ fn execute_check_inner(
                     let before = diagnostics.len();
                     parse_ghdl_output(&outcome.stdout, &root, &mut diagnostics);
                     parse_ghdl_output(&outcome.stderr, &root, &mut diagnostics);
-                    if !outcome.success && !outcome.cancelled && !outcome.timed_out && diagnostics.len() == before {
-                        diagnostics.push(system_diagnostic(&file.display, &format!("GHDL 分析失败：{}", output_summary(&outcome.stdout, &outcome.stderr))));
-                    }
                     if outcome.cancelled || is_cancelled(jobs, request.request_id) {
                         status = "cancelled".into();
                         break;
@@ -408,6 +425,11 @@ fn execute_check_inner(
                     if outcome.timed_out {
                         status = "timed_out".into();
                         diagnostics.push(system_diagnostic(&file.display, "GHDL 单文件分析超过 60 秒，已停止"));
+                        break;
+                    }
+                    if !outcome.success && !diagnostics[before..].iter().any(|item| item.severity == "error") {
+                        status = "failed".into();
+                        diagnostics.push(system_diagnostic(&file.display, &format!("GHDL 分析失败：{}", output_summary(&outcome.stdout, &outcome.stderr))));
                         break;
                     }
                     if !is_stub { checked_files += 1; }
@@ -424,7 +446,12 @@ fn execute_check_inner(
 
     let cancelled = backends.iter().any(|backend| backend.status == "cancelled");
     for diagnostic in &mut diagnostics {
-        if let Some(original) = snapshot_files.originals.get(&diagnostic.file) {
+        let original = snapshot_files.originals.get(&diagnostic.file).or_else(|| {
+            if !diagnostic.file.contains("/../") && !diagnostic.file.contains("/./") { return None; }
+            let path = fs::canonicalize(&diagnostic.file).ok()?;
+            snapshot_files.originals.get(&crate::normalize(&path))
+        });
+        if let Some(original) = original {
             diagnostic.file = original.clone();
         }
     }
@@ -450,7 +477,7 @@ fn run_verilator(
     root: &Path,
     work: &Path,
     files: &[SourceFile],
-    include_dirs: &BTreeSet<PathBuf>,
+    include_dirs: &[PathBuf],
     stubs: &[SyntaxStub],
     options: &SyntaxCheckOptions,
     top: Option<&str>,
@@ -460,16 +487,13 @@ fn run_verilator(
     let response_dir = work.join("verilator");
     fs::create_dir_all(&response_dir).map_err(|error| format!("创建 Verilator 工作目录失败：{error}"))?;
     let response = response_dir.join("sources.f");
-    let mut content = String::from("--lint-only\n-Wall\n--timing\n--Wno-fatal\n--error-limit 200\n--default-language 1800-2017\n");
+    let mut content = String::from("--lint-only\n-Wall\n--timing\n--Wno-fatal\n--error-limit 200\n--default-language 1800-2017\n--relative-includes\n");
     content.push_str(&format!("--Mdir \"{}\"\n", crate::normalize(&response_dir.join("obj_dir"))));
-    let mut include_dirs = include_dirs.clone();
-    for file in files {
-        if let Some(parent) = file.path.parent() {
-            include_dirs.insert(parent.to_path_buf());
-        }
-    }
+    let mut seen_dirs = HashSet::new();
     for directory in include_dirs {
-        content.push_str(&format!("-I\"{}\"\n", crate::normalize(&directory)));
+        if seen_dirs.insert(directory) {
+            content.push_str(&format!("-I\"{}\"\n", crate::normalize(directory)));
+        }
     }
     for define in &options.defines {
         let name = define.split('=').next().unwrap_or("");
@@ -477,13 +501,17 @@ fn run_verilator(
             content.push_str(&format!("+define+{define}\n"));
         }
     }
+    let top = top.filter(|name| valid_identifier(name));
+    if top.is_none() {
+        content.push_str("-Wno-MULTITOP\n");
+    }
     for argument in &options.verilator_args {
         if !argument.contains(['\r', '\n']) {
             content.push_str(argument);
             content.push('\n');
         }
     }
-    if let Some(top) = top.filter(|name| valid_identifier(name)) {
+    if let Some(top) = top {
         content.push_str(&format!("--top-module \"{top}\"\n"));
     }
     for stub in stubs.iter().filter(|stub| valid_identifier(&stub.name)) {
@@ -737,13 +765,14 @@ fn order_vhdl(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>
     let mut dependencies = vec![BTreeSet::new(); files.len()];
     for ((library, package), body_index) in &bodies {
         if let Some(specification) = specifications.get(&(library.clone(), package.clone())) {
-            dependencies[*body_index].insert(*specification);
+            if specification != body_index { dependencies[*body_index].insert(*specification); }
         }
     }
     for (index, text) in texts.iter().enumerate() {
         let words = words(text);
         for pair in words.windows(2) {
-            if let Some(provider) = specifications.get(&(pair[0].clone(), pair[1].clone())) {
+            let library = if pair[0] == "work" { &files[index].library } else { &pair[0] };
+            if let Some(provider) = specifications.get(&(library.clone(), pair[1].clone())) {
                 if *provider != index { dependencies[index].insert(*provider); }
             }
             if pair[0] == "component" {
@@ -754,7 +783,8 @@ fn order_vhdl(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>
         }
         for window in words.windows(3) {
             if window[0] != "entity" { continue; }
-            if let Some(provider) = entities.get(&(window[1].clone(), window[2].clone())) {
+            let library = if window[1] == "work" { &files[index].library } else { &window[1] };
+            if let Some(provider) = entities.get(&(library.clone(), window[2].clone())) {
                 if *provider != index { dependencies[index].insert(*provider); }
             }
         }
@@ -802,7 +832,7 @@ fn vhdl_packages(text: &str) -> (Vec<String>, Vec<String>) {
     for window in tokens.windows(3) {
         if window[0] != "package" { continue; }
         if window[1] == "body" { bodies.push(window[2].clone()); }
-        else if window[1] != "is" { specifications.push(window[1].clone()); }
+        else if window[2] == "is" { specifications.push(window[1].clone()); }
     }
     (specifications, bodies)
 }
@@ -1025,6 +1055,45 @@ mod tests {
         assert_eq!(result.checked_files, 2, "{result:?}");
         assert!(!result.diagnostics.iter().any(|diagnostic| diagnostic.severity == "error"), "{result:?}");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[ignore = "requires the local Verilator and GHDL runtime"]
+    fn real_backends_use_utf8_overlay_and_report_invocation_failure() {
+        let root = std::env::temp_dir().join(format!("rtl-viewer-overlay-check-{}", std::process::id()));
+        fs::create_dir_all(root.join("rtl")).unwrap();
+        fs::create_dir_all(root.join("inc")).unwrap();
+        let source = root.join("rtl/top.sv");
+        let header = root.join("inc/defs.svh");
+        let vhdl = root.join("top.vhd");
+        let valid_header = "`define WIDTH 8\n";
+        fs::write(&source, "`include \"../inc/defs.svh\"\nmodule top; endmodule\n").unwrap();
+        fs::write(&header, valid_header).unwrap();
+        let vhdl_text = "entity top is end; architecture rtl of top is begin end;\n";
+        let vhdl_bytes: Vec<_> = [0xff, 0xfe].into_iter().chain(vhdl_text.encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        fs::write(&vhdl, vhdl_bytes).unwrap();
+        let tools = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools/windows-x64");
+        let jobs = Arc::new(SyntaxJobState::default());
+        let request = |request_id, options, snapshots| SyntaxCheckRequest {
+            request_id,
+            root: crate::normalize(&root),
+            files: vec![crate::normalize(&source), crate::normalize(&header), crate::normalize(&vhdl)],
+            options,
+            snapshots,
+            ..Default::default()
+        };
+        let valid = execute_check(request(97, Default::default(), vec![]), &tools, &root.join("valid"), &jobs, &|_| {}).unwrap();
+        let invalid_header = SourceSnapshot { file: crate::normalize(&header), content: "invalid_header_syntax !\n".into(), encoding: "utf16le".into() };
+        let options = SyntaxCheckOptions { ghdl_args: vec!["--definitely-not-a-ghdl-option".into()], ..Default::default() };
+        let invalid = execute_check(request(98, options, vec![invalid_header]), &tools, &root.join("invalid"), &jobs, &|_| {}).unwrap();
+        let header_unchanged = fs::read_to_string(&header).unwrap() == valid_header;
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(valid.checked_files, 2, "{valid:?}");
+        assert!(valid.diagnostics.iter().all(|item| item.severity != "error"), "{valid:?}");
+        assert!(invalid.diagnostics.iter().any(|item| item.file == crate::normalize(&header) && item.source == "verilator" && item.severity == "error"), "{invalid:?}");
+        assert!(invalid.diagnostics.iter().any(|item| item.message.contains("unknown command option") && item.severity == "error"), "{invalid:?}");
+        assert!(invalid.backends.iter().any(|backend| backend.name == "ghdl" && backend.status == "failed"), "{invalid:?}");
+        assert!(header_unchanged);
     }
 
     #[test]

@@ -3,6 +3,7 @@ import { syntaxReportCsv, syntaxReportHtml } from "../src/app/syntax-report";
 import type { SyntaxCheckResult } from "../src/ipc";
 import { analyzeFileFacts } from "../src/analysis/facts";
 import { emptySyntaxCheckOptions } from "../src/ipc";
+import { diagnosticDisplayMessage } from "../src/app/diagnostic-display";
 
 const result: SyntaxCheckResult = {
   requestId: 3,
@@ -26,6 +27,19 @@ it("CSV 按字段转义引号、逗号和换行", () => {
   expect(csv).toContain('"D:/p/<top>.vhd"');
   expect(csv).toContain('"bad ""value"", <detail> & more"');
   expect(csv.endsWith("\r\n")).toBe(true);
+});
+
+it("界面具体解释不改写报告中的后端消息、规则和程度", () => {
+  const original = "Parameter not found: 'BAD_WIDTH'";
+  const external: SyntaxCheckResult = { ...result, diagnostics: [{ ...result.diagnostics[0], source: "verilator", ruleId: "VERILATOR-PINNOTFOUND", message: original }] };
+  expect(diagnosticDisplayMessage(external.diagnostics[0])).toBe("参数未找到：'BAD_WIDTH'");
+  const csv = syntaxReportCsv(external);
+  const html = syntaxReportHtml("D:/p/demo", external);
+  expect(csv).toContain(original);
+  expect(html).toContain(original);
+  expect(csv).toContain('"error","verilator","VERILATOR-PINNOTFOUND"');
+  expect(html).not.toContain("参数未找到");
+  expect(external.diagnostics[0].message).toBe(original);
 });
 
 it("HTML 报告包含配置、统计和分析边界，不包含人工核对或合规率", () => {

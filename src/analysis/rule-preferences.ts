@@ -28,7 +28,6 @@ export function applyRulePreferences(diagnostics: Diagnostic[], preferences: Rul
     if ("category" in diagnostic && diagnostic.category === "gjb10157" && !preferences.gjb10157) return false;
     if ("category" in diagnostic && diagnostic.category === "gjb9765" && !preferences.gjb9765) return false;
     if (preferences.tabPolicy === "tabs" && diagnostic.ruleId === "VHD-ST-002") return false;
-    if (preferences.tabPolicy === "spaces" && diagnostic.ruleId === "9765-4.14-b") return false;
     const file = filePathKey(diagnostic.file);
     return !excludes.some(exclude => {
       const normalized = exclude.replace(/\/+$/, "");
@@ -36,14 +35,19 @@ export function applyRulePreferences(diagnostics: Diagnostic[], preferences: Rul
     });
   });
   const grouped = new Map<string, Diagnostic>();
-  for (const diagnostic of filtered) {
-    const override = preferences.severityOverrides[diagnostic.ruleId];
-    if (override) diagnostic.severity = override;
-    const family = dedupeFamily(diagnostic.ruleId);
-    const key = `${family}|${filePathKey(diagnostic.file)}|${diagnostic.line}|${family === "lineWidth" ? 0 : diagnostic.column}`;
+  const seen = new Set<string>();
+  for (const item of filtered) {
+    const diagnostic = { ...item, severity: preferences.severityOverrides[item.ruleId] ?? item.severity };
+    const family = dedupeFamily(diagnostic);
+    const location = `${filePathKey(diagnostic.file)}|${diagnostic.line}|${family === "lineWidth" ? 0 : diagnostic.column}`;
+    const identity = JSON.stringify([diagnostic.source, diagnostic.ruleId, location, diagnostic.severity, diagnostic.message]);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    const subject = diagnostic.message.match(/“[^”]+”/g)?.join("|") ?? "";
+    const key = family ? JSON.stringify([family, location, subject]) : identity;
     const previous = grouped.get(key);
-    if (!previous) {
-      grouped.set(key, { ...diagnostic, relatedRuleIds: relatedIds(diagnostic) ?? [diagnostic.ruleId] });
+    if (!previous || (relatedIds(previous) ?? [previous.ruleId]).includes(diagnostic.ruleId)) {
+      grouped.set(previous ? identity : key, { ...diagnostic, relatedRuleIds: relatedIds(diagnostic) ?? [diagnostic.ruleId] });
       continue;
     }
     const related = [...new Set([...relatedIds(previous) ?? [previous.ruleId], ...relatedIds(diagnostic) ?? [diagnostic.ruleId]])];
@@ -58,7 +62,8 @@ export function applyRulePreferences(diagnostics: Diagnostic[], preferences: Rul
   return [...grouped.values()];
 }
 
-function dedupeFamily(ruleId: string): string {
+function dedupeFamily({ ruleId, message }: Diagnostic): string | undefined {
+  if (ruleId === "9765-4.14-d" && !message.startsWith("本行包含")) return undefined;
   const families: [string, string][] = [
     ["VLG-SY-001|10157-R-10-4", "sequentialBlocking"],
     ["VLG-SY-002|10157-R-10-3", "combinationalNonblocking"],
@@ -72,7 +77,7 @@ function dedupeFamily(ruleId: string): string {
     ["VHD-SY-003|9765-4.2-f", "latch"],
   ];
   for (const [ids, family] of families) if (ids.split("|").includes(ruleId)) return family;
-  return ruleId;
+  return undefined;
 }
 
 function widthRank(ruleId: string): number {

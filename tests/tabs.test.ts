@@ -133,6 +133,29 @@ async function setup() {
 }
 
 describe("TabManager", () => {
+  it.each(["closeAll", "closeGroups", "exit"])("%s 保存期间其他原本干净的缓冲区变脏时停止整个关闭", async action => {
+    const { make, mocks } = await setup();
+    const { TabManager } = await import("../src/editor/tabs");
+    const manager = make();
+    await manager.openContent("D:/p/a.v", "clean", "utf8", 1);
+    const clean = manager.activeTab!;
+    await manager.openContent("D:/p/b.v", "base", "utf8", 1);
+    manager.activeTab!.model.setValue("save me");
+    mocks.fileStates.mockResolvedValue([1]);
+    let finish!: (mtime: number) => void;
+    mocks.writeFile.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const closing = action === "closeAll" ? manager.closeAll() : action === "closeGroups" ? TabManager.closeGroups([manager]) : TabManager.confirmExit([manager]);
+    await vi.waitFor(() => expect(mocks.writeFile).toHaveBeenCalledOnce());
+    clean.model.setValue("new unsaved edit");
+    finish(2);
+    expect(await closing).toBe(false);
+    expect(manager.count).toBe(2);
+    expect(clean.model.isDisposed()).toBe(false);
+    expect(clean.model.getValue()).toBe("new unsaved edit");
+    expect(clean.dirty).toBe(true);
+    mocks.choiceDialog.mockResolvedValueOnce(1);
+    await manager.closeAll();
+  });
   it("只改变编码也参与保存全部和关闭保护，保存期间再次改编码仍保持脏状态", async () => {
     const { make, mocks } = await setup(); const a = make(), b = make();
     a.openContent("D:/p/a.v", "base", "utf8", 1);

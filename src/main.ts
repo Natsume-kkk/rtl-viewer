@@ -389,12 +389,7 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
   syntaxRefreshTimer = undefined;
   const folder = state.folder;
   if (!folder || !projectReady) return false;
-  const optionErrors = validateSyntaxOptions(syntaxOptions);
-  if (optionErrors.length) {
-    problemPanel.fail(`检查配置无效：${optionErrors.join("；")}`);
-    refreshFactsViews();
-    return false;
-  }
+  cancelProjectSyntaxCheck();
   moduleMetadataLoader.invalidateIps();
   const snapshots = new Map<string, { file: string; content: string; encoding: string }>();
   for (const group of groups) for (const tab of group.tabs.allTabs) {
@@ -407,10 +402,19 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
     ...syntaxOptions.vhdlLibraries.map(mapping => configuredPath(folder, mapping.file)),
   ])];
   if (!files.length) {
+    lastSyntaxResult = { requestId: syntaxSerial, checkedFiles: 0, cancelled: false, backends: [], diagnostics: [] };
+    syntaxChangedWhileRunning = false;
+    problemPanel.finish(lastSyntaxResult);
+    refreshFactsViews();
     statusbar.hint("当前工程没有可检查的 Verilog／VHDL 文件");
+    return true;
+  }
+  const optionErrors = validateSyntaxOptions(syntaxOptions);
+  if (optionErrors.length) {
+    problemPanel.fail(`检查配置无效：${optionErrors.join("；")}`);
+    refreshFactsViews();
     return false;
   }
-  if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest);
   const request = ++syntaxSerial;
   runningSyntaxRequest = request;
   syntaxChangedWhileRunning = false;
@@ -449,8 +453,7 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
     if (request !== syntaxSerial || folder !== state.folder) return false;
     runningSyntaxRequest = 0;
     lastSyntaxResult = result;
-    problemPanel.finish(result);
-    if (syntaxChangedWhileRunning) problemPanel.markStale();
+    problemPanel.finish(result, syntaxChangedWhileRunning);
     refreshFactsViews();
     return !result.cancelled;
   } catch (error) {
@@ -483,7 +486,7 @@ async function exportSyntaxReport(format: "html" | "csv"): Promise<void> {
     if (!path) return;
     const external: SyntaxCheckResult = lastSyntaxResult ?? { requestId: 0, checkedFiles: 0, cancelled: false, backends: [], diagnostics: [] };
     const reportResult = { ...external, diagnostics: [...problemPanel.builtinDiagnostics, ...external.diagnostics.filter(item => inAnalysisScope(item.file))] };
-    const context = { options: syntaxOptions, facts: factsScheduler.values().filter(item => inAnalysisScope(item.file)), stale: problemPanel.isStale };
+    const context = { options: syntaxOptions, facts: factsScheduler.values().filter(item => inAnalysisScope(item.file)), stale: problemPanel.isStale, failure: problemPanel.failureMessage };
     const content = format === "html" ? syntaxReportHtml(state.folder, reportResult, generated, context) : syntaxReportCsv(reportResult, context);
     await writeFile(path, content, "utf8");
     statusbar.hint(`检查报告已导出：${path}`);

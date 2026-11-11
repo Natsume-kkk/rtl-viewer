@@ -5,6 +5,7 @@ export interface SyntaxReportContext {
   options?: SyntaxCheckOptions;
   facts?: FileFacts[];
   stale?: boolean;
+  failure?: string;
 }
 
 export function syntaxReportHtml(folder: string, result: SyntaxCheckResult, generated = new Date(), context: SyntaxReportContext = {}): string {
@@ -28,6 +29,7 @@ export function syntaxReportHtml(folder: string, result: SyntaxCheckResult, gene
 <h1>RTL 工程检查报告</h1>
 <p>工程：<code>${escapeHtml(folder)}</code></p><p>生成时间：${escapeHtml(generated.toISOString())}</p>
 <p>纳入统计 ${facts.length} 个 HDL 文件；${externalStatus}；${counts.error} 个错误，${counts.warning} 个警告，${counts.info} 个提示${result.cancelled ? "；检查已取消，结果可能不完整" : ""}${context.stale ? "；源码或配置已变化，外部诊断待重新检查" : ""}。</p>
+${context.failure ? `<p>最近一次检查失败：${escapeHtml(context.failure)}。下方外部诊断与后端状态来自上次返回的结果。</p>` : ""}
 <h2>后端状态</h2>${backends ? `<table><thead><tr><th>后端</th><th>版本</th><th>文件数</th><th>状态</th></tr></thead><tbody>${backends}</tbody></table>` : "<p>本次仅包含内置分析结果。</p>"}
 <h2>检查配置</h2><p><code>${options}</code></p>
 <h2>工程统计</h2><p>代码行 ${codeLines}，注释行 ${commentLines}，注释比例 ${denominator ? Math.round(commentLines / denominator * 100) : 0}%。</p>
@@ -41,13 +43,14 @@ export function syntaxReportCsv(result: SyntaxCheckResult, context: SyntaxReport
   for (const diagnostic of result.diagnostics) {
     rows.push([diagnostic.severity, diagnostic.source, diagnostic.ruleId, diagnostic.file, String(diagnostic.line), String(diagnostic.column), diagnostic.message].map(csvField).join(","));
   }
-  if (!context.options && !context.facts && context.stale === undefined) return rows.join("\r\n") + "\r\n";
+  if (!context.options && !context.facts && context.stale === undefined && !context.failure) return rows.join("\r\n") + "\r\n";
   rows.push("");
   rows.push(["Backend", "Version", "Files", "Status"].map(csvField).join(","));
   if (result.backends.length) {
     for (const backend of result.backends) rows.push([backend.name, backend.version, String(backend.files), backend.status].map(csvField).join(","));
   } else rows.push(["external", "未运行", "0", "not_run"].map(csvField).join(","));
   rows.push(["Stale", context.stale ? "true" : "false"].map(csvField).join(","));
+  if (context.failure) rows.push(["Failure", context.failure].map(csvField).join(","));
   rows.push(["Options", JSON.stringify(context.options ?? {})].map(csvField).join(","));
   const facts = context.facts ?? [];
   const codeLines = facts.reduce((sum, item) => sum + item.statistics.codeLines, 0);

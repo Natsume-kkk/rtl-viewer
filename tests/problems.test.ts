@@ -31,6 +31,31 @@ function setup() {
   return { root, panel, callbacks };
 }
 
+it("复查失败保留旧结果的过期标记，收到新结果才清除", () => {
+  const { panel } = setup();
+  panel.finish(result());
+  panel.markStale();
+  panel.start();
+  expect(panel.isStale).toBe(true);
+  panel.fail("backend unavailable");
+  expect(panel.indicator).toMatchObject({ stale: true, failed: true, running: false });
+  panel.start();
+  panel.finish({ ...result(), requestId: 2 });
+  expect(panel.indicator).toMatchObject({ stale: false, failed: false });
+});
+
+it("未预先标记过期的结果在调用失败后也必须标记为旧结果", () => {
+  const { panel } = setup();
+  panel.finish(result());
+  panel.start();
+  panel.fail("backend unavailable");
+  expect(panel.isStale).toBe(true);
+  expect(panel.failureMessage).toBe("backend unavailable");
+  panel.finish(result(), true);
+  expect(panel.isStale).toBe(true);
+  expect(panel.failureMessage).toBe("");
+});
+
 it("后台进度、取消、定位和过期状态共用同一份诊断结果", () => {
   const { root, panel, callbacks } = setup();
   expect([...root.querySelectorAll("button")].some(button => button.textContent === "检查")).toBe(false);

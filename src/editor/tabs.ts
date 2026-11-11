@@ -399,7 +399,10 @@ export class TabManager {
     if (choice === 1) return true;
     if (choice !== 0) return false;
     for (const { manager, tab } of dirty.values()) if (!(await manager.saveTab(tab, true))) return false;
-    return [...dirty.values()].every(({ tab }) => !tab.dirty);
+    // 保存期间原本干净的标签也可能被编辑；重新检查全部关闭对象及当前共享视图。
+    const retainedModels = new Set([...TabManager.managers].flatMap(m => m.tabs.filter(t => !closing.has(t)).map(t => t.model)));
+    return selections.every(({ manager, tabs }) => tabs.every(tab =>
+      !manager.tabs.includes(tab) || !tab.dirty || retainedModels.has(tab.model)));
   }
 
   static confirmExit(managers: TabManager[]): Promise<boolean> {

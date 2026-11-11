@@ -189,7 +189,6 @@ export class ProblemPanel {
   start(): void {
     this.running = true;
     this.cancelling = false;
-    this.stale = false;
     this.error = "";
     this.progress = undefined;
     this.renderResults();
@@ -200,8 +199,9 @@ export class ProblemPanel {
     this.renderSummary();
   }
 
-  finish(result: SyntaxCheckResult): void {
+  finish(result: SyntaxCheckResult, stale = false): void {
     this.result = result;
+    this.stale = stale;
     this.running = false;
     this.cancelling = false;
     this.progress = undefined;
@@ -235,6 +235,7 @@ export class ProblemPanel {
     this.cancelling = false;
     this.progress = undefined;
     this.error = String(error);
+    this.stale = !!this.result;
     this.renderResults();
   }
 
@@ -245,6 +246,7 @@ export class ProblemPanel {
   }
 
   get isStale(): boolean { return this.stale; }
+  get failureMessage(): string { return this.error; }
 
   setScope(scope: "top" | "project", topName?: string): void {
     this.scopeFilter.value = scope;

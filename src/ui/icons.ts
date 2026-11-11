@@ -16,11 +16,12 @@ export type IconName =
   | "module" | "folder" | "file" | "plus" | "save" | "search" | "split" | "ports"
   | "minimize" | "maximize" | "restore"
   | "check" | "cancel" | "settings" | "export" | "filter" | "filter-clear"
-  | "error" | "info" | "sort-asc" | "sort-desc" | "stats" | "more" | "sidebar";
+  | "error" | "info" | "sort-asc" | "sort-desc" | "stats" | "more" | "sidebar" | "only-module";
 
 const SW = `stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"`;
 
 const ICONS: Record<IconName, string> = {
+  "only-module": `<path d="M5 2.5H3.5a1 1 0 0 0-1 1V5M11 2.5h1.5a1 1 0 0 1 1 1V5M13.5 11v1.5a1 1 0 0 1-1 1H11M5 13.5H3.5a1 1 0 0 1-1-1V11" ${SW}/><rect class="only-module-center" x="5.5" y="5.5" width="5" height="5" rx="1" ${SW}/>`,
   "minimize": `<path d="M3 8h10" ${SW}/>`,
   "maximize": `<rect x="3" y="3" width="10" height="10" ${SW}/>`,
   "restore": `<path d="M6 3h7v7M3 6h7v7H3z" ${SW}/>`,

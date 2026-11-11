@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { setIcon, type IconName } from "../src/ui/icons";
 
 it("功能图标统一使用 16 px 视图、线性描边和主题颜色", () => {
-  const names: IconName[] = ["check", "cancel", "settings", "export", "filter", "filter-clear", "error", "info", "sort-asc", "sort-desc", "stats", "more", "sidebar"];
+  const names: IconName[] = ["check", "cancel", "settings", "export", "filter", "filter-clear", "error", "info", "sort-asc", "sort-desc", "stats", "more", "sidebar", "only-module"];
   for (const name of names) {
     const element = document.createElement("span");
     setIcon(element, name);

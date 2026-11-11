@@ -1668,3 +1668,43 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .path-continue[hidden] { display: none; }
 .route-pending { cursor: pointer; }
 .route-pending:hover { border-color: var(--accent); }
+
+.flow-identity { border: 0; background: transparent; padding: 4px 0; text-align: left; cursor: pointer; border-radius: var(--radius-control); }
+.flow-identity:hover { text-decoration: underline; }
+.flow-identity:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.port-view-context { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; flex: none; padding: 5px 16px; border-bottom: 1px solid var(--border-subtle); color: var(--fg-secondary); background: var(--surface-editor); font: var(--fs-caption)/1.6 var(--font-ui); }
+.port-only-label, .port-selection-actions code { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sem-module); font-family: var(--font-mono); }
+.port-selection-actions, .port-instance-switcher { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.port-instance-switcher select { max-width: 180px; min-width: 80px; height: 26px; color: var(--fg); background: var(--surface-app); border: 1px solid var(--border-strong); border-radius: var(--radius-control); font: var(--fs-caption) var(--font-mono); }
+.port-instance-switcher > span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.port-context-action { min-height: 26px; padding: 3px 7px; font-size: var(--fs-caption); white-space: nowrap; }
+.port-instance-switcher button { width: 26px; height: 26px; padding: 4px; }
+.port-previous-instance svg { transform: rotate(180deg); }
+.port-fold-toggle.path-continue { display: flex; align-items: center; flex: 1; gap: 6px; min-width: 0; min-height: 30px; margin: 0 0 0 -5px; padding: 3px 5px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--fg); text-align: left; cursor: pointer; }
+.port-fold-toggle:hover { background: var(--surface-active); }
+.port-fold-toggle > .icon { color: var(--accent); flex: none; }
+.port-fold-toggle .operation-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.port-module-type { color: var(--sem-module); font-size: var(--fs-caption); }
+.port-module-summary { display: block; margin-top: 6px; color: var(--fg-secondary); font: var(--fs-caption)/1.6 var(--font-ui); }
+.port-module-selected { border-color: var(--sem-module); box-shadow: 0 0 0 1px var(--sem-module); }
+.only-module-toggle, .port-module-more, .port-view-more { display: inline-flex; justify-content: center; align-items: center; flex: none; width: 28px; height: 28px; padding: 6px; }
+.only-module-toggle[aria-pressed=true] { color: var(--accent); background: var(--surface-active); border: 1px solid var(--accent); }
+.only-module-toggle[aria-pressed=true] .only-module-center { fill: currentColor; fill-opacity: .16; }
+.module-summary > .logic-card-head > .only-module-toggle, .module-summary > .logic-card-head > .source-jump, .module-summary > .logic-card-head > .port-module-more,
+.repeated-summary > .logic-card-head > .only-module-toggle, .repeated-summary > .logic-card-head > .source-jump, .repeated-summary > .logic-card-head > .port-module-more { opacity: 0; }
+.module-summary:hover > .logic-card-head > button, .module-summary:focus-within > .logic-card-head > button,
+.repeated-summary:hover > .logic-card-head > button, .repeated-summary:focus-within > .logic-card-head > button { opacity: 1; }
+.port-instance-filter { margin-top: 8px; }
+.port-instance-filter input { width: 100%; padding: 5px 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface-app); color: var(--fg); font: var(--fs-caption) var(--font-ui); }
+.port-instance-filter input::placeholder { color: var(--fg-secondary); }
+.port-parameter-summary { max-width: 300px; }
+.repeated-summary { border-top-color: var(--sem-module); }
+.module-summary:not(.port-fold-open) > .port-mapping { display: none; }
+@media (hover: none) {
+  .module-summary > .logic-card-head > button, .repeated-summary > .logic-card-head > button { opacity: 1; }
+}
+@media (max-width: 650px) {
+  .port-view-context { padding-inline: 10px; gap: 5px 8px; }
+  .port-instance-switcher select { max-width: 140px; }
+  .flow-head .flow-mode { display: none; }
+}

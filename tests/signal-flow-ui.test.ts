@@ -40,14 +40,14 @@ it("多路先列直接去向，单路收起不影响其他路线，返回恢复�
  card(root,"u.i").querySelector<HTMLButtonElement>(".source-jump")!.click();expect(navigate).toHaveBeenCalled();expect(card(root,"u.i1").hidden).toBe(true);
  card(root,"u.i").querySelector<HTMLElement>(".operation-name")!.click();expect(card(root,"u.i2").hidden).toBe(false);expect(card(root,"v.i1").hidden).toBe(true);
  const state=panel.capture();card(root,"v.i").querySelector<HTMLButtonElement>(".path-continue")!.click();expect(card(root,"v.i2").hidden).toBe(false);expect(card(root,"u.i2").hidden).toBe(false);
- card(root,"u.i").click();expect(card(root,"u.i2").hidden).toBe(true);expect(card(root,"v.i2").hidden).toBe(false);expect(root.querySelector('.flow-selected')?.textContent).toBe('x');
+ card(root,"u.i").querySelector<HTMLElement>(".operation-name")!.click();expect(card(root,"u.i2").hidden).toBe(true);expect(card(root,"v.i2").hidden).toBe(false);expect(root.querySelector('.flow-selected')?.textContent).toBe('x');
  panel.restore(state);expect(card(root,"u.i2").hidden).toBe(false);expect(card(root,"v.i1").hidden).toBe(true);expect(card(root,"a2").hidden).toBe(false);
  expect(root.querySelector('.port-expand,.port-direction-toggle')).toBeNull();root.remove();
 });
 it("单路直接延伸，到下一个扇出列候选，再按路继续",()=>{
  const{root,panel}=setup();panel.result('x',{label:'top.x',children:[]},{label:'top.x',children:[{...leaf('top.a',2),children:[{...leaf('top.b',3),children:[leaf('top.b1',4)]},{...leaf('top.c',5),children:[leaf('top.c1',6)]}]}]},'');
- expect(card(root,'a').hidden).toBe(false);expect(card(root,'a').querySelector<HTMLButtonElement>('.path-continue')!.hidden).toBe(true);expect(card(root,'b').hidden).toBe(false);expect(card(root,'b1').hidden).toBe(true);expect(card(root,'c1').hidden).toBe(true);
- [...root.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent==='全部展开')!.click();expect(card(root,'b1').hidden).toBe(false);expect(card(root,'c1').hidden).toBe(false);root.remove();
+ expect(card(root,'a').hidden).toBe(false);expect(card(root,'a').querySelector<HTMLButtonElement>('.path-continue')!.getAttribute('aria-expanded')).toBe('true');expect(card(root,'b').hidden).toBe(false);expect(card(root,'b1').hidden).toBe(true);expect(card(root,'c1').hidden).toBe(true);
+ [...root.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent==='展开本层')!.click();expect(card(root,'b1').hidden).toBe(false);expect(card(root,'c1').hidden).toBe(false);root.remove();
 });
 it("未知方向只显示一次，用无方向虚线连接，不冒充双向",()=>{
  const{root,panel}=setup();const trace={label:"top.a",children:[leaf("top/ip.clk",3,"黑盒或缺失定义")]};panel.result("a",trace,trace,"");expect(root.querySelectorAll('[data-line="3"]')).toHaveLength(1);expect(root.textContent).toContain("方向待确认");expect(root.querySelector(".logic-wire")).not.toBeNull();expect(root.querySelector(".logic-arrow")).toBeNull();root.remove();
@@ -79,7 +79,7 @@ it("端口多路终点直接显示第一层赋值，定位不切换分析范围"
  expect(assignments.every(c=>c.textContent?.includes("assign inner=~i;"))).toBe(true);
  expect(root.textContent).not.toContain("assign o=inner;");
  expect(root.querySelectorAll(".logic-wire")).toHaveLength(4);
- expect(card(root,"u1.i").querySelector<HTMLButtonElement>(".path-continue")!.hidden).toBe(true);
+ expect(card(root,"u1.i").querySelector<HTMLButtonElement>(".path-continue")!.getAttribute("aria-expanded")).toBe("true");
  assignments[0].querySelector<HTMLButtonElement>(".source-jump")!.click();
  expect(navigate).toHaveBeenCalledWith("t.v",4);
  expect(root.querySelector(".flow-enter")).toBeNull();
@@ -87,20 +87,19 @@ it("端口多路终点直接显示第一层赋值，定位不切换分析范围"
  root.remove();
 });
 
-it("端口扇出中的直接赋值保持可见，更深子模块仍按路展开",async()=>{
+it("少量端口默认展开，收起标题行隐藏整路内容并可恢复",async()=>{
  const p=new SignalProject(new Map([["t.v",`module top(input a); branch u(.i(a)); leaf v(.i(a)); endmodule
  module branch(input i); wire q; assign q=~i; leaf child(.i(i)); endmodule
  module leaf(input i); wire z; assign z=i; endmodule`]])),ctx=p.root("top")!;
  const{root,panel}=setup();
  panel.result("a",await traceSignal(p,ctx,"a","upstream",{stopAtAssignments:true}),await traceSignal(p,ctx,"a","downstream",{stopAtAssignments:true}),"");
  const assignment=[...root.querySelectorAll<HTMLElement>(".port-card")].find(c=>c.textContent?.includes("assign q=~i;"))!;
- expect(assignment.hidden).toBe(false);expect(card(root,"u/child.i").hidden).toBe(true);
+ expect(assignment.hidden).toBe(false);expect(card(root,"u/child.i").hidden).toBe(false);
  const next=card(root,"u.i").querySelector<HTMLButtonElement>(".path-continue")!;
- expect(next.hidden).toBe(false);next.click();expect(card(root,"u/child.i").hidden).toBe(false);
- const saved=panel.capture();next.click();expect(assignment.hidden).toBe(false);expect(card(root,"u/child.i").hidden).toBe(true);
+ expect(next.hidden).toBe(false);const saved=panel.capture();next.click();expect(assignment.hidden).toBe(true);expect(card(root,"u/child.i").hidden).toBe(true);
  panel.restore(saved);expect(card(root,"u/child.i").hidden).toBe(false);
  [...root.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="全部收起")!.click();
- expect(assignment.hidden).toBe(false);expect(card(root,"u/child.i").hidden).toBe(true);
+ expect(assignment.hidden).toBe(true);expect(card(root,"u/child.i").hidden).toBe(true);
  root.remove();
 });
 

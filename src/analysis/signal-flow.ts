@@ -54,6 +54,7 @@ export interface SignalModule extends ModuleInfo {
 export interface SignalContext { module: string; path: string; parent?: SignalContext; instance?: InstanceInfo }
 export interface SignalCandidate {name:string;scope:number;label:string}
 export interface TraceNode {
+  module?: { name: string; parameters?: string };
   owner?: string;
   scope?: number;
   signal?: { path: string; name: string; identity?:string };
@@ -484,7 +485,10 @@ export async function traceSignal(project: SignalProject, context: SignalContext
     // Following nodes retain their actual assignment/port-map locations below.
     if (depth === 0 && options.source) { node.file = options.source.file; node.line = options.source.line; }
     const declaredPort = scope < 0 ? mod.ports.find(p => same(p.name, name, mod.file)) : undefined;
-    if (declaredPort) node.port = { path: ctx.path, name: declaredPort.name, direction: declaredPort.direction };
+    if (declaredPort) {
+      node.port = { path: ctx.path, name: declaredPort.name, direction: declaredPort.direction };
+      node.module = { name: ctx.module, parameters: ctx.instance?.parameterOverrides?.map((p, i) => `${p.name ?? i + 1}=${p.expression}`).join(", ") || undefined };
+    }
     if (mod.problem) { node.reason = mod.problem; return node; }
     if (options.descendOnly && depth > 0) {
       for (let parent = ctx.parent; parent; parent = parent.parent) {
@@ -595,7 +599,7 @@ export async function traceSignal(project: SignalProject, context: SignalContext
         const pin = {path: `${ctx.path}/${inst.inst}`, name: port?.name ?? conn.port ?? String(i + 1), direction: port?.direction};
         if (!child || !port?.direction) {
           const leaf = stop(`${pin.path}.${pin.name}`, !child ? "黑盒或缺失定义，无法展开内部实现" : "端口方向未知，停止追踪", instanceFile, conn.line);
-          if (leaf) leaf.port = pin;
+          if (leaf) { leaf.port = pin; leaf.module = { name: inst.module }; }
           continue;
         }
         if (!allows(port.direction, direction === "upstream")) continue;

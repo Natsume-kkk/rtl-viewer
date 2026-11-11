@@ -43,7 +43,7 @@ export class SignalLogicView {
   private svg=makeWires();
   private active=true;
   private widths=new CardWidths(()=>this.reveal());
-  constructor(private graph:LogicGraph, body:HTMLElement, private files:ReadonlyMap<string,string>){
+  constructor(private graph:LogicGraph, private body:HTMLElement, private files:ReadonlyMap<string,string>){
     body.classList.add("logic-body");body.append(this.canvas);this.canvas.append(this.svg);
     const base=graph.nodes.find(n=>n.id===graph.root)?.path??"";
     for(const node of graph.nodes){
@@ -103,6 +103,10 @@ export class SignalLogicView {
     const focus=this.cards.get(graph.root);if(focus&&body.clientWidth>0&&focus.offsetLeft>body.clientWidth-236)body.scrollLeft=Math.max(0,focus.offsetLeft-body.clientWidth/2+118);
   }
   dispose():void{this.active=false;this.widths.dispose();}
+  returnToSignal():void{
+    const card=this.cards.get(this.graph.root);if(!card||!this.body.clientWidth)return;
+    this.body.scrollTo({left:Math.max(0,card.offsetLeft-(this.body.clientWidth-card.offsetWidth)/2),top:Math.max(0,card.offsetTop-16),behavior:typeof matchMedia!=="undefined"&&matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});
+  }
   capture():LogicViewState{return {open:[...this.open],routes:[...this.routes],sources:[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].map(d=>d.open),widths:this.widths.capture()};}
   restore(s:LogicViewState):void{this.open=new Set(s.open);this.routes=new Set(s.routes);this.widths.restore(s.widths);if(s.sources)[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].forEach((d,i)=>d.open=s.sources![i]??true);this.reveal();}
   expandAll():void{this.routes=new Set(this.cards.keys());for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=true;this.reveal(true);}

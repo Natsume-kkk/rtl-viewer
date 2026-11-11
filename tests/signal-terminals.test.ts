@@ -57,7 +57,8 @@ it('当前终点不新增同名节点，赋值组内各条可独立定位',async
   const block=root.querySelector<HTMLDetailsElement>('.assignment-block')!;block.open=false;
   const state=panel.capture();panel.result('q',up,{label:'t.q',children:[]},'');panel.restore(state);
   expect(root.querySelector<HTMLDetailsElement>('.assignment-block')!.open).toBe(false);
-  [...root.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent==='全部展开')!.click();
+  root.querySelector<HTMLButtonElement>('.port-view-more')!.click();
+  document.querySelector<HTMLButtonElement>('.ctx-menu button')!.click();
   expect(root.querySelector<HTMLDetailsElement>('.assignment-block')!.open).toBe(true);
   [...root.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent==='全部收起')!.click();
   expect(root.querySelector<HTMLDetailsElement>('.assignment-block')!.open).toBe(false);

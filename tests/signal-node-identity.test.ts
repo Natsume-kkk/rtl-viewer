@@ -42,7 +42,7 @@ it("真实汇合的同一实例赋值仍只显示一次",async()=>{
 it("黑盒与方向未知在卡片内显示停止原因",async()=>{
   const {body}=await ports("module top(input a); missing u(.i(a)); endmodule");
   const card=[...body.querySelectorAll(".port-card")].find(c=>c.textContent?.includes("缺失定义"));
-  expect(card).toBeDefined();expect(card!.querySelector(".operation-name")?.textContent).toBe("u");
+  expect(card).toBeDefined();expect(card!.querySelector(".operation-name")?.textContent).toBe("u · missing");
   expect(card!.querySelector(".port-pin")?.textContent).toContain("i");
   expect(card!.querySelector(".flow-reason")?.textContent).toContain("缺失定义");
 });
@@ -54,7 +54,7 @@ it("父模块内部信号的所属路径与名称分行",async()=>{
 it("切片端口映射显示原绑定语法，不冒充赋值",async()=>{
   const {body}=await ports("module top(input [7:0] a); child u(.i(a[3:0])); endmodule module child(input [3:0] i); endmodule");
   const card=[...body.querySelectorAll(".port-card")].find(c=>c.querySelector(".port-mapping"));
-  expect(card?.querySelector(".operation-name")?.textContent).toBe("u");expect(card?.textContent).toContain("input i");
+  expect(card?.querySelector(".operation-name")?.textContent).toBe("u · child");expect(card?.textContent).toContain("input i");
   expect(card?.querySelector(".port-mapping")?.textContent).toBe(".i(a[3:0])");
   expect(card?.textContent).not.toMatch(/读取赋值|驱动赋值/);
 });

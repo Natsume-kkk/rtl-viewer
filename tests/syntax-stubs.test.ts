@@ -9,7 +9,7 @@ it("VHDL 黑盒保留端口方向、参数和常见位宽", () => {
     { name: "count", direction: "out", width: "std_logic_vector(0 to 3)" },
     { name: "bus", direction: "inout", width: "integer" },
   ], [{ name: "WIDTH", defaultValue: "8" }]);
-  expect(source).toContain("module demo #(parameter WIDTH = 1)");
+  expect(source).toContain("module demo #(parameter WIDTH = 8)");
   expect(source).toContain("input wire clk");
   expect(source).toContain("input wire [7:0] data");
   expect(source).toContain("output wire [3:0] count");
@@ -41,4 +41,14 @@ it("GHDL 黑盒生成独立 entity 接口并转换 Verilog 位宽", () => {
   expect(source).toContain("enable : inout std_logic");
   expect(source).toContain("end entity ip;");
   expect(source).not.toContain("secret");
+});
+
+it("参数表达式保留可覆盖关系，未知默认值不伪造为 1", () => {
+  const parameters = [{ name: "WIDTH", defaultValue: "8" }, { name: "DEPTH", defaultValue: "WIDTH * 2" }, { name: "UNKNOWN", defaultValue: "vendor_fn(4)" }];
+  expect(verilogStub("demo", [], parameters)).toContain("parameter DEPTH = WIDTH * 2, parameter UNKNOWN)");
+  expect(vhdlStub("demo", [], parameters)).toContain("DEPTH : integer := WIDTH * 2;\n    UNKNOWN : integer\n");
+  expect(verilogStub("demo", [], [{ name: "WIDTH", defaultValue: "8" }, { name: "DEPTH", defaultValue: "width * 2" }])).not.toContain("DEPTH =");
+  expect(verilogStub("demo", [], [{ name: "WIDTH", defaultValue: "8" }, { name: "DEPTH", defaultValue: "width * 2" }], true)).toContain("DEPTH = WIDTH * 2");
+  expect(vhdlStub("demo", [], [{ name: "WIDTH", defaultValue: "8'd8" }])).toContain("WIDTH : integer := 8");
+  expect(verilogStub("demo", [], [{ name: "MODE", defaultValue: '"true"' }], true)).toContain('MODE = "true"');
 });

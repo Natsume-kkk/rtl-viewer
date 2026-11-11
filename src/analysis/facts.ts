@@ -26,6 +26,7 @@ export interface AssignmentFacts {
   line: number;
   processIndex: number;
   conditions: string[];
+  conditionReads?: string[];
   reads: string[];
   expression: string;
   scope?: string;
@@ -170,6 +171,16 @@ export function analyzeFileFacts(file: string, content: string): FileFacts {
       line: lineAt(starts, range.index + assignment.index),
       processIndex,
       conditions: assignment.conditions,
+      conditionReads: assignment.conditions.flatMap(condition => {
+        const expression = analyzeExpression(condition, language === "vhdl");
+        return [...expression.reads, ...expression.blockedReads].map(name => {
+          let identity = name;
+          for (const binding of parsed.localBindings ?? []) {
+            if (binding.name === name && binding.start <= assignment.index && assignment.index < binding.end) identity = binding.identity;
+          }
+          return identity;
+        });
+      }),
       reads: [...assignment.reads, ...assignment.blockedReads, ...assignment.selectorReads ?? []],
       expression: assignment.expression,
     }));
@@ -799,4 +810,36 @@ export function moduleScopeAt(facts: FileFacts, line: number, scope?: string): s
 export function assignmentScope(facts: FileFacts, assignment: AssignmentFacts): string {
   const process = assignment.processIndex >= 0 ? facts.processes[assignment.processIndex] : undefined;
   return assignment.scope ?? process?.scope ?? moduleScopeAt(facts, process?.startLine ?? assignment.line);
+}
+
+export function missingSensitivity(facts: FileFacts, process: ProcessFacts): string[] {
+  if (!process.combinational || !process.explicitSensitivity || process.sensitivity.some(name => name === "*" || name === "all")) return [];
+  const vhdl = facts.language === "vhdl";
+  const key = (name: string) => vhdl ? name.toLowerCase() : name;
+  const scope = moduleScopeAt(facts, process.startLine, process.scope);
+  const excluded = new Set([
+    ...vhdl ? ["true", "false"] : [],
+    ...process.localVariables,
+    ...facts.declarations.filter(item => item.kind !== "other" && moduleScopeAt(facts, item.line, item.scope) === scope).map(item => item.name),
+    ...facts.parameters.filter(item => item.scope === scope).map(item => item.name),
+  ].map(key));
+  const sensitivity = new Set(process.sensitivity.map(key));
+  const missing = new Set<string>();
+  for (const assignment of process.assignments) {
+    const controls = assignment.conditionReads ?? assignment.conditions.flatMap(condition => {
+      const expression = analyzeExpression(condition, vhdl);
+      return [...expression.reads, ...expression.blockedReads];
+    });
+    for (const read of [...assignment.reads, ...controls]) {
+      const name = key(read);
+      if (/^[A-Za-z_]\w*$/.test(name) && !excluded.has(name) && !sensitivity.has(name)) missing.add(name);
+    }
+  }
+  return [...missing];
+}
+
+export function isProcessLocal(facts: FileFacts, assignment: AssignmentFacts): boolean {
+  const process = facts.processes[assignment.processIndex];
+  const key = (name: string) => facts.language === "vhdl" ? name.toLowerCase() : name;
+  return !!process?.localVariables.some(name => key(name) === key(assignment.target));
 }

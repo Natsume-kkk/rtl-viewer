@@ -1,20 +1,28 @@
 import type { ParameterInfo, PortInfo } from "../parser";
+import { evaluateConstant } from "../parser/static-generate";
 
-export function verilogStub(name: string, ports: PortInfo[], parameters: ParameterInfo[]): string {
-  const parametersText = parameters.map(parameter => parameter.name).filter(validName).map(parameter => `parameter ${parameter} = 1`);
+export function verilogStub(name: string, ports: PortInfo[], parameters: ParameterInfo[], vhdl = false): string {
+  const parameterNames = new Map(parameters.map(parameter => [parameter.name.toLowerCase(), parameter.name]));
+  const parametersText = parameters.filter(parameter => validName(parameter.name)).map(parameter => {
+    const value = verilogDefault(parameter.defaultValue, parameters, vhdl);
+    return `parameter ${parameter.name}${value === undefined ? "" : ` = ${value}`}`;
+  });
   const portsText = ports.filter(port => validName(port.name) && port.direction).map(port => {
     const kind = port.direction!.toLowerCase();
     const direction = kind === "in" || kind === "input" ? "input" : kind === "out" || kind === "output" || kind === "buffer" ? "output" : "inout";
-    return `${direction} wire ${verilogWidth(port.width)}${port.name}`;
+    const width = verilogWidth(port.width);
+    const mappedWidth = vhdl ? width.replace(/[A-Za-z_]\w*/g, name => parameterNames.get(name.toLowerCase()) ?? name) : width;
+    return `${direction} wire ${mappedWidth}${port.name}`;
   });
   const parameterList = parametersText.length ? ` #(${parametersText.join(", ")})` : "";
   return `module ${name}${parameterList} (${portsText.join(", ")});\nendmodule\n`;
 }
 
 export function vhdlStub(name: string, ports: PortInfo[], parameters: ParameterInfo[]): string {
-  const generics = parameters.map(parameter => ({ name: parameter.name, value: parameter.defaultValue?.trim() }))
-    .filter(parameter => validVhdlName(parameter.name))
-    .map(parameter => `    ${parameter.name} : integer := ${parameter.value && /^[+-]?\d[\d_]*$/.test(parameter.value) ? parameter.value.replaceAll("_", "") : "1"}`);
+  const generics = parameters.filter(parameter => validVhdlName(parameter.name)).map(parameter => {
+    const value = vhdlDefault(parameter.defaultValue, parameters);
+    return `    ${parameter.name} : integer${value === undefined ? "" : ` := ${value}`}`;
+  });
   const portList = ports.filter(port => validVhdlName(port.name) && port.direction).map(port => {
     const direction = port.direction!.toLowerCase();
     const vhdlDirection = direction === "in" || direction === "input" ? "in" : direction === "inout" ? "inout" : direction === "buffer" ? "buffer" : "out";
@@ -54,4 +62,31 @@ function verilogWidth(type: string | undefined): string {
 
 function validName(name: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(name);
+}
+
+function verilogDefault(value: string | undefined, parameters: ParameterInfo[], vhdl: boolean): string | undefined {
+  if (!value?.trim() || value.length > 8192) return undefined;
+  if (/^"(?:[^"\\\r\n]|\\.)*"$/.test(value.trim())) return value.trim();
+  const names = new Map(parameters.map(parameter => [vhdl ? parameter.name.toLowerCase() : parameter.name, parameter.name]));
+  const text = vhdl ? value.trim().replace(/\btrue\b/gi, "1").replace(/\bfalse\b/gi, "0")
+    .replace(/\brem\b/gi, "%") : value.trim();
+  // 只转换共享的常量表达式子集；无法转换时保留无默认值的参数，由后端报告黑盒边界。
+  const tokens = text.match(/\d*'[sS]?[bBoOdDhH][0-9a-fA-F_xXzZ?]+|'[01xXzZ]|\d[\d_]*|\$clog2|[A-Za-z_]\w*|\s+|[()+*/%<>=!~&|^?:-]/g);
+  if (!tokens || tokens.join("") !== text) return undefined;
+  const key = (token: string) => vhdl ? token.toLowerCase() : token;
+  if (tokens.some(token => /^[A-Za-z_]\w*$/.test(token) && !names.has(key(token)))) return undefined;
+  return tokens.map(token => names.get(key(token)) ?? token).join("");
+}
+
+function vhdlDefault(value: string | undefined, parameters: ParameterInfo[]): string | undefined {
+  const text = verilogDefault(value, parameters, true);
+  if (!text) return undefined;
+  let unknown = false;
+  const converted = text.replace(/\d*'[sS]?[bBoOdDhH][0-9a-fA-F_xXzZ?]+|'[01xXzZ]/g, literal => {
+    const number = evaluateConstant(literal, new Map());
+    if (number === undefined) unknown = true;
+    return String(number);
+  });
+  if (unknown || !/^[\w\s()+*/%\-]+$/.test(converted)) return undefined;
+  return converted.replaceAll("%", " rem ");
 }

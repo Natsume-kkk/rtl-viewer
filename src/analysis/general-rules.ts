@@ -1,4 +1,4 @@
-import { assignmentScope, type AssignmentFacts, type FileFacts } from "./facts";
+import { assignmentScope, isProcessLocal, missingSensitivity, type AssignmentFacts, type FileFacts } from "./facts";
 
 export interface RuleDiagnostic {
   file: string;
@@ -44,17 +44,7 @@ export function runGeneralRules(facts: FileFacts, includeStyle = false): RuleDia
     } else {
       if (process.sequential && !process.hasResetBranch) emit("info", "VHD-SY-001", "synth", process.startLine, 1, "时序过程中未识别到规则所定义的复位分支。");
       if (process.incompleteConditionalAssignment) emit("info", "VHD-SY-003", "synth", process.startLine, 1, "组合过程中未能确认所有条件路径均有赋值。");
-      if (process.combinational && process.explicitSensitivity && !process.sensitivity.includes("all")) {
-        const sensitivity = new Set(process.sensitivity);
-        const missing = new Set<string>();
-        for (const assignment of process.assignments) {
-          for (const read of [...assignment.reads, ...assignment.conditions]) {
-            const name = read.toLowerCase();
-            if (/^[a-z][a-z0-9_]*$/.test(name) && !sensitivity.has(name)) missing.add(name);
-          }
-        }
-        for (const name of [...missing].slice(0, 3)) emit("info", "VHD-SY-002", "synth", process.startLine, 1, `信号“${name}”在过程内被读取，但未出现在敏感列表中。`);
-      }
+      for (const name of missingSensitivity(facts, process).slice(0, 3)) emit("info", "VHD-SY-002", "synth", process.startLine, 1, `信号“${name}”在过程内被读取，但未出现在敏感列表中。`);
     }
   }
   for (const line of facts.initialLines) emit("info", "VLG-SY-003", "synth", line, 1, "检测到 initial；请核对目标器件与仿真用途。");
@@ -72,6 +62,7 @@ function emitMultipleDrivers(facts: FileFacts, emit: (severity: RuleDiagnostic["
   const drivers = new Map<string, AssignmentFacts>();
   const reported = new Set<string>();
   for (const assignment of [...facts.processes.flatMap(process => process.assignments), ...facts.concurrentAssignments]) {
+    if (isProcessLocal(facts, assignment)) continue;
     const target = assignment.targetText.trim();
     if (target !== assignment.target || !/^[A-Za-z_]\w*$/.test(target)) continue;
     const key = `${assignmentScope(facts, assignment)}|${facts.language === "vhdl" ? target.toLowerCase() : target}`;

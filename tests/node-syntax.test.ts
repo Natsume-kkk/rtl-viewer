@@ -6,6 +6,8 @@ import { runNodeSyntaxCheck } from "../src/app/node-syntax";
 import { emptySyntaxCheckOptions } from "../src/ipc";
 import { diagnosticDisplayMessage } from "../src/app/diagnostic-display";
 import { syntaxDependencyFiles } from "../src/app/syntax-order";
+import { verilogStub } from "../src/app/syntax-stubs";
+import { buildStubs } from "../scripts/rtl-lint";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })));
@@ -22,6 +24,60 @@ function syntaxFixture(sources: Record<string, string | Buffer>) {
   });
   return { requestId: 11, root, files, stubs: [], options: emptySyntaxCheckOptions };
 }
+
+it("VHDL 黑盒顶层不能屏蔽实际 Verilog 子模块的语义诊断", () => {
+  const request = syntaxFixture({
+    "top.vhd": "entity top is port(d:in bit; q:out bit); end; architecture rtl of top is component child port(d:in bit; q:out bit); end component; begin u:child port map(d,q); end;\n",
+    "child.sv": "module child(input wire [7:0] d, output wire q); assign q=d; endmodule\n",
+  });
+  const result = runNodeSyntaxCheck({ ...request, top: "top", stubs: [{ name: "top", source: "module top(input d,output q); endmodule\n" }] });
+  expect(result.diagnostics).toContainEqual(expect.objectContaining({ ruleId: "VERILATOR-WIDTHTRUNC", file: request.files[1].replaceAll("\\", "/") }));
+});
+
+it("黑盒保持参数默认值，不制造端口位宽差异", () => {
+  const request = syntaxFixture({ "top.sv": "module top(input [7:0] data); child u(.data(data)); endmodule\n" });
+  const source = verilogStub("child", [{ name: "data", direction: "in", width: "std_logic_vector(width-1 downto 0)" }], [{ name: "WIDTH", defaultValue: "8" }], true);
+  const result = runNodeSyntaxCheck({ ...request, top: "top", stubs: [{ name: "child", source }] });
+  expect(result.diagnostics.filter(item => item.severity === "error" || item.ruleId.startsWith("VERILATOR-WIDTH"))).toEqual([]);
+});
+
+it("未知黑盒默认值要求显式参数覆盖，不生成确定的假位宽", () => {
+  const request = syntaxFixture({ "top.sv": "module top(input [7:0] data); child #(.WIDTH(8)) u(.data(data)); endmodule\n" });
+  const source = verilogStub("child", [{ name: "data", direction: "input", width: "[WIDTH-1:0]" }], [{ name: "WIDTH", defaultValue: "vendor_width()" }]);
+  const result = runNodeSyntaxCheck({ ...request, top: "top", stubs: [{ name: "child", source }] });
+  expect(result.diagnostics.filter(item => item.severity === "error" || item.ruleId.startsWith("VERILATOR-WIDTH"))).toEqual([]);
+  fs.writeFileSync(request.files[0], "module top(input [7:0] data); child u(.data(data)); endmodule\n");
+  expect(runNodeSyntaxCheck({ ...request, top: "top", stubs: [{ name: "child", source }] }).diagnostics).toContainEqual(expect.objectContaining({ severity: "error", message: expect.stringMatching(/parameter|default/i) }));
+});
+
+it("CLI 分文件 entity 和 architecture 只生成一个完整接口", () => {
+  const request = syntaxFixture({
+    "top.sv": "module top(input a,output y); child u(.a(a),.y(y)); endmodule\n",
+    "a_entity.vhd": "entity child is port(a:in bit; y:out bit); end;\n",
+    "z_arch.vhd": "architecture rtl of child is begin y<=a; end;\n",
+  });
+  const stubs = buildStubs(request.files);
+  expect(stubs.stubs).toHaveLength(1);
+  expect(runNodeSyntaxCheck({ ...request, top: "top", ...stubs }).diagnostics.filter(item => item.severity === "error")).toEqual([]);
+});
+
+it("CLI 重复 entity 不猜选黑盒接口", () => {
+  const request = syntaxFixture({
+    "one.vhd": "entity child is port(a:in bit); end;\n",
+    "two.vhd": "entity CHILD is port(b:in bit); end;\n",
+  });
+  expect(buildStubs(request.files).stubs).toEqual([]);
+});
+
+it.each(["automatic", "static"])("package %s 的依赖被选入并先于使用者检查", lifetime => {
+  const request = syntaxFixture({
+    "a_top.sv": "module top(output pkg::word_t y); assign y=0; endmodule\n",
+    "z_pkg.sv": `package ${lifetime} pkg; typedef logic [7:0] word_t; endpackage\n`,
+  });
+  const files = syntaxDependencyFiles(request.files.map(actual => ({ actual, library: "work" })), new Set([request.files[0]]), file => fs.readFileSync(file.actual, "utf8"));
+  expect(files).toEqual(request.files);
+  expect(runNodeSyntaxCheck({ ...request, files, top: "top" }).diagnostics.filter(item => item.severity === "error")).toEqual([]);
+});
 
 it("GHDL 拒绝无位置的无效参数时返回后端失败", () => {
   const request = syntaxFixture({ "top.vhd": "entity top is end;\n" });

@@ -11,7 +11,7 @@ import { extractOutline, breadcrumbAt, OUTLINE_KIND_LABELS } from "./model/outli
 import type { OutlineItem } from "./model/outline";
 import { createProjectSearch } from "./app/project-search";
 import { analyzeDefinitionChoices } from "./app/definition-choices";
-import { scanStructure } from "./parser";
+import { parseFile, scanStructure } from "./parser";
 import type { ModuleInfo, IpInfo } from "./parser";
 import { openFolderDialog, openFileDialog, pathExists, showInFolder, isDirectory, normalizePath, runSyntaxCheck, cancelSyntaxCheck, saveReportDialog, writeFile, type SyntaxCheckResult } from "./ipc";
 import { ProblemPanel, type ProblemIndicator } from "./ui/problems";
@@ -46,6 +46,8 @@ import { showSyntaxOptionsDialog } from "./ui/syntax-options";
 import { createFactsScheduler } from "./app/facts-scheduler";
 import { explainVerilatorSyntax } from "./app/diagnostic-display";
 import { syntaxDependencyFiles } from "./app/syntax-order";
+import { syntaxScope } from "./app/syntax-scope";
+import { createStructureScanner } from "./app/structure-scanner";
 import { createCoalescedRefresh } from "./app/coalesced-refresh";
 import { StatsPanel } from "./ui/stats";
 import { emptySyntaxCheckOptions } from "./ipc";
@@ -306,7 +308,7 @@ let syntaxOptions = { ...emptySyntaxCheckOptions };
 let syntaxRefreshTimer: number | undefined;
 const problemPanel = new ProblemPanel(document.getElementById("problem-root")!, {
   onConfigure: () => void configureSyntaxCheck(),
-  onCancel: () => { if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest); },
+  onCancel: cancelRunningSyntaxCheck,
   onScopeChange: setAnalysisScope,
   onExport: format => void exportSyntaxReport(format),
   onOpen: diagnostic => { bottomPanels.restoreEditor(); void navigateTo(diagnostic.file, diagnostic.line, diagnostic.column); },
@@ -383,6 +385,8 @@ function configurationPath(file: string | null): string | undefined {
 }
 
 let syntaxChangedWhileRunning = false;
+let syntaxScopeScanner: ReturnType<typeof createStructureScanner> | undefined;
+let syntaxBackendStarted = false;
 
 function scheduleProjectSyntaxCheck(delay = 0): void {
   window.clearTimeout(syntaxRefreshTimer);
@@ -399,62 +403,85 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
   const folder = state.folder;
   if (!folder || !projectReady) return false;
   cancelProjectSyntaxCheck();
-  moduleMetadataLoader.invalidateIps();
-  const snapshots = new Map<string, { file: string; content: string; encoding: string }>();
-  for (const group of groups) for (const tab of group.tabs.allTabs) {
-    if (tab.dirty && tab.path && state.contents.has(indexedFilePath(state.contents, tab.path))) {
-      snapshots.set(tab.path, { file: tab.path, content: tab.model.getValue(), encoding: tab.encoding });
-    }
-  }
-  const top = analysisScope === "top" ? effectiveAnalysisTop() : undefined;
-  const libraries = new Map(syntaxOptions.vhdlLibraries.map(mapping => [filePathKey(configuredPath(folder, mapping.file)), mapping.library]));
-  const projectFiles = projectHdlFiles();
-  const selected = new Set(analysisHdlFiles());
-  const dependencySources = projectFiles.map(actual => ({ actual, library: libraries.get(filePathKey(actual)) ?? "work" }));
-  const dependencies = analysisScope === "top"
-    ? syntaxDependencyFiles(dependencySources, selected, file => fileContent(file.actual) ?? "")
-    : [...selected];
-  const files = [...new Set([
-    ...dependencies,
-    ...projectFiles.filter(file => /\.(?:vh|svh)$/i.test(file)),
-    ...syntaxOptions.vhdlLibraries.map(mapping => configuredPath(folder, mapping.file)),
-  ])];
-  if (!files.length) {
-    lastSyntaxResult = { requestId: syntaxSerial, checkedFiles: 0, cancelled: false, backends: [], diagnostics: [] };
-    lastSyntaxOptions = undefined;
-    syntaxChangedWhileRunning = false;
-    problemPanel.finish(lastSyntaxResult);
-    refreshFactsViews();
-    statusbar.hint("当前工程没有可检查的 Verilog／VHDL 文件");
-    return true;
-  }
-  const optionErrors = validateSyntaxOptions(syntaxOptions);
-  if (optionErrors.length) {
-    problemPanel.fail(`检查配置无效：${optionErrors.join("；")}`);
-    refreshFactsViews();
-    return false;
-  }
   const request = ++syntaxSerial;
   runningSyntaxRequest = request;
+  syntaxBackendStarted = false;
   syntaxChangedWhileRunning = false;
   problemPanel.start();
   refreshFactsViews();
+  const scanner = createStructureScanner();
+  syntaxScopeScanner = scanner;
   try {
-    const scopedIps = analysisScope === "project" ? state.ips : state.ips.filter(ip => activeTopModules.has(ip.name.toLowerCase()));
-    const selectedIps = scopedIps.filter(ip => state.index.resolve(ip.name)?.isIp);
+    moduleMetadataLoader.invalidateIps();
+    const snapshots = new Map<string, { file: string; content: string; encoding: string }>();
+    for (const group of groups) for (const tab of group.tabs.allTabs) {
+      if (tab.dirty && tab.path && state.contents.has(indexedFilePath(state.contents, tab.path))) {
+        const file = indexedFilePath(state.contents, tab.path);
+        snapshots.set(file, { file, content: tab.model.getValue(), encoding: tab.encoding });
+      }
+    }
+    const top = analysisScope === "top" ? effectiveAnalysisTop() : undefined;
+    const contents = new Map([...state.contents].map(([file, value]) => [file, value.content]));
+    for (const snapshot of snapshots.values()) contents.set(snapshot.file, snapshot.content);
+    const structures = new Map(state.structures);
+    for (const snapshot of snapshots.values()) structures.set(snapshot.file, await scanner.scan(snapshot.file, snapshot.content));
+    scanner.dispose();
+    if (syntaxScopeScanner === scanner) syntaxScopeScanner = undefined;
+    if (request !== syntaxSerial || folder !== state.folder) return false;
+    const scope = syntaxScope(structures, state.ips, state.definitionPreferences, effectiveAnalysisTop());
+    if (!syntaxChangedWhileRunning) {
+      const scopeChanged = activeTopFiles.size !== scope.files.size || [...scope.files].some(file => !activeTopFiles.has(file));
+      activeTopology = scope.topology;
+      activeTopFiles = scope.files;
+      activeTopModules = scope.modules;
+      if (scopeChanged && analysisScope === "top") void factsScheduler.start();
+    }
+    const libraries = new Map(syntaxOptions.vhdlLibraries.map(mapping => [filePathKey(configuredPath(folder, mapping.file)), mapping.library]));
+    const projectFiles = projectHdlFiles();
+    const selected = new Set(projectFiles.filter(file => analysisScope === "project" || !scope.files.size || scope.files.has(filePathKey(file))));
+    const dependencySources = projectFiles.map(actual => ({ actual, library: libraries.get(filePathKey(actual)) ?? "work" }));
+    const dependencies = analysisScope === "top"
+      ? syntaxDependencyFiles(dependencySources, selected, file => contents.get(file.actual) ?? "")
+      : [...selected];
+    const files = [...new Set([
+      ...dependencies,
+      ...projectFiles.filter(file => /\.(?:vh|svh)$/i.test(file)),
+      ...syntaxOptions.vhdlLibraries.map(mapping => configuredPath(folder, mapping.file)),
+    ])];
+    if (!files.length) {
+      runningSyntaxRequest = 0;
+      lastSyntaxResult = { requestId: syntaxSerial, checkedFiles: 0, cancelled: false, backends: [], diagnostics: [] };
+      lastSyntaxOptions = undefined;
+      syntaxChangedWhileRunning = false;
+      problemPanel.finish(lastSyntaxResult);
+      refreshFactsViews();
+      statusbar.hint("当前工程没有可检查的 Verilog／VHDL 文件");
+      return true;
+    }
+    const optionErrors = validateSyntaxOptions(syntaxOptions);
+    if (optionErrors.length) {
+      runningSyntaxRequest = 0;
+      problemPanel.fail(`检查配置无效：${optionErrors.join("；")}`);
+      refreshFactsViews();
+      return false;
+    }
+    const scopedIps = analysisScope === "project" ? state.ips : state.ips.filter(ip => scope.modules.has(ip.name.toLowerCase()));
+    const selectedIps = scopedIps.filter(ip => scope.index.resolve(ip.name)?.isIp);
     const ipStubs = (await Promise.all(selectedIps.map(async ip => {
       const ports = await modulePorts(ip.name);
       const parameters = await moduleIpParameters(ip.name);
       return { name: ip.name, source: ports.length ? verilogStub(ip.name, ports, parameters) : "" };
     }))).filter(stub => stub.source);
-    const vhdlModules = new Map<string, ModuleInfo>();
-    for (const file of files) for (const module of state.structures.get(file) ?? []) {
-      if (module.vhdl?.entity && !vhdlModules.has(module.name.toLowerCase())) vhdlModules.set(module.name.toLowerCase(), module);
+    const vhdlModules = new Map<string, ModuleInfo[]>();
+    for (const file of files.filter(file => /\.vhdl?$/i.test(file))) for (const module of parseFile(contents.get(file) ?? "", file)) {
+      if (!module.vhdl?.entity) continue;
+      const key = module.name.toLowerCase();
+      vhdlModules.set(key, [...vhdlModules.get(key) ?? [], module]);
     }
-    const verilogVhdlStubs = await Promise.all([...vhdlModules.values()].map(async module => ({
+    const verilogVhdlStubs = [...vhdlModules.values()].filter(definitions => definitions.length === 1).map(([module]) => ({
       name: module.name,
-      source: verilogStub(module.name, await modulePorts(module.name), moduleParameters(module.name)),
-    })));
+      source: verilogStub(module.name, module.ports, module.parameters ?? [], true),
+    }));
     const vhdlStubs = (await Promise.all(selectedIps.map(async ip => {
       const ports = await modulePorts(ip.name);
       return { name: ip.name, source: ports.length ? vhdlStub(ip.name, ports, await moduleIpParameters(ip.name)) : "" };
@@ -467,8 +494,8 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
       includeDirs: syntaxOptions.includeDirs.map(path => configuredPath(folder, path)),
       vhdlLibraries: syntaxOptions.vhdlLibraries.map(mapping => ({ ...mapping, file: configuredPath(folder, mapping.file) })),
     };
-    const checkedSources = new Map([...state.contents].map(([file, value]) => [filePathKey(file), value.content]));
-    for (const snapshot of snapshots.values()) checkedSources.set(filePathKey(snapshot.file), snapshot.content);
+    const checkedSources = new Map([...contents].map(([file, content]) => [filePathKey(file), content]));
+    syntaxBackendStarted = true;
     const result = await runSyntaxCheck(folder, files, top, request, progress => {
       if (request === syntaxSerial) problemPanel.update(progress);
     }, stubs, options, [...snapshots.values()], vhdlStubs);
@@ -486,6 +513,10 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
     problemPanel.fail(error);
     refreshFactsViews();
     return false;
+  } finally {
+    scanner.dispose();
+    if (syntaxScopeScanner === scanner) syntaxScopeScanner = undefined;
+    if (request === syntaxSerial) syntaxBackendStarted = false;
   }
 }
 
@@ -493,25 +524,43 @@ function cancelProjectSyntaxCheck(): void {
   window.clearTimeout(syntaxRefreshTimer);
   syntaxRefreshTimer = undefined;
   syntaxSerial++;
-  if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest);
+  syntaxScopeScanner?.dispose();
+  syntaxScopeScanner = undefined;
+  if (runningSyntaxRequest && syntaxBackendStarted) void cancelSyntaxCheck(runningSyntaxRequest);
+  syntaxBackendStarted = false;
   runningSyntaxRequest = 0;
 }
 
+function cancelRunningSyntaxCheck(): void {
+  if (runningSyntaxRequest && !syntaxBackendStarted) {
+    cancelProjectSyntaxCheck();
+    lastSyntaxResult = { ...(lastSyntaxResult ?? { checkedFiles: 0, backends: [], diagnostics: [] }), requestId: syntaxSerial, cancelled: true };
+    problemPanel.finish(lastSyntaxResult, true);
+    refreshFactsViews();
+  } else if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest);
+}
+
 async function exportSyntaxReport(format: "html" | "csv"): Promise<void> {
-  if (!state.folder || !problemPanel.hasResults) return;
+  if (!state.folder || !problemPanel.hasResults || problemPanel.indicator.running) return;
+  const folder = state.folder;
   try {
     if (lastSyntaxResult && problemPanel.isStale) {
       const choice = await choiceDialog("源码或检查配置已变化，外部诊断来自上次快照。", ["重新检查后导出", "导出上次结果", "取消"], 0);
       if (choice < 0 || choice === 2) return;
       if (choice === 0 && !(await runProjectSyntaxCheck())) return;
     }
+    if (state.folder !== folder) return;
+    if (problemPanel.indicator.running) {
+      statusbar.hint("内置分析尚未完成，请等待完成后导出");
+      return;
+    }
     const generated = new Date();
-    const path = await saveReportDialog(format, `${state.folder}/${reportFileName(state.folder, format, generated)}`);
-    if (!path) return;
     const external: SyntaxCheckResult = lastSyntaxResult ?? { requestId: 0, checkedFiles: 0, cancelled: false, backends: [], diagnostics: [] };
     const reportResult = { ...external, diagnostics: [...problemPanel.builtinDiagnostics, ...external.diagnostics] };
     const context = { options: lastSyntaxOptions ?? syntaxOptions, facts: factsScheduler.values().filter(item => inAnalysisScope(item.file)), stale: problemPanel.isStale, failure: problemPanel.failureMessage };
-    const content = format === "html" ? syntaxReportHtml(state.folder, reportResult, generated, context) : syntaxReportCsv(reportResult, context);
+    const content = format === "html" ? syntaxReportHtml(folder, reportResult, generated, context) : syntaxReportCsv(reportResult, context);
+    const path = await saveReportDialog(format, `${folder}/${reportFileName(folder, format, generated)}`);
+    if (!path) return;
     await writeFile(path, content, "utf8");
     statusbar.hint(`检查报告已导出：${path}`);
   } catch (error) {
@@ -794,6 +843,14 @@ function registerEditorActions(): void {
 
 const workspace = createEditorWorkspace([editor, editor2], {
   cachedFile: file => state.contents.get(indexedFilePath(state.contents, file)),
+  onFileDiscarded: path => {
+    const file = indexedFilePath(state.contents, path);
+    if (!state.contents.has(file)) return;
+    markResultsStale();
+    factsScheduler.schedule(file);
+    refreshFactsViews();
+    scheduleProjectSyntaxCheck();
+  },
   onFileChanged: (path, content, encoding, mtime) => {
     path = indexedFilePath(state.contents, path);
     // 独立打开、新建／另存为的文件由扫描接纳，不绕过 EDA 与 IP 边界。

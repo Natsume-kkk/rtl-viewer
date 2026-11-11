@@ -51,6 +51,7 @@ export interface TabEvents {
   /** 文件从磁盘读取/写回后回调（用于刷新解析缓存与层级树） */
   onFileReloaded(path: string, content: string, encoding: string, mtime: number): void;
   onFileSaved(path: string, content: string, encoding: string, mtime: number): void;
+  onFileDiscarded?(path: string): void;
   /** 标签右键菜单的附加项（移动／克隆），插在关闭项之后。 */
   tabMenuExtra?(tab: Tab): MenuItem[];
 }
@@ -445,6 +446,9 @@ export class TabManager {
       }
     }
     TabManager.refreshNames();
+    if (tab.path && tab.dirty && ![...TabManager.managers].some(manager => manager.tabs.some(other => other.model === tab.model))) {
+      this.events.onFileDiscarded?.(tab.path);
+    }
   }
 
   async closeAll(): Promise<boolean> {

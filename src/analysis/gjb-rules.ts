@@ -1,5 +1,5 @@
 import { GJB10157_RULES, GJB9765_RULES, type GjbRuleDefinition } from "./gjb-catalog";
-import { assignmentScope, moduleScopeAt, type AssignmentFacts, type FileFacts, type ProcessFacts } from "./facts";
+import { assignmentScope, isProcessLocal, missingSensitivity, moduleScopeAt, type AssignmentFacts, type FileFacts, type ProcessFacts } from "./facts";
 import type { RuleDiagnostic } from "./general-rules";
 import { KEYWORDS } from "../parser/verilog";
 import { expressionWidth, signalWidths, simpleBinary, sizedLiteralWidth } from "./width";
@@ -369,6 +369,7 @@ export function runGjb9765Rules(facts: FileFacts): RuleDiagnostic[] {
   const drivers = new Map<string, AssignmentFacts>();
   const reported = new Set<string>();
   for (const assignment of [...facts.processes.flatMap(process => process.assignments), ...facts.concurrentAssignments]) {
+    if (isProcessLocal(facts, assignment)) continue;
     const target = assignment.targetText.trim();
     if (target !== assignment.target || !/^[A-Za-z_]\w*$/.test(target)) continue;
     const key = `${assignmentScope(facts, assignment)}|${target.toLowerCase()}`;
@@ -473,16 +474,7 @@ function resetPolarityMismatch(process: ProcessFacts, reset: string): boolean {
 }
 
 function reportSensitivity(facts: FileFacts, process: ProcessFacts, emit: (id: string, line: number, column: number, message: string) => void, id: string): void {
-  if (!process.combinational || !process.explicitSensitivity || process.sensitivity.includes("all")) return;
-  const sensitivity = new Set(process.sensitivity);
-  const missing = new Set<string>();
-  for (const assignment of process.assignments) {
-    for (const read of [...assignment.reads, ...assignment.conditions]) {
-      const name = facts.language === "vhdl" ? read.toLowerCase() : read;
-      if (/^[A-Za-z_]\w*$/.test(name) && !sensitivity.has(name)) missing.add(name);
-    }
-  }
-  for (const name of [...missing].slice(0, 3)) emit(id, process.startLine, 1, `信号“${name}”在过程内被读取，但未列入敏感列表。`);
+  for (const name of missingSensitivity(facts, process).slice(0, 3)) emit(id, process.startLine, 1, `信号“${name}”在过程内被读取，但未列入敏感列表。`);
 }
 
 function literalWidthMismatch(expression: string): boolean {

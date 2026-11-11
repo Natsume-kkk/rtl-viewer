@@ -102,7 +102,7 @@ function makeEditor() {
 }
 
 function makeEvents() {
-  return { onActiveChange: vi.fn(), onFileReloaded: vi.fn(), onFileSaved: vi.fn() };
+  return { onActiveChange: vi.fn(), onFileReloaded: vi.fn(), onFileSaved: vi.fn(), onFileDiscarded: vi.fn() };
 }
 
 // modelStore 与 TabManager.managers 是模块级状态，每个用例重置模块注册表拿到干净实例
@@ -133,6 +133,19 @@ async function setup() {
 }
 
 describe("TabManager", () => {
+  it("只有最后一个脏文件视图关闭时通知分析恢复磁盘内容", async () => {
+    const { mocks } = await setup();
+    const { TabManager } = await import("../src/editor/tabs");
+    const events = [makeEvents(), makeEvents()];
+    const managers = events.map(event => new TabManager(makeEditor() as unknown as ConstructorParameters<typeof TabManager>[0], document.createElement("ul"), event));
+    for (const manager of managers) manager.openContent("D:/p/a.v", "disk", "utf8", 0);
+    managers[0].activeTab!.model.setValue("edited");
+    await managers[0].closeAll();
+    expect(events[0].onFileDiscarded).not.toHaveBeenCalled();
+    mocks.choiceDialog.mockResolvedValueOnce(1);
+    await managers[1].closeAll();
+    expect(events[1].onFileDiscarded).toHaveBeenCalledExactlyOnceWith("D:/p/a.v");
+  });
   it.each(["closeAll", "closeGroups", "exit"])("%s 保存期间其他原本干净的缓冲区变脏时停止整个关闭", async action => {
     const { make, mocks } = await setup();
     const { TabManager } = await import("../src/editor/tabs");

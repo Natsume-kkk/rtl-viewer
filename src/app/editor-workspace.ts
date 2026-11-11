@@ -18,6 +18,7 @@ export interface EditorGroup {
 interface WorkspaceContext {
   cachedFile(path: string): CachedFile | undefined;
   onFileChanged: TabEvents["onFileSaved"];
+  onFileDiscarded?: TabEvents["onFileDiscarded"];
   onActiveChange(group: EditorGroup): void;
   onContentChange(active: boolean): void;
   onCursorChange(line: number): void;
@@ -125,6 +126,7 @@ export function createEditorWorkspace(editors: readonly [EditorGroup["editor"], 
       },
       onFileReloaded: ctx.onFileChanged,
       onFileSaved: ctx.onFileChanged,
+      onFileDiscarded: ctx.onFileDiscarded,
       tabMenuExtra: tab => transferMenu(idx, tab),
     };
   }

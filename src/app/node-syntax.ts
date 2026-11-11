@@ -53,7 +53,8 @@ export function runNodeSyntaxCheck(request: NodeCheckRequest): SyntaxCheckResult
     let checkedFiles = 0;
     if (verilog.length) {
       const version = toolVersion(tools, "verilator");
-      const outcome = runVerilator(tools, root, work, verilog, includeDirs, request.stubs, request.options, request.top);
+      const top = vhdl.length && request.stubs.some(stub => stub.name.toLowerCase() === request.top?.toLowerCase()) ? undefined : request.top;
+      const outcome = runVerilator(tools, root, work, verilog, includeDirs, request.stubs, request.options, top);
       parseVerilator(outcome.output, root, diagnostics, snapshots.originals);
       const errors = diagnostics.filter(item => item.severity === "error");
       const failed = !!outcome.error || !!outcome.failedExit && !errors.some(item => item.file);

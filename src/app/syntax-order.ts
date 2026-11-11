@@ -14,8 +14,8 @@ function verilogDependencies<T extends OrderedFile>(files: T[], read: (file: T) 
   const texts = files.map(file => stripComments(read(file)));
   const definitions = new Map<string, number>();
   texts.forEach((text, index) => {
-    for (const match of windows(words(text), 2)) {
-      if (match[0] === "package" && !definitions.has(match[1])) definitions.set(match[1], index);
+    for (const match of text.matchAll(/\bpackage\s+(?:(?:automatic|static)\s+)?([A-Za-z_]\w*)\s*;/g)) {
+      if (!definitions.has(match[1])) definitions.set(match[1], index);
     }
   });
   const dependencies = files.map(() => new Set<number>());

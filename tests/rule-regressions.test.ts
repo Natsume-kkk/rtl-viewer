@@ -8,6 +8,39 @@ const vhdl = (source: string, file = "demo.vhd") => runGjb9765Rules(analyzeFileF
 const ids = (source: string, file = "demo.v") => verilog(source, file).map(item => item.ruleId);
 const vhdlIds = (source: string, file = "demo.vhd") => vhdl(source, file).map(item => item.ruleId);
 
+it("自动敏感列表不误报，显式列表检查条件中的信号并排除常量", () => {
+  expect(ids("module demo(input a, output reg y); always @(*) y=a; endmodule")).not.toContain("10157-R-13-9");
+  const source = "module demo(input a, sel, output reg y); localparam ONE=1; always @(a) if (sel == ONE) y=a; else y=0; endmodule";
+  const missing = verilog(source).filter(item => item.ruleId === "10157-R-13-9");
+  expect(missing.map(item => item.message)).toEqual([expect.stringContaining("“sel”")]);
+  expect(ids("module demo(input a, output reg y); always @(a) begin : body reg temp; temp=a; if(temp) y=a; else y=0; end endmodule")).not.toContain("10157-R-13-9");
+});
+
+it("VHDL 敏感列表只检查信号读取，不要求常量和局部变量", () => {
+  const source = `entity demo is port(a, sel:in integer; y:out integer); end;
+architecture rtl of demo is constant OFFSET:integer:=1;
+begin process(a) variable temp:integer; begin
+temp:=a+OFFSET; if sel=1 then y<=temp; else y<=0; end if;
+end process; end;`;
+  const facts = analyzeFileFacts("demo.vhd", source);
+  for (const diagnostics of [runGeneralRules(facts), runGjb9765Rules(facts)]) {
+    expect(diagnostics.filter(item => /敏感列表/.test(item.message)).map(item => item.message)).toEqual([expect.stringContaining("“sel”")]);
+  }
+});
+
+it("VHDL 不把不同过程同名局部变量合并为驱动，但保留真实信号多驱动", () => {
+  const source = `entity demo is port(a,b:in integer; y,z:out integer); end;
+architecture rtl of demo is begin
+process(a) variable temp:integer; begin temp:=a; y<=temp; end process;
+process(b) variable temp:integer; begin temp:=b; z<=temp; end process; end;`;
+  const diagnostics = (text: string) => {
+    const facts = analyzeFileFacts("demo.vhd", text);
+    return [...runGeneralRules(facts), ...runGjb9765Rules(facts)].filter(item => ["VHD-SY-004", "9765-4.6-f"].includes(item.ruleId));
+  };
+  expect(diagnostics(source)).toEqual([]);
+  expect(diagnostics(source.replace("z<=temp", "y<=temp"))).toHaveLength(2);
+});
+
 it("异步复位边沿不计作时钟，只有不同目标混用复位才报警", () => {
   const source = `module demo(input logic clk, rst, d, output logic q, r);
 always @(posedge clk or negedge rst) begin

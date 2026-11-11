@@ -347,7 +347,9 @@ fn execute_check_inner(
         let count = ordered.len();
         let version = tool_version(&verilator, tools, &root, request.request_id, jobs);
         let mut status = "completed".to_owned();
-        match run_verilator(&verilator, tools, &root, work, &ordered, &include_dirs, &request.stubs, &request.options, request.top.as_deref(), request.request_id, jobs) {
+        // VHDL 顶层的黑盒不保留例化边；由已选文件中的真实 Verilog 根模块开始检查。
+        let top = request.top.as_deref().filter(|top| vhdls.is_empty() || !request.stubs.iter().any(|stub| stub.name.eq_ignore_ascii_case(top)));
+        match run_verilator(&verilator, tools, &root, work, &ordered, &include_dirs, &request.stubs, &request.options, top, request.request_id, jobs) {
             Ok(outcome) => {
                 let before = diagnostics.len();
                 parse_verilator_output(&outcome.stdout, &root, &mut diagnostics);
@@ -735,7 +737,11 @@ fn order_verilog(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnost
     let mut dependencies = vec![BTreeSet::new(); files.len()];
     for (index, text) in texts.iter().enumerate() {
         for (package, provider) in &definitions {
-            if *provider != index && text.contains(&format!("{package}::")) {
+            if *provider != index && text.match_indices(package).any(|(offset, _)| {
+                let previous = text[..offset].chars().next_back();
+                !previous.is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
+                    && text[offset + package.len()..].trim_start().starts_with("::")
+            }) {
                 dependencies[index].insert(*provider);
             }
         }
@@ -822,7 +828,10 @@ fn stable_order(files: Vec<SourceFile>, dependencies: Vec<BTreeSet<usize>>) -> V
 
 fn verilog_packages(text: &str) -> Vec<String> {
     let tokens = words(text);
-    tokens.windows(2).filter(|pair| pair[0] == "package").map(|pair| pair[1].clone()).collect()
+    tokens.iter().enumerate().filter(|(_, token)| token.as_str() == "package").filter_map(|(index, _)| {
+        let next = tokens.get(index + 1)?;
+        if next == "automatic" || next == "static" { tokens.get(index + 2).cloned() } else { Some(next.clone()) }
+    }).collect()
 }
 
 fn vhdl_packages(text: &str) -> (Vec<String>, Vec<String>) {
@@ -901,6 +910,38 @@ fn strip_comments(text: &str, kind: SourceKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verilog_package_lifetimes_preserve_dependency_names() {
+        assert_eq!(verilog_packages("package automatic a; endpackage package static b; endpackage package c; endpackage"), ["a", "b", "c"]);
+        let consumer = fixture("lifetime-consumer.sv", "module top(output pkg :: word_t y); assign y=0; endmodule");
+        let provider = fixture("lifetime-package.sv", "package automatic pkg; typedef logic [7:0] word_t; endpackage");
+        let (ordered, errors) = order_verilog(vec![consumer, provider]);
+        assert!(errors.is_empty());
+        assert_eq!(ordered[0].path.file_name().unwrap(), "lifetime-package.sv");
+    }
+
+    #[test]
+    #[ignore = "requires the local Verilator and GHDL runtime"]
+    fn real_vhdl_top_checks_verilog_descendants() {
+        let nonce = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../.tmp/syntax-mixed-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let vhdl = root.join("top.vhd");
+        let child = root.join("child.sv");
+        fs::write(&vhdl, "entity top is port(d:in bit; q:out bit); end; architecture rtl of top is component child port(d:in bit; q:out bit); end component; begin u:child port map(d,q); end;\n").unwrap();
+        fs::write(&child, "module child(input wire [7:0] d,output wire q); assign q=d; endmodule\n").unwrap();
+        let result = execute_check(SyntaxCheckRequest {
+            request_id: 101, root: crate::normalize(&root), files: vec![crate::normalize(&vhdl), crate::normalize(&child)],
+            top: Some("top".into()), stubs: vec![SyntaxStub { name: "top".into(), source: "module top(input d,output q); endmodule\n".into() }],
+            ..Default::default()
+        }, &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools/windows-x64"), &root.join("work"), &Arc::new(SyntaxJobState::default()), &|_| {});
+        let _ = fs::remove_dir_all(&root);
+        let result = result.unwrap();
+        assert_eq!(result.checked_files, 2, "{result:?}");
+        assert!(result.backends.iter().all(|backend| backend.status == "completed"), "{result:?}");
+        assert!(result.diagnostics.iter().any(|item| item.rule_id == "VERILATOR-WIDTHTRUNC" && item.file.ends_with("/child.sv")), "{result:?}");
+    }
 
     fn fixture(name: &str, content: &str) -> SourceFile {
         let directory = std::env::temp_dir().join(format!("rtl-viewer-syntax-{}", std::process::id()));

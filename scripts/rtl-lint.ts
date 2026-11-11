@@ -137,7 +137,7 @@ export function collect(target: string, depth = 0): string[] {
   return files;
 }
 
-function buildStubs(files: string[]): { stubs: SyntaxStub[]; vhdlStubs: SyntaxStub[] } {
+export function buildStubs(files: string[]): { stubs: SyntaxStub[]; vhdlStubs: SyntaxStub[] } {
   const stubs: SyntaxStub[] = [], vhdlStubs: SyntaxStub[] = [];
   for (const file of files.filter(file => file.endsWith(".xci"))) {
     const ip = parseXci(readNodeSource(file), file);
@@ -154,10 +154,18 @@ function buildStubs(files: string[]): { stubs: SyntaxStub[]; vhdlStubs: SyntaxSt
       break;
     }
   }
+  const entities = new Map<string, ReturnType<typeof parseFile>>();
   for (const file of files.filter(file => /\.(?:vhd|vhdl)$/i.test(file))) {
     for (const module of parseFile(readNodeSource(file), file)) {
-      stubs.push({ name: module.name, source: verilogStub(module.name, module.ports, module.parameters ?? []) });
+      if (!module.vhdl?.entity) continue;
+      const key = module.name.toLowerCase();
+      entities.set(key, [...entities.get(key) ?? [], module]);
     }
+  }
+  for (const definitions of entities.values()) {
+    if (definitions.length !== 1) continue;
+    const module = definitions[0];
+    stubs.push({ name: module.name, source: verilogStub(module.name, module.ports, module.parameters ?? [], true) });
   }
   return { stubs, vhdlStubs };
 }

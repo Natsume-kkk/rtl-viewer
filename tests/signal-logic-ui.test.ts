@@ -24,7 +24,7 @@ it("条件全列出，多支共享一个输出，收起一支保留另一支",()
 });
 it("全部展开和返回恢复保留分支状态，定位不更换追踪目标",()=>{
  const{root,panel,navigate}=setup();
- [...root.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="全部展开")!.click();
+ root.querySelector<HTMLButtonElement>(".port-view-more")!.click();document.querySelector<HTMLButtonElement>(".ctx-menu button")!.click();
  expect([...root.querySelectorAll<HTMLDetailsElement>("details")].every(d=>d.open)).toBe(true);
  const saved=panel.capture();[...root.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="全部收起")!.click();expect(root.querySelector<HTMLElement>('[data-node="y"]')!.hidden).toBe(true);panel.restore(saved);
  expect([...root.querySelectorAll<HTMLDetailsElement>("details")].every(d=>d.open)).toBe(true);

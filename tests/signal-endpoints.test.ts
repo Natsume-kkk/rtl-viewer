@@ -48,7 +48,8 @@ it("内部连线的子端口直接显示第一层驱动与使用，不引入其�
   const jump=input.querySelector<HTMLButtonElement>(".port-site button[data-file]")!;jump.click();
   expect(navigate).toHaveBeenCalledWith(file,10);
   expect(root.querySelector(".flow-selected")?.textContent).toBe("s_monitor_status");
-  for(const title of ["全部展开","全部收起"]) [...root.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent===title)!.click();
+  root.querySelector<HTMLButtonElement>(".port-view-more")!.click();document.querySelector<HTMLButtonElement>(".ctx-menu button")!.click();
+  [...root.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="全部收起")!.click();
   expect(root.querySelectorAll(".logic-card")).toHaveLength(3);
   expect(input.textContent).toContain("status_byte");
 });

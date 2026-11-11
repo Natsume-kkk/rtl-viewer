@@ -66,7 +66,7 @@ it("模块内运算符来自每个目标的实际赋值类型",()=>{
 it("模块内子端口分行显示实例与方向，切片绑定可见",()=>{
   const body=logic("module top(input [7:0] a); wire [7:0] q=a; child u(.i(q[3:0])); endmodule module child(input [3:0] i); endmodule");
   const card=body.querySelector('[data-node="child:u:i"]');
-  expect(card?.querySelector(".operation-name")?.textContent).toBe("u");expect(card?.querySelector(".port-pin")?.textContent).toBe("input i");expect(card?.querySelector(".port-mapping")?.textContent).toBe(".i(q[3:0])");
+  expect(card?.querySelector(".operation-name")?.textContent).toBe("u · child");expect(card?.querySelector(".port-pin")?.textContent).toBe("input i");expect(card?.querySelector(".port-mapping")?.textContent).toBe(".i(q[3:0])");
 });
 it("模块内停止原因直接可见，不能只留在 title",()=>{
   const body=logic("module top(output y); wire q; assign y=q; endmodule");

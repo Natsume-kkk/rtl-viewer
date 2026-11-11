@@ -26,12 +26,12 @@ export class SignalFlowPanel {
     this.identity.onclick=()=>{this.ports?.returnToSignal();this.logic?.returnToSignal();};head.append(this.identity);
     this.mode = document.createElement("span"); this.mode.className = "flow-mode"; head.append(this.mode);
     const all = document.createElement("button"); all.className="text-button"; all.textContent="全部展开";
-    all.onclick=()=>{ if(this.logic)this.logic.expandAll();else this.ports?.expandLayer(); };head.append(all);this.expand=all;
+    all.onclick=()=>{ if(this.logic)this.logic.expandLayer();else this.ports?.expandLayer(); };head.append(all);this.expand=all;
     const collapse = document.createElement("button");collapse.className="text-button";collapse.textContent="全部收起";
     collapse.onclick=()=>{if(this.logic)this.logic.collapseAll();else this.ports?.collapseAll();};head.append(collapse);
     this.more=document.createElement("button");this.more.type="button";this.more.className="btn-ghost port-view-more";this.more.hidden=true;
     this.more.title="更多视图操作";this.more.setAttribute("aria-label",this.more.title);this.more.setAttribute("aria-haspopup","menu");setIcon(this.more,"more");
-    this.more.onclick=event=>{event.stopPropagation();const box=this.more.getBoundingClientRect();showCtxMenu(box.left,box.bottom,[{label:"展开全部层级",action:()=>this.ports?.expandAll()}],this.more);};head.append(this.more);
+    this.more.onclick=event=>{event.stopPropagation();const box=this.more.getBoundingClientRect();showCtxMenu(box.left,box.bottom,[{label:"展开全部层级",action:()=>{if(this.logic)this.logic.expandAll();else this.ports?.expandAll();}}],this.more);};head.append(this.more);
     const close = document.createElement("button"); close.className = "icon-button"; close.setAttribute("aria-label", "收起信号链分析");
     setIcon(close, "close"); close.onclick = actions.close; head.append(close);
     const tools = document.createElement("div"); tools.className = "flow-tools";
@@ -75,7 +75,8 @@ export class SignalFlowPanel {
     this.message(note);this.mode.textContent="模块内逻辑";this.identify(signal,ctx.path);
     this.expand.textContent="全部展开";this.expand.title="展开全部逻辑分支";
     if(graph.truncated){this.status.append("达到分析预算，部分路径未展开");this.status.hidden=false;}
-    this.logic=new SignalLogicView(graph,this.body,files);
+    this.logic=new SignalLogicView(graph,this.body,files,canExpand=>{this.expand.disabled=graph.nodes.some(node=>node.port)&&!canExpand;});
+    if(this.logic.hasModules){this.expand.textContent="展开本层";this.expand.title="展开当前可见模块和逻辑分支的一层";this.more.hidden=false;}
     if(widths)this.logic.restore({...this.logic.capture(),widths});
   }
   markStale(): void { this.stale.hidden = false; }

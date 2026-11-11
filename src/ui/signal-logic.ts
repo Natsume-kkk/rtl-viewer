@@ -4,6 +4,7 @@ import type { Driver } from "../analysis/project";
 import type { TraceNode } from "../analysis/signal-flow";
 import { CardWidths, columnPositions, cardHeader, appendSource, makeWires, drawWires, CANVAS_TOP, type CardWidthState, type CardPosition, type CardEdge } from "./signal-canvas";
 import { setIcon } from "./icons";
+import { SignalLogicModules, type LogicModuleState, type LogicReadingState } from "./signal-logic-modules";
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag:K,cls="",text=""):HTMLElementTagNameMap[K]=>{const n=document.createElement(tag);n.className=cls;n.textContent=text;return n;};
 const portEnds=(trace:TraceNode,signal:string):{site:TraceNode;signal:string}[]=>{
@@ -31,7 +32,7 @@ const choice=(e:Expr,depth=0):Expr|undefined=>{
 };
 interface Arm { guard:string; value:Expr; start:number }
 interface Branch { id:string; element:HTMLDetailsElement; value:Expr; driver:Driver; target:string; depth:number; nested:boolean; child?:string }
-export interface LogicViewState { open:string[]; routes:string[]; sources?:boolean[]; widths?:CardWidthState }
+export interface LogicViewState { open:string[]; routes:string[]; sources?:boolean[]; sourceStates?:[string,boolean[]][]; widths?:CardWidthState; modules?:LogicModuleState }
 
 export class SignalLogicView {
   private cards=new Map<string,HTMLElement>();
@@ -42,8 +43,12 @@ export class SignalLogicView {
   private canvas=el("div","logic-canvas");
   private svg=makeWires();
   private active=true;
+  private visible=new Set<string>();
+  private modules?:SignalLogicModules;
+  private siteBuilders=new Map<string,()=>void>();
+  private resize?:ResizeObserver;
   private widths=new CardWidths(()=>this.reveal());
-  constructor(private graph:LogicGraph, private body:HTMLElement, private files:ReadonlyMap<string,string>){
+  constructor(private graph:LogicGraph, private body:HTMLElement, private files:ReadonlyMap<string,string>,private onExpandability?:(canExpand:boolean)=>void){
     body.classList.add("logic-body");body.append(this.canvas);this.canvas.append(this.svg);
     const base=graph.nodes.find(n=>n.id===graph.root)?.path??"";
     for(const node of graph.nodes){
@@ -74,13 +79,14 @@ export class SignalLogicView {
         const section=el("div","logic-driver");if(expressions.length>1)section.append(el("span","logic-tag",`驱动 ${i+1}`));
         card.append(section);this.expression(node.id,section,driver.expression,node.label,driver,`${node.id}/d${i}`,0);
       }
-      for(const {direction,trace} of node.portSites??[]){
+      const portContent=el("div","logic-module-content");
+      const buildSites=()=>{for(const {direction,trace} of node.portSites??[]){
         card.classList.add("port-endpoint");
-        card.append(el("span","logic-detail",direction==="upstream"?"驱动赋值":"使用位置"));
+        portContent.append(el("span","logic-detail",direction==="upstream"?"驱动赋值":"使用位置"));
         const sites=trace.children.flatMap(child=>portEnds(child,node.port!.name));
-        if(!sites.length)card.append(el("p","flow-reason",trace.reason??(direction==="upstream"?"无赋值来源":"无后续引用")));
+        if(!sites.length)portContent.append(el("p","flow-reason",trace.reason??(direction==="upstream"?"无赋值来源":"无后续引用")));
         for(const {site,signal} of sites){
-          const section=el("section","port-site");card.append(section);
+          const section=el("section","port-site");portContent.append(section);
           const path=site.owner?.startsWith(node.path+"/")?site.owner.slice(node.path.length+1)+".":"";
           const title=site.reason==="赋值位置"?path+(site.target?.signal??site.label):site.reason?.startsWith("控制/时钟")?path+"条件／时钟使用":site.label;
           cardHeader(section,title,site.file?{file:site.file,line:site.line??1}:undefined);
@@ -89,9 +95,15 @@ export class SignalLogicView {
           if(site.note)section.append(el("code","flow-note",site.note));
           if(site.reason&&site.reason!=="赋值位置")section.append(el("p","flow-reason",site.reason));
         }
+      }};
+      if(node.portSites?.length){
+        card.classList.add("port-endpoint");
+        if(node.portSites.some(site=>site.trace.children.length)){
+          portContent.hidden=true;card.append(portContent);this.siteBuilders.set(node.id,buildSites);
+        }else{buildSites();card.append(portContent);}
       }
       if(node.kind==="boundary"&&!node.drivers.length&&!node.portContext&&!node.detail)card.append(el("span","logic-tag","无法继续分析：缺少分析信息"));
-      if(graph.edges.some(e=>e.from===node.id)&&!card.querySelector("details")){
+      if(!node.port&&graph.edges.some(e=>e.from===node.id)&&!card.querySelector("details")){
         const next=el("button","text-button path-continue","继续追踪");next.type="button";
         next.onclick=()=>{this.routes.has(node.id)?this.routes.delete(node.id):this.routes.add(node.id);this.reveal();};
         card.querySelector<HTMLElement>(".logic-card-head")!.onclick=null;
@@ -99,18 +111,42 @@ export class SignalLogicView {
         card.append(next);this.continuations.set(node.id,next);
       }
     }
+    if(graph.nodes.some(node=>node.port))this.modules=new SignalLogicModules(graph,body,this.canvas,this.cards,this.widths,{
+      redraw:()=>this.reveal(),reading:()=>this.reading(),restore:state=>this.restoreReading(state),
+      materialize:id=>{const build=this.siteBuilders.get(id);if(build){this.siteBuilders.delete(id);build();}},
+    });
     this.reveal();
+    if(typeof ResizeObserver!=="undefined"){this.resize=new ResizeObserver(()=>this.reveal());this.resize.observe(body);}
     const focus=this.cards.get(graph.root);if(focus&&body.clientWidth>0&&focus.offsetLeft>body.clientWidth-236)body.scrollLeft=Math.max(0,focus.offsetLeft-body.clientWidth/2+118);
   }
-  dispose():void{this.active=false;this.widths.dispose();}
+  get hasModules():boolean{return this.modules?.hasModules??false;}
+  dispose():void{this.active=false;this.modules?.dispose();this.resize?.disconnect();this.widths.dispose();}
   returnToSignal():void{
+    this.modules?.stop();
     const card=this.cards.get(this.graph.root);if(!card||!this.body.clientWidth)return;
     this.body.scrollTo({left:Math.max(0,card.offsetLeft-(this.body.clientWidth-card.offsetWidth)/2),top:Math.max(0,card.offsetTop-16),behavior:typeof matchMedia!=="undefined"&&matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});
   }
-  capture():LogicViewState{return {open:[...this.open],routes:[...this.routes],sources:[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].map(d=>d.open),widths:this.widths.capture()};}
-  restore(s:LogicViewState):void{this.open=new Set(s.open);this.routes=new Set(s.routes);this.widths.restore(s.widths);if(s.sources)[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].forEach((d,i)=>d.open=s.sources![i]??true);this.reveal();}
-  expandAll():void{this.routes=new Set(this.cards.keys());for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=true;this.reveal(true);}
-  collapseAll():void{this.open.clear();this.routes.clear();for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=false;this.reveal();}
+  private reading():LogicReadingState{return {open:[...this.open],routes:[...this.routes],sources:[...this.cards].map(([id,card])=>[id,[...card.querySelectorAll<HTMLDetailsElement>(".assignment-block")].map(block=>block.open)])};}
+  private restoreReading(state:LogicReadingState):void{
+    this.open=new Set(state.open);this.routes=new Set(state.routes);const sources=new Map(state.sources);
+    for(const[id,card]of this.cards)[...card.querySelectorAll<HTMLDetailsElement>(".assignment-block")].forEach((block,i)=>{block.open=sources.get(id)?.[i]??true;});
+  }
+  capture():LogicViewState{return {open:[...this.open],routes:[...this.routes],sources:[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].map(d=>d.open),sourceStates:this.reading().sources,widths:this.widths.capture(),modules:this.modules?.capture()};}
+  restore(s:LogicViewState):void{
+    this.modules?.stop();this.open=new Set(s.open);this.routes=new Set(s.routes);this.widths.restore(s.widths);if(s.modules)this.modules?.restore(s.modules);this.reveal();
+    if(s.sourceStates)this.restoreReading({open:s.open,routes:s.routes,sources:s.sourceStates});
+    else if(s.sources)[...this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block")].forEach((d,i)=>d.open=s.sources![i]??true);
+    this.reveal();
+  }
+  expandLayer():void{
+    if(!this.modules){this.expandAll();return;}
+    const before=new Set(this.visible);
+    for(const id of before){for(const section of this.sections.get(id)??[])for(const branch of section)this.open.add(branch.id);if(this.continuations.has(id))this.routes.add(id);}
+    const target=this.modules.expandLayer();this.reveal();
+    this.modules.follow(target??[...this.visible].find(id=>!before.has(id))??this.graph.root,before);
+  }
+  expandAll():void{this.routes=new Set(this.cards.keys());this.modules?.expandAll();this.reveal(true);for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=true;this.modules?.follow(this.modules.capture().selected??this.graph.root);}
+  collapseAll():void{this.modules?.collapseAll();this.open.clear();this.routes.clear();for(const d of this.canvas.querySelectorAll<HTMLDetailsElement>(".assignment-block"))d.open=false;this.reveal();}
   private location(file:string,start:number){return {file,line:(this.files.get(file)??"").slice(0,start).split("\n").length};}
   private sourceRelations(card:HTMLElement,drivers:Driver[],target:string):void{
     const section=el("div","logic-driver"),rows:{text:string;line?:number}[]=[{text:drivers[0].initialization?"声明初值 · 源码关系":drivers[0].process?"过程内赋值 · 源码关系":"赋值 · 源码关系"}];
@@ -179,7 +215,10 @@ export class SignalLogicView {
   private assignment(e:Expr,target:string,driver:Driver,vhdl:boolean):string{return `${target} ${driver.operator??"←"} ${code(e)};${e.current&&e.value===target?(vhdl?" -- hold":" // hold"):""}`;}
   private reveal(all=false):void{
     if(!this.active)return;
-    const visible=new Set<string>(),edges:CardEdge[]=[],choices=new Set<string>(),visited=new Set<string>();
+    let visible=new Set<string>(),edges:CardEdge[]=[];
+    const choices=new Set<string>(),visited=new Set<string>();
+    const required=this.modules?.requiredReading();
+    for(const id of required?.open??[])this.open.add(id);for(const id of required?.routes??[])this.routes.add(id);
     const addEdge=(edge:CardEdge)=>{if(!edges.some(e=>e.from===edge.from&&e.to===edge.to&&e.control===edge.control&&e.role===edge.role&&e.unknown===edge.unknown))edges.push(edge);};
     // Every redraw derives reachability again; remembered selections are not visibility.
     const branchEnds=(id:string):string[]=>{
@@ -218,6 +257,7 @@ export class SignalLogicView {
       for(const e of outgoing){ends.forEach(from=>addEdge({...e,from}));walk(e.to,targets.length>1);}
     };walk(this.graph.root);
     for(const[id,button]of this.continuations){const open=this.routes.has(id);button.hidden=!choices.has(id);button.textContent=open?"收起此路":"继续追踪";button.setAttribute("aria-expanded",String(open));button.setAttribute("aria-label",`${open?"收起":"继续追踪"} ${this.cards.get(id)!.dataset.signal}`);this.cards.get(id)!.classList.toggle("route-pending",choices.has(id)&&!open);}
+    if(this.modules)({visible,edges}=this.modules.project(visible,edges));
     for(const[id,card]of this.cards)card.hidden=!visible.has(id);
     this.widths.fit();
     const ranks=new Map<string,number>(),rank=(id:string,seen=new Set<string>()):number=>{if(ranks.has(id))return ranks.get(id)!;if(seen.has(id))return 0;const incoming=edges.filter(e=>e.to===id&&!e.control);const n=incoming.length?1+Math.max(...incoming.map(e=>rank(e.from,new Set(seen).add(id)))):0;ranks.set(id,n);return n;};
@@ -226,5 +266,7 @@ export class SignalLogicView {
     const offsets=columnPositions(widths),columns=new Map<number,number>(),positions=new Map<string,CardPosition>();
     for(const[id,card]of this.cards){if(card.hidden)continue;const column=rank(id),x=offsets.get(column)!,y=columns.get(column)??CANVAS_TOP,h=card.offsetHeight||96,w=this.widths.get(id);card.style.left=`${x}px`;card.style.top=`${y}px`;positions.set(id,{x,y,h,w,column});columns.set(column,y+h+24);}
     drawWires(this.canvas,this.svg,positions,edges);
+    this.visible=visible;
+    this.onExpandability?.(!!this.modules&&(this.modules.canExpand||[...visible].some(id=>(this.sections.get(id)??[]).some(section=>section.some(branch=>!this.open.has(branch.id)))||choices.has(id)&&!this.routes.has(id))));
   }
 }

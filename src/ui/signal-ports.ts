@@ -5,8 +5,8 @@ import { showCtxMenu, closeCtxMenu, type MenuItem } from "./menu";
 
 type Side = "up" | "down";
 interface PortCard { id: string; trace: TraceNode; column: number; children: string[]; card: HTMLElement; external?: boolean; materialized?: boolean; group?: string; side?: Side }
-interface OnlySnapshot { expanded: string[]; assignments: string[]; filters: [string, string][]; selected?: string; left: number; top: number }
-export interface PortViewState { expanded: string[]; assignments?: string[]; widths?:CardWidthState; selected?: string; only?: string; beforeOnly?: OnlySnapshot; filters?: [string, string][] }
+interface OnlySnapshot { expanded: string[]; assignments: string[]; sources?: [string, boolean][]; filters: [string, string][]; selected?: string; left: number; top: number }
+export interface PortViewState { expanded: string[]; assignments?: string[]; sources?: [string, boolean][]; widths?:CardWidthState; selected?: string; only?: string; beforeOnly?: OnlySnapshot; filters?: [string, string][] }
 
 /** Display the existing bounded trace as cards; this view never infers RTL connectivity. */
 export class SignalPortsView {
@@ -18,6 +18,7 @@ export class SignalPortsView {
   private branches = new Map<string, HTMLButtonElement>();
   private roots: Record<Side, string[]> = {up: [], down: []};
   private externalDirections = new Map<string, Set<Side>>();
+  private parents = new Map<string, string[]>();
   private active = true;
   private body: HTMLElement;
   private selected?: string;
@@ -142,6 +143,9 @@ export class SignalPortsView {
     this.roots.up = upstream.children.map(n => walk(n, focus, "up", 1)).filter(id => id !== "focus");
     this.roots.down = downstream.children.map(n => walk(n, focus, "down", 1)).filter(id => id !== "focus");
     this.groupInstances(add, focus);
+    for (const node of this.nodes.values()) for (const child of node.children) {
+      const parents = this.parents.get(child) ?? []; parents.push(node.id); this.parents.set(child, parents);
+    }
     const seed = (ids: string[], seen = new Set<string>()) => {
       for (const id of ids) {
         if (seen.has(id)) continue;
@@ -184,7 +188,7 @@ export class SignalPortsView {
     closeCtxMenu(); this.contextBar.remove(); this.widths.dispose();
   }
   capture(): PortViewState {
-    return {expanded: [...this.expanded], assignments: this.assignments(), widths: this.widths.capture(), selected: this.selected, only: this.only, beforeOnly: this.beforeOnly, filters: [...this.filters]};
+    return {expanded: [...this.expanded], assignments: this.assignments(), sources: this.sourceStates(), widths: this.widths.capture(), selected: this.selected, only: this.only, beforeOnly: this.beforeOnly, filters: [...this.filters]};
   }
   restore(state: PortViewState): void {
     this.stopFollowing();
@@ -193,7 +197,7 @@ export class SignalPortsView {
     this.only = this.nodes.has(state.only ?? "") ? state.only : undefined;
     this.beforeOnly = this.only ? state.beforeOnly : undefined;
     this.filters = new Map(state.filters);
-    this.render(); this.restoreAssignments(state.assignments);
+    this.render(); this.restoreAssignments(state.assignments, state.sources);
     this.render();
   }
   expandLayer(): void {
@@ -225,11 +229,18 @@ export class SignalPortsView {
   }
   private isModule(node: PortCard): boolean { return node.id !== "focus" && !!(node.trace.port || node.trace.signal) && !node.trace.statement && node.trace.reason !== "赋值位置"; }
   private assignments(): string[] { return [...this.nodes.values()].filter(n => n.card.querySelector<HTMLDetailsElement>(".assignment-block")?.open).map(n => n.id); }
-  private restoreAssignments(ids?: string[]): void {
+  private sourceStates(): [string, boolean][] {
+    return [...this.nodes.values()].flatMap(node => {
+      const block = node.card.querySelector<HTMLDetailsElement>(".assignment-block");
+      return block ? [[node.id, block.open] as [string, boolean]] : [];
+    });
+  }
+  private restoreAssignments(ids?: string[], sources?: [string, boolean][]): void {
     if (!ids) return;
+    const states = sources ? new Map(sources) : undefined;
     for (const node of this.nodes.values()) {
       const block = node.card.querySelector<HTMLDetailsElement>(".assignment-block");
-      if (block) block.open = ids.includes(node.id);
+      if (block) block.open = states ? states.get(node.id) ?? true : ids.includes(node.id);
     }
   }
   private descendants(id: string): Set<string> {
@@ -238,14 +249,13 @@ export class SignalPortsView {
     visit(id); return seen;
   }
   private trail(id: string): string[] {
-    const seen = new Set<string>();
-    const visit = (key: string): string[] | undefined => {
-      if (key === id) return [key];
+    const seen = new Set<string>(), result: string[] = [];
+    const visit = (key: string) => {
       if (seen.has(key)) return; seen.add(key);
-      for (const child of this.nodes.get(key)?.children ?? []) { const result = visit(child); if (result) return [key, ...result]; }
+      for (const parent of this.parents.get(key) ?? []) visit(parent);
+      result.push(key);
     };
-    for (const key of [...this.roots.up, ...this.roots.down]) { const result = visit(key); if (result) return result; }
-    return [];
+    visit(id); return result;
   }
   private sites(ids: Iterable<string>): { count: number; limited: boolean } {
     const sites = new Set<string>(); let limited = false;
@@ -341,7 +351,7 @@ export class SignalPortsView {
   private onlySelected(id: string): void {
     this.stopFollowing();
     if (this.only && this.moduleIds(this.only).includes(id)) { this.showAll(); return; }
-    if (!this.only) this.beforeOnly = {expanded: [...this.expanded], assignments: this.assignments(), filters: [...this.filters], selected: this.selected, left: this.body.scrollLeft, top: this.body.scrollTop};
+    if (!this.only) this.beforeOnly = {expanded: [...this.expanded], assignments: this.assignments(), sources: this.sourceStates(), filters: [...this.filters], selected: this.selected, left: this.body.scrollLeft, top: this.body.scrollTop};
     this.only = this.selected = id;
     for (const target of this.moduleIds(id)) for (const key of this.trail(target)) this.expanded.add(key);
     this.render(); this.follow(this.nodes.get(id)!);
@@ -352,7 +362,7 @@ export class SignalPortsView {
     if (before) { this.expanded = new Set(before.expanded); this.filters = new Map(before.filters); this.selected = before.selected; }
     this.render();
     if (before) {
-      this.restoreAssignments(before.assignments); this.render();
+      this.restoreAssignments(before.assignments, before.sources); this.render();
       this.body.scrollLeft = before.left; this.body.scrollTop = before.top;
     }
   }

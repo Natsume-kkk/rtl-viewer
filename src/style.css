@@ -1680,7 +1680,7 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .port-context-action { min-height: 26px; padding: 3px 7px; font-size: var(--fs-caption); white-space: nowrap; }
 .port-instance-switcher button { width: 26px; height: 26px; padding: 4px; }
 .port-previous-instance svg { transform: rotate(180deg); }
-.port-fold-toggle.path-continue { display: flex; align-items: center; flex: 1; gap: 6px; min-width: 0; min-height: 30px; margin: 0 0 0 -5px; padding: 3px 5px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--fg); text-align: left; cursor: pointer; }
+.port-fold-toggle { display: flex; align-items: center; flex: 1; gap: 6px; min-width: 0; min-height: 30px; margin: 0 0 0 -5px; padding: 3px 5px; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--fg); text-align: left; cursor: pointer; }
 .port-fold-toggle:hover { background: var(--surface-active); }
 .port-fold-toggle > .icon { color: var(--accent); flex: none; }
 .port-fold-toggle .operation-name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1699,7 +1699,7 @@ button.status-item { border: 0; background: transparent; color: inherit; font: i
 .port-instance-filter input::placeholder { color: var(--fg-secondary); }
 .port-parameter-summary { max-width: 300px; }
 .repeated-summary { border-top-color: var(--sem-module); }
-.module-summary:not(.port-fold-open) > .port-mapping { display: none; }
+.module-summary.route-pending > .port-mapping { display: none; }
 @media (hover: none) {
   .module-summary > .logic-card-head > button, .repeated-summary > .logic-card-head > button { opacity: 1; }
 }

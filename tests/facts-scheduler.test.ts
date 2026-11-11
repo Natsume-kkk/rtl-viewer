@@ -1,6 +1,81 @@
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createFactsScheduler } from "../src/app/facts-scheduler";
 import { analyzeFileFacts } from "../src/analysis/facts";
+
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+it("跨文件编辑合并刷新，使用触发时最新内容且不分析无关文件", async () => {
+  vi.useFakeTimers();
+  const inputs = ["a", "b", "c"].map(name => ({ file: `${name}.sv`, content: `module ${name}; endmodule` }));
+  const analyze = vi.fn(async (file: string, content: string) => ({ fingerprint: content, facts: analyzeFileFacts(file, content), diagnostics: [] }));
+  const queue = createFactsScheduler({ files: () => inputs, priorityFile: () => undefined, result() {}, progress() {}, complete() {} }, analyze);
+  queue.schedule("a.sv");
+  await vi.advanceTimersByTimeAsync(200);
+  queue.schedule("b.sv");
+  inputs[0].content = "module changed; endmodule";
+  expect(queue.running).toBe(true);
+  await vi.advanceTimersByTimeAsync(400);
+  expect(analyze.mock.calls.map(call => call[0])).toEqual(["a.sv", "b.sv"]);
+  expect(queue.get("a.sv")?.definitions[0].name).toBe("changed");
+  expect(queue.running).toBe(false);
+});
+
+it("切工程清空待刷新集合和运行状态，新工程完成后不会被旧回调污染", async () => {
+  vi.useFakeTimers();
+  let inputs = [{ file: "old.sv", content: "module old; endmodule" }];
+  const queue = scheduler({ files: () => inputs, priorityFile: () => undefined, result() {}, progress() {}, complete() {} });
+  queue.schedule("old.sv");
+  queue.clear();
+  expect(queue.running).toBe(false);
+  inputs = [{ file: "new.sv", content: "module current; endmodule" }];
+  await queue.start();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(queue.running).toBe(false);
+  expect(queue.values().map(item => item.file)).toEqual(["new.sv"]);
+});
+
+it("编辑刷新中断后台队列后补齐剩余文件，失败不阻断其他编辑文件", async () => {
+  vi.useFakeTimers();
+  const inputs = ["a", "b", "c"].map(name => ({ file: `${name}.sv`, content: `module ${name}; endmodule` }));
+  let release!: () => void;
+  let first = true;
+  const queue = createFactsScheduler({ files: () => inputs, priorityFile: () => undefined, result() {}, progress() {}, complete() {} }, async (file, content) => {
+    if (first) { first = false; await new Promise<void>(resolve => { release = resolve; }); }
+    if (content === "broken") throw new Error("failed");
+    return { fingerprint: content, facts: analyzeFileFacts(file, content), diagnostics: [] };
+  });
+  const oldRun = queue.start();
+  inputs[0].content = "broken";
+  inputs[1].content = "module changed; endmodule";
+  queue.schedule("a.sv"); queue.schedule("b.sv");
+  await vi.advanceTimersByTimeAsync(400);
+  release(); await oldRun;
+  expect(queue.get("a.sv")).toBeUndefined();
+  expect(queue.diagnosticValues()).toContainEqual(expect.objectContaining({ file: "a.sv", ruleId: "ANALYSIS-FAILED" }));
+  expect(queue.get("b.sv")?.definitions[0].name).toBe("changed");
+  expect(queue.get("c.sv")).toBeDefined();
+  expect(queue.running).toBe(false);
+});
+
+it("删除或排除文件清除事实、诊断、失败及版本，范围外工程文件保留缓存", async () => {
+  let inputs = ["keep", "removed", "bad"].map(name => ({ file: `${name}.sv`, content: `module ${name}; endmodule` }));
+  let project = inputs.map(input => input.file);
+  const analyze = vi.fn(async (file: string, content: string) => {
+    if (file === "bad.sv") throw new Error("failed");
+    return { fingerprint: content, facts: analyzeFileFacts(file, content), diagnostics: [{ file, line: 1, column: 1, severity: "warning" as const, source: "builtin" as const, category: "analysis" as const, ruleId: "TEST", message: "test" }] };
+  });
+  const queue = createFactsScheduler({ files: () => inputs, projectFiles: () => project, priorityFile: () => undefined, result() {}, progress() {}, complete() {} }, analyze);
+  await queue.start();
+  inputs = [];
+  project = ["keep.sv"];
+  await queue.start();
+  expect(queue.values().map(item => item.file)).toEqual(["keep.sv"]);
+  expect(queue.diagnosticValues().map(item => item.file)).toEqual(["keep.sv"]);
+  inputs = [{ file: "removed.sv", content: "module removed; endmodule" }];
+  project.push("removed.sv");
+  await queue.start();
+  expect(queue.get("removed.sv")).toBeDefined();
+});
 
 function scheduler(context: Parameters<typeof createFactsScheduler>[0]) {
   return createFactsScheduler(context, async (file, content) => ({ fingerprint: content, facts: analyzeFileFacts(file, content), diagnostics: [] }));

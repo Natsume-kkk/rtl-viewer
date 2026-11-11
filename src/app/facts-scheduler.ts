@@ -9,6 +9,7 @@ interface FactsInput {
 
 interface FactsSchedulerContext {
   files(): FactsInput[];
+  projectFiles?(): string[];
   priorityFile(): string | undefined;
   result(facts: FileFacts): void;
   progress(done: number, total: number): void;
@@ -40,6 +41,31 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
   let generation = 0;
   let running = false;
   let diagnosticsRevision = 0;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  const refreshFiles = new Set<string>();
+
+  function cancelScheduled(): void {
+    clearTimeout(refreshTimer);
+    refreshTimer = undefined;
+    refreshFiles.clear();
+  }
+
+  function schedule(file: string): void {
+    refreshFiles.add(file);
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => {
+      const selected = new Set(refreshFiles);
+      void start(selected);
+    }, 400);
+  }
+
+  function prune(): void {
+    if (!context.projectFiles) return;
+    const current = new Set(context.projectFiles());
+    for (const cache of [facts, diagnostics, failures, versions]) {
+      for (const file of cache.keys()) if (!current.has(file)) cache.delete(file);
+    }
+  }
 
   function resetWorker(): void {
     worker?.terminate();
@@ -77,13 +103,18 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
 
   const analyze = analyzer ?? analyzeInWorker;
 
-  async function start(): Promise<void> {
+  async function start(selected?: ReadonlySet<string>): Promise<void> {
+    const resume = running;
+    cancelScheduled();
     const request = ++generation;
     resetWorker();
+    prune();
     running = true;
     projectDiagnostics = [];
     const priority = context.priorityFile();
-    const inputs = context.files();
+    const allInputs = context.files();
+    const inputs = selected && !resume ? allInputs.filter(input => selected.has(input.file)) : allInputs;
+    context.progress(0, inputs.length);
     inputs.sort((a, b) => Number(b.file === priority) - Number(a.file === priority) || a.file.localeCompare(b.file));
     for (let index = 0; index < inputs.length; index++) {
       if (request !== generation) return;
@@ -156,6 +187,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
   }
 
   function cancel(): void {
+    cancelScheduled();
     generation++;
     resetWorker();
     running = false;
@@ -174,6 +206,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
 
   return {
     start,
+    schedule,
     refresh,
     cancel,
     clear,
@@ -181,7 +214,7 @@ export function createFactsScheduler(context: FactsSchedulerContext, analyzer?: 
     get: (file: string) => facts.get(file),
     values: () => [...facts.values()],
     diagnosticValues: () => [...diagnostics.values()].flat().concat(projectDiagnostics, [...failures.values()]),
-    get running() { return running; },
+    get running() { return running || refreshTimer !== undefined; },
     get diagnosticsRevision() { return diagnosticsRevision; },
   };
 }

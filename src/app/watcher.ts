@@ -24,6 +24,7 @@ export interface ExternalWatchContext {
   tabs: TabManager[];
   hint(message: string): void;
   markResultsStale(): void;
+  onFilesChanged(): void;
   updateStructure(path: string, content: string): void;
   rebuildIndex(): void;
   renderTree(): void;
@@ -35,6 +36,7 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
   let generation = 0;
   let polling: number | undefined;
   const excludedNetlists = new Map<string, number>();
+  const missingFiles = new Set<string>();
 
   function stop(): void {
     window.clearInterval(watchTimer);
@@ -42,6 +44,7 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
     generation++;
     watchPollCount = 0;
     excludedNetlists.clear();
+    missingFiles.clear();
   }
 
   function start(): void {
@@ -57,14 +60,17 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
     if (polling === request) return;
     polling = request;
     const current = () => request === generation && folder === ctx.folder();
+    let changed = false;
+    const invalidate = () => { changed = true; ctx.markResultsStale(); };
     try {
-      await pollOnce(current);
+      await pollOnce(current, invalidate);
     } finally {
       if (polling === request) polling = undefined;
+      if (current() && changed) ctx.onFilesChanged();
     }
   }
 
-  async function pollOnce(current: () => boolean): Promise<void> {
+  async function pollOnce(current: () => boolean, invalidate: () => void): Promise<void> {
     if (!ctx.folder() || document.hidden) return;
     const files = [...ctx.contents.keys()];
     if (files.length > 0) {
@@ -80,9 +86,13 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
         const cached = ctx.contents.get(file);
         if (!cached) continue;
         const mtime = states[i];
+        if (mtime !== null) missingFiles.delete(file);
         if (mtime === cached.mtime) continue;
         if (mtime === null) {
-          handleExternalDelete(file);
+          if (!missingFiles.has(file) || !ctx.tabs.some(t => t.findTab(file))) {
+            missingFiles.add(file);
+            handleExternalDelete(file, invalidate);
+          }
           continue;
         }
         try {
@@ -94,10 +104,10 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
             excludedNetlists.set(file, fresh.mtime);
             ctx.contents.delete(file); ctx.structures.delete(file);
             for (const tabs of ctx.tabs) tabs.markExternalChanged(file, true);
-            ctx.markResultsStale(); ctx.rebuildIndex(); ctx.renderTree();
+            invalidate(); ctx.rebuildIndex(); ctx.renderTree();
             continue;
           }
-          if (fresh.content !== cached.content) ctx.markResultsStale();
+          if (fresh.content !== cached.content) invalidate();
           const openTabs = ctx.tabs.filter((t) => t.findTab(file));
           const anyDirty = openTabs.some((t) => t.findTab(file)!.dirty);
           if (openTabs.length > 0 && !anyDirty) {
@@ -121,12 +131,12 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
       }
     }
     watchPollCount += 1;
-    if (watchPollCount % 4 === 1) await rescanFolderDiff(current);
+    if (watchPollCount % 4 === 1) await rescanFolderDiff(current, invalidate);
   }
 
   /** 文件在磁盘被删除：打开中的标签保留缓冲区并打警示徽章，未打开的从索引移除。 */
-  function handleExternalDelete(file: string): void {
-    ctx.markResultsStale();
+  function handleExternalDelete(file: string, invalidate: () => void): void {
+    invalidate();
     const openTabs = ctx.tabs.filter((t) => t.findTab(file));
     if (openTabs.length > 0) {
       for (const t of openTabs) t.markExternalChanged(file, true);
@@ -139,7 +149,7 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
   }
 
   /** 目录级 diff：新增 HDL/xci 纳入索引，删除的 xci 移除。 */
-  async function rescanFolderDiff(current: () => boolean): Promise<void> {
+  async function rescanFolderDiff(current: () => boolean, invalidate: () => void): Promise<void> {
     let scan;
     try {
       scan = await scanFolder(ctx.folder());
@@ -221,7 +231,7 @@ export function createExternalWatcher(ctx: ExternalWatchContext): { start(): voi
       changed = true;
     }
     if (changed) {
-      ctx.markResultsStale();
+      invalidate();
       ctx.rebuildIndex();
       ctx.renderTree();
     }

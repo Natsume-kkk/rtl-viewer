@@ -775,7 +775,8 @@ const workspace = createEditorWorkspace([editor, editor2], {
     state.contents.set(path, { content, encoding, mtime });
     updateStructure(path, content);
     if (inAnalysisScope(path)) {
-      void factsScheduler.refresh(path, content);
+      factsScheduler.schedule(path);
+      refreshFactsViews();
       scheduleProjectSyntaxCheck(2000);
     }
   },
@@ -809,7 +810,7 @@ function refreshFactsViews(): void {
   const facts = factsScheduler.values().filter(item => inAnalysisScope(item.file));
   const diagnostics = factsScheduler.diagnosticValues().filter(item => inAnalysisScope(item.file));
   problemPanel.setScope(analysisScope, state.topName || state.autoTop);
-  problemPanel.setBuiltins(diagnostics, factsDone > 0, factsScheduler.running || factsRefreshTimer !== undefined || factsTotal > 0 && factsDone < factsTotal);
+  problemPanel.setBuiltins(diagnostics, factsDone > 0, factsScheduler.running || factsTotal > 0 && factsDone < factsTotal);
   statsPanel.render({
     facts,
     files,
@@ -851,21 +852,18 @@ function projectHdlFiles(): string[] {
 
 const factsScheduler = createFactsScheduler({
   files: () => analysisHdlFiles().map(file => ({ file, content: fileContent(file) ?? state.contents.get(file)!.content })),
+  projectFiles: projectHdlFiles,
   priorityFile: () => activeGroup().tabs.activeTab?.path,
   result: factsViewRefresh.schedule,
   progress: (done, total) => { factsDone = done; factsTotal = total; factsViewRefresh.schedule(); },
   complete: factsViewRefresh.flush,
 });
-let factsRefreshTimer: number | undefined;
 function scheduleFactsRefresh(): void {
   const tab = activeGroup().tabs.activeTab;
-  if (!tab?.path || !state.contents.has(indexedFilePath(state.contents, tab.path)) || !inAnalysisScope(tab.path)) return;
-  window.clearTimeout(factsRefreshTimer);
-  factsRefreshTimer = window.setTimeout(() => {
-    factsRefreshTimer = undefined;
-    void factsScheduler.refresh(tab.path, tab.model.getValue());
-    refreshFactsViews();
-  }, 400);
+  if (!tab?.path) return;
+  const file = indexedFilePath(state.contents, tab.path);
+  if (!state.contents.has(file) || !inAnalysisScope(file)) return;
+  factsScheduler.schedule(file);
   refreshFactsViews();
 }
 registerEditorActions();
@@ -1045,7 +1043,6 @@ async function openFolder(folder: string): Promise<void> {
   watcher.stop();
   window.clearTimeout(syntaxRefreshTimer);
   cancelProjectSyntaxCheck();
-  window.clearTimeout(factsRefreshTimer);
   factsScheduler.clear();
   projectReady = false;
   lastSyntaxResult = undefined;
@@ -1113,6 +1110,11 @@ const watcher = createExternalWatcher({
   tabs: groups.map((g) => g.tabs),
   hint: (message) => statusbar.hint(message),
   markResultsStale,
+  onFilesChanged: () => {
+    void factsScheduler.start();
+    scheduleProjectSyntaxCheck(2000);
+    refreshFactsViews();
+  },
   updateStructure,
   rebuildIndex,
   renderTree,

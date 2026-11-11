@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CachedFile, ExternalWatchContext } from "../src/app/watcher";
 import type { TabManager } from "../src/editor/tabs";
 import type { IpInfo } from "../src/parser";
+import { createFactsScheduler } from "../src/app/facts-scheduler";
+import { analyzeFileFacts } from "../src/analysis/facts";
 
 vi.mock("../src/ipc", () => ({
   scanFolder: vi.fn(),
@@ -56,6 +58,7 @@ function makeCtx(overrides: Partial<ExternalWatchContext> = {}): Ctx {
     tabs: [],
     hint: vi.fn(),
     markResultsStale: vi.fn(),
+    onFilesChanged: vi.fn(),
     updateStructure: vi.fn(),
     rebuildIndex: vi.fn(),
     renderTree: vi.fn(),
@@ -84,6 +87,47 @@ async function setup() {
 }
 
 describe("createExternalWatcher", () => {
+  it("一轮外部修改、新增和删除完成后只通知一次，后续无变化不重复通知", async () => {
+    const { createExternalWatcher, mocks } = await setup();
+    const ctx = makeCtx();
+    for (const name of ["a", "b"]) {
+      ctx.contents.set(`D:/proj/${name}.v`, { content: `module ${name}; endmodule`, encoding: "utf8", mtime: 1 });
+      ctx.structures.set(`D:/proj/${name}.v`, []);
+    }
+    mocks.fileStates.mockResolvedValueOnce([2, null]).mockResolvedValue([2, 2]);
+    mocks.scanFolder.mockResolvedValue({ hdl: ["D:/proj/a.v", "D:/proj/c.v"], xci: [], con: [] });
+    mocks.readFile.mockImplementation(async file => ({ content: `module ${file.endsWith("a.v") ? "changed" : "c"}; endmodule`, encoding: "utf8", mtime: 2 }));
+    const observed: string[][] = [];
+    const queue = createFactsScheduler({
+      files: () => [...ctx.contents].map(([file, value]) => ({ file, content: value.content })),
+      projectFiles: () => [...ctx.contents.keys()], priorityFile: () => undefined,
+      result() {}, progress() {}, complete() {},
+    }, async (file, content) => ({ fingerprint: content, facts: analyzeFileFacts(file, content), diagnostics: [] }));
+    await queue.start();
+    vi.mocked(ctx.onFilesChanged).mockImplementation(() => { observed.push([...ctx.contents.keys()]); void queue.start(); });
+    const watcher = createExternalWatcher(ctx); watcher.start();
+    await vi.advanceTimersByTimeAsync(8000); watcher.stop();
+    expect(observed).toEqual([["D:/proj/a.v", "D:/proj/c.v"]]);
+    expect(ctx.contents.get("D:/proj/a.v")?.content).toContain("changed");
+    expect(queue.values().map(item => item.definitions[0].name)).toEqual(["changed", "c"]);
+    expect(queue.get("D:/proj/b.v")).toBeUndefined();
+    queue.dispose();
+  });
+  it("变更后目录扫描仍在等待时切工程，不通知旧轮次", async () => {
+    const { createExternalWatcher, mocks } = await setup();
+    const ctx = makeCtx();
+    ctx.contents.set("D:/proj/a.v", { content: "module a; endmodule", encoding: "utf8", mtime: 1 });
+    mocks.fileStates.mockResolvedValue([2]);
+    mocks.readFile.mockResolvedValue({ content: "module changed; endmodule", encoding: "utf8", mtime: 2 });
+    const gate = deferred<{ hdl: string[]; xci: string[]; con: string[] }>();
+    mocks.scanFolder.mockReturnValue(gate.promise);
+    const watcher = createExternalWatcher(ctx); watcher.start();
+    await vi.advanceTimersByTimeAsync(4000);
+    watcher.stop();
+    gate.resolve({ hdl: [], xci: [], con: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.onFilesChanged).not.toHaveBeenCalled();
+  });
   it("换工程后旧文件读取失败也不能继续过滤新工程的 IP", async () => {
     const { createExternalWatcher, mocks } = await setup();
     let folder = "D:/old";
@@ -188,6 +232,8 @@ describe("createExternalWatcher", () => {
     expect(vi.mocked(ctx.rebuildIndex)).not.toHaveBeenCalled();
     expect(vi.mocked(ctx.renderTree)).not.toHaveBeenCalled();
     expect(vi.mocked(ctx.markResultsStale)).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(ctx.onFilesChanged).toHaveBeenCalledTimes(1);
   });
 
   it("未打开文件被外部删除：从缓存与索引移除并重建", async () => {

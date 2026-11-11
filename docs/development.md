@@ -144,6 +144,8 @@ release/     便携 exe、CLI 与检查工具交付物（Build-Release.ps1 生�
 
 [交互评审原型](interaction-review.html) 保留界面方案对比及评审依据，供设计参考；软件当前行为以[使用指南](usage.md)为准。
 
+[阅读布局样稿](reading-layout-preview.html) 独立演示面板组合、层级信息、打开入口与源码定位的设计对比，支持尺寸和主题切换。页面只使用内置样例，不读写本机文件，也不接入应用运行逻辑。
+
 [图标评审预览](icon-review.html) 保留透明线构图标的设计对照，默认选中已采用的紧凑交织及功能图标。页面包含参考截图、桌面场景、透明棋盘格、深浅底色和实际尺寸；旧版图标仅供对照。正式应用资源以 `src-tauri/icons/` 与 `src/ui/icons.ts` 为准。
 
 信号链保持两类边界：端口由 `src/analysis/signal-flow.ts` 跨层追到赋值位置，`src/ui/signal-ports.ts` 按模块折叠显示有界终点，少量连接默认展开，大量连接先显示摘要；内部信号由 `src/analysis/local.ts` 在当前模块内分析，子模块端口通过 `loadPortSites` 附带有界的第一层源码预览（`stopAtAssignments` + `descendOnly`），沿纯端口转接向下查找到第一处实际赋值／使用，保留预算和递归例化截止，不向父模块回溯，不合并子模块依赖图。入口分类与快照由 `src/app/signal-controller.ts` 管理；依赖图、端口终点和上下游追踪由 `src/analysis/signal-trace.ts` 在独立 Worker 中计算，切换目标、刷新或换工程会终止旧 Worker，两个视图均在原链路显示终点源码，不强制切换到模块内模式。对应回归见 `tests/signal-analysis.test.ts`、`tests/signal-endpoints.test.ts`、`tests/signal-flow-ui.test.ts`、`tests/signal-trace-task.test.ts` 和 `tests/signal-controller.test.ts`，构建需确认独立 `signal-trace-worker` 产物。

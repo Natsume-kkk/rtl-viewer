@@ -4,11 +4,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    println!("cargo:rerun-if-changed=icons/icon.ico");
+    println!("cargo:rerun-if-changed=icons/icon-light.ico");
     println!("cargo:rerun-if-changed=../tools/windows-x64");
     println!("cargo:rerun-if-changed=../tools/licenses");
     #[cfg(feature = "bundled-tools")]
     embed_tools();
-    tauri_build::build()
+    let windows = tauri_build::WindowsAttributes::new()
+        .append_rc_content("32513 ICON \"icons/icon-light.ico\"");
+    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
+        .expect("build desktop resources");
 }
 
 #[cfg(feature = "bundled-tools")]

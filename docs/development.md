@@ -254,17 +254,16 @@ Rust 扫描结果可携带 `issues`，目录读取失败和深度上限都显式
 
 工具栏、面板和行内按钮分别采用 30、28、26 px 高度，次要操作复用 `.btn-ghost`。`src/ui/toolbar-overflow.ts` 按实际宽度把问题、统计、信号链和搜索依次收进“更多”菜单，侧栏折叠状态与宽度由 `src/ui/sidebar-width.ts` 保存，760 px 以下首次运行默认收起。诊断分组保持扁平，宽屏单行显示，1100 px 以下筛选默认折叠且诊断消息改为两行，640 px 以下配置表单改为单列。后端完整版本只放在悬停提示与报告中，界面保留名称、短版本和状态。`--fg-muted` 用于需要阅读的辅助文字，`--fg-faint` 只用于装饰图标和禁用态；问题按钮徽章在面板隐藏时也须更新。调整这些样式后需实际检查深浅主题和窄窗口。
 
-品牌采用透明背景的紧凑交织符号：[brand.svg](../src-tauri/icons/brand.svg) 为常规白色线构，[brand-small.svg](../src-tauri/icons/brand-small.svg) 为 16–24 px 光学校正版，线宽由 9 增至 12，构形微放大 8%。标题栏使用小尺寸源，浅色主题通过 CSS 转黑；Windows ICO 使用白色透明线条，不添加底板。修改后的处理顺序：
+品牌采用透明背景的紧凑交织符号：[brand.svg](../src-tauri/icons/brand.svg) 为常规白色线构，[brand-small.svg](../src-tauri/icons/brand-small.svg) 为 16–24 px 光学校正版，线宽由 9 增至 12，构形微放大 8%。标题栏使用小尺寸源，浅色主题通过 CSS 转黑。Windows 文件图标使用白色线条加深色外轮廓，浅色任务栏变体使用深色线条加白色轮廓，两者均保留透明背景；程序运行时按 Windows 的 `SystemUsesLightTheme` 选择原生窗口和任务栏图标，独立于应用页面主题，系统颜色或窗口 DPI 变化后更新，读取失败时使用兼容深浅背景的文件图标。不修改用户的主题设置。修改后的处理顺序：
 
-1. 使用 SVG 渲染器以透明背景生成 16、24、32、48、64、128、256 px 七档 PNG，更新 `src-tauri/icons/png/<size>.png`；16、24 px 使用 `brand-small.svg`，其余使用 `brand.svg`。检查实际像素尺寸下的线条和 Alpha，不能添加背景色。
-2. 执行 `node scripts/make-icon.mjs`，由这些 PNG 重新封装 `src-tauri/icons/icon.ico`。
-3. 更新 `src-tauri/build.rs` 的修改时间，强制构建脚本重新执行，避免 exe 沿用旧图标；然后通过正式入口重建。
+1. 执行 `node scripts/make-icon.mjs`，从两份 SVG 源派生双色轮廓，使用项目已有 Tauri CLI 渲染 16、24、32、48、64、128、256 px 七档 PNG，再封装默认与浅色任务栏 ICO；16、24 px 使用 `brand-small.svg`，其余使用 `brand.svg`。检查深浅背景下实际像素尺寸的线条和 Alpha，不能添加背景色。
+2. `src-tauri/build.rs` 跟踪两份 ICO 并将其内嵌到 exe，图标变更后通过正式入口重建，不依赖手动更新时间戳。`src-tauri/src/taskbar_icon.rs` 在窗口线程安装系统消息监听，显式更新大小图标；原生图标句柄在替换和窗口销毁时释放。
+3. 验收 exe 内嵌资源及独立复制运行后的图标，分别核对深浅任务栏选择、运行中系统通知和 DPI 更新；页面 CSS 图标不代替 Windows 原生图标验收。
 
 README 横幅的品牌符号位于 `docs/assets/banner.svg`，品牌构形变化时同步该符号并按原尺寸重新渲染 `banner@2x.png`；字体回退、文字间距和完整布局需要实际查看。
 
 ```powershell
 node scripts/make-icon.mjs
-(Get-Item src-tauri/build.rs).LastWriteTime = Get-Date
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Release.ps1
 ```
 

@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod syntax;
+#[cfg(windows)]
+mod taskbar_icon;
 
 use serde::Serialize;
 use std::fs;
@@ -378,6 +380,20 @@ fn write_file_sync(path: String, content: String, encoding: String) -> Result<u6
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            #[cfg(windows)]
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let hwnd = window.hwnd()?.0 as isize;
+                    let dpi = (window.scale_factor()? * 96.0).round() as u32;
+                    if let Err(error) = taskbar_icon::install(hwnd, dpi) {
+                        eprintln!("taskbar icon: {error}");
+                    }
+                }
+            }
+            Ok(())
+        })
         .manage(std::sync::Arc::new(syntax::SyntaxJobState::default()))
         .invoke_handler(tauri::generate_handler![
             scan_folder,

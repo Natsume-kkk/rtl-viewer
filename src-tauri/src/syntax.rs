@@ -348,7 +348,10 @@ fn execute_check_inner(
         let version = tool_version(&verilator, tools, &root, request.request_id, jobs);
         let mut status = "completed".to_owned();
         // VHDL 顶层的黑盒不保留例化边；由已选文件中的真实 Verilog 根模块开始检查。
-        let top = request.top.as_deref().filter(|top| vhdls.is_empty() || !request.stubs.iter().any(|stub| stub.name.eq_ignore_ascii_case(top)));
+        let top = request.top.as_deref().filter(|top| {
+            vhdls.is_empty() || !request.stubs.iter().any(|stub| stub.name.eq_ignore_ascii_case(top))
+                || ordered.iter().any(|file| contains_verilog_module(file, top))
+        });
         match run_verilator(&verilator, tools, &root, work, &ordered, &include_dirs, &request.stubs, &request.options, top, request.request_id, jobs) {
             Ok(outcome) => {
                 let before = diagnostics.len();
@@ -446,7 +449,7 @@ fn execute_check_inner(
         backends.push(BackendSummary { name: "ghdl".into(), version, files: count, status });
     }
 
-    let cancelled = backends.iter().any(|backend| backend.status == "cancelled");
+    let cancelled = is_cancelled(jobs, request.request_id) || backends.iter().any(|backend| backend.status == "cancelled");
     for diagnostic in &mut diagnostics {
         let original = snapshot_files.originals.get(&diagnostic.file).or_else(|| {
             if !diagnostic.file.contains("/../") && !diagnostic.file.contains("/./") { return None; }
@@ -718,6 +721,13 @@ fn source_text(file: &SourceFile) -> Result<String, SyntaxDiagnostic> {
     crate::decode(&bytes).map(|(text, _)| text).map_err(|error| system_diagnostic(&file.display, &format!("解码源码失败：{error}")))
 }
 
+fn contains_verilog_module(file: &SourceFile, name: &str) -> bool {
+    let Ok(source) = source_text(file) else { return false };
+    let tokens = words(&strip_comments(&source, SourceKind::Verilog));
+    tokens.windows(2).any(|pair| matches!(pair[0].as_str(), "module" | "macromodule" | "interface") && pair[1] == name)
+        || tokens.windows(3).any(|unit| matches!(unit[0].as_str(), "module" | "macromodule" | "interface") && matches!(unit[1].as_str(), "static" | "automatic") && unit[2] == name)
+}
+
 fn order_verilog(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>) {
     let mut texts = Vec::with_capacity(files.len());
     let mut errors = Vec::new();
@@ -755,6 +765,7 @@ fn order_vhdl(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>
     let mut specifications = HashMap::new();
     let mut bodies = HashMap::new();
     let mut entities = HashMap::new();
+    let mut contexts = HashMap::new();
     for (index, file) in files.iter().enumerate() {
         match source_text(file) {
             Ok(text) => {
@@ -762,7 +773,8 @@ fn order_vhdl(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>
                 let (packages, package_bodies) = vhdl_packages(&cleaned);
                 for package in packages { specifications.entry((file.library.clone(), package)).or_insert(index); }
                 for package in package_bodies { bodies.entry((file.library.clone(), package)).or_insert(index); }
-                for entity in vhdl_entities(&cleaned) { entities.entry((file.library.clone(), entity)).or_insert(index); }
+                for entity in vhdl_units(&cleaned, "entity") { entities.entry((file.library.clone(), entity)).or_insert(index); }
+                for context in vhdl_units(&cleaned, "context") { contexts.entry((file.library.clone(), context)).or_insert(index); }
                 texts.push(cleaned);
             }
             Err(error) => { errors.push(error); texts.push(String::new()); }
@@ -775,6 +787,22 @@ fn order_vhdl(files: Vec<SourceFile>) -> (Vec<SourceFile>, Vec<SyntaxDiagnostic>
         }
     }
     for (index, text) in texts.iter().enumerate() {
+        for (start, keyword) in text.match_indices("context") {
+            let end = start + keyword.len();
+            if (start > 0 && (text.as_bytes()[start - 1].is_ascii_alphanumeric() || text.as_bytes()[start - 1] == b'_'))
+                || !text.as_bytes().get(end).is_some_and(u8::is_ascii_whitespace) {
+                continue;
+            }
+            let Some((clause, _)) = text[end..].split_once(';') else { continue };
+            for selected_name in clause.split(',') {
+                let Some((prefix, name)) = selected_name.split_once('.') else { continue };
+                let prefix = prefix.trim();
+                let library = if prefix == "work" { &files[index].library } else { prefix };
+                if let Some(provider) = contexts.get(&(library.to_owned(), name.trim().to_owned())) {
+                    if *provider != index { dependencies[index].insert(*provider); }
+                }
+            }
+        }
         let words = words(text);
         for pair in words.windows(2) {
             let library = if pair[0] == "work" { &files[index].library } else { &pair[0] };
@@ -846,9 +874,9 @@ fn vhdl_packages(text: &str) -> (Vec<String>, Vec<String>) {
     (specifications, bodies)
 }
 
-fn vhdl_entities(text: &str) -> Vec<String> {
+fn vhdl_units(text: &str, kind: &str) -> Vec<String> {
     let tokens = words(text);
-    tokens.windows(3).filter(|window| window[0] == "entity" && window[2] == "is").map(|window| window[1].clone()).collect()
+    tokens.windows(3).filter(|window| window[0] == kind && window[2] == "is").map(|window| window[1].clone()).collect()
 }
 
 fn words(text: &str) -> Vec<String> {
@@ -961,6 +989,19 @@ mod tests {
         assert!(errors.is_empty());
         let names: Vec<_> = ordered.iter().map(|file| file.path.file_name().unwrap().to_string_lossy()).collect();
         assert_eq!(names, ["types.vhd", "types-body.vhd", "consumer.vhd"]);
+    }
+
+    #[test]
+    fn vhdl_context_dependencies_precede_consumers() {
+        let consumer = fixture("ctx-consumer.vhd", "context work.first, work.second; entity consumer is end;");
+        let first = fixture("ctx-first.vhd", "context first is use work.ctx_types.all; end context;");
+        let second = fixture("ctx-second.vhd", "context second is end context;");
+        let package = fixture("ctx-types.vhd", "package ctx_types is end package;");
+        let (ordered, errors) = order_vhdl(vec![consumer, first, second, package]);
+        assert!(errors.is_empty());
+        let names: Vec<_> = ordered.iter().map(|file| file.path.file_name().unwrap().to_string_lossy()).collect();
+        assert_eq!(names.last().unwrap(), "ctx-consumer.vhd");
+        assert!(names.iter().position(|name| name == "ctx-types.vhd") < names.iter().position(|name| name == "ctx-first.vhd"));
     }
 
     #[test]
@@ -1087,13 +1128,17 @@ mod tests {
         let root = std::env::temp_dir().join(format!("rtl-viewer-vhdl-library-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let vendor = root.join("vendor.vhd");
-        let consumer = root.join("consumer.vhd");
+        let vendor = root.join("z_vendor.vhd");
+        let context = root.join("y_context.vhd");
+        let consumer = root.join("a_consumer.vhd");
         fs::write(&vendor, "package types is constant WIDTH: integer := 8; end package;\n").unwrap();
-        fs::write(&consumer, "library vendor; use vendor.types.all; entity consumer is end;\n").unwrap();
-        let options = SyntaxCheckOptions { vhdl_libraries: vec![VhdlLibraryMapping { library: "vendor".into(), file: crate::normalize(&vendor) }], ..Default::default() };
-        let result = execute_check(SyntaxCheckRequest { request_id: 94, root: crate::normalize(&root), files: vec![crate::normalize(&consumer), crate::normalize(&vendor)], options, ..Default::default() }, &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools/windows-x64"), &root.join("work"), &Arc::new(SyntaxJobState::default()), &|_| {}).unwrap();
-        assert_eq!(result.checked_files, 2, "{result:?}");
+        fs::write(&context, "context vendor_ctx is library vendor; use vendor.types.all; end context;\n").unwrap();
+        fs::write(&consumer, "library vendor; context vendor.vendor_ctx; entity consumer is generic (N: integer := WIDTH); end;\n").unwrap();
+        let vhdl_libraries = [&vendor, &context].into_iter()
+            .map(|file| VhdlLibraryMapping { library: "vendor".into(), file: crate::normalize(file) }).collect();
+        let options = SyntaxCheckOptions { vhdl_libraries, ..Default::default() };
+        let result = execute_check(SyntaxCheckRequest { request_id: 94, root: crate::normalize(&root), files: vec![crate::normalize(&consumer), crate::normalize(&vendor), crate::normalize(&context)], options, ..Default::default() }, &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tools/windows-x64"), &root.join("work"), &Arc::new(SyntaxJobState::default()), &|_| {}).unwrap();
+        assert_eq!(result.checked_files, 3, "{result:?}");
         assert!(!result.diagnostics.iter().any(|diagnostic| diagnostic.severity == "error"), "{result:?}");
         let _ = fs::remove_dir_all(root);
     }

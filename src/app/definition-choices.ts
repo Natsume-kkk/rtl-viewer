@@ -1,5 +1,5 @@
 import { detectLang, parseFile, parseFileDetail, type ModuleInfo } from "../parser";
-import { bindModuleParts, selectModuleParts } from "../model";
+import { bindModuleParts, moduleIdentity, selectModuleParts } from "../model";
 import type { DefinitionCandidate, TreeNode } from "../model/hierarchy";
 
 export function analyzeDefinitionChoices(node: TreeNode, fileContent: (file: string) => string | undefined): DefinitionCandidate[] {
@@ -7,8 +7,9 @@ export function analyzeDefinitionChoices(node: TreeNode, fileContent: (file: str
   if (candidates.length < 2 || !node.instFile || node.instLine === undefined) return candidates;
   const parentSource = fileContent(node.instFile);
   if (parentSource === undefined) return candidates;
+  const vhdl = detectLang(node.instFile) === "vhdl";
   const instance = parseFileDetail(parentSource, node.instFile).flatMap(module => module.instances).find(item =>
-    item.module.toLowerCase() === node.moduleName.toLowerCase() && item.inst === node.label && item.line === node.instLine,
+    moduleIdentity(item.module, vhdl) === moduleIdentity(node.moduleName, vhdl) && item.inst === node.label && item.line === node.instLine,
   );
   if (!instance) return candidates;
   const ports = instance.connections ?? [];
@@ -31,7 +32,8 @@ export function analyzeDefinitionChoices(node: TreeNode, fileContent: (file: str
 function definitionModules(file: string, moduleName: string, fileContent: (file: string) => string | undefined): ModuleInfo[] | undefined {
   const source = fileContent(file);
   if (source === undefined) return undefined;
-  return parseFile(source, file).filter(module => module.name.toLowerCase() === moduleName.toLowerCase());
+  const vhdl = detectLang(file) === "vhdl";
+  return parseFile(source, file).filter(module => moduleIdentity(module.name, vhdl) === moduleIdentity(moduleName, vhdl));
 }
 
 function evaluateCandidate(

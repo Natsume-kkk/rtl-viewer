@@ -55,7 +55,7 @@ const VERILATOR_RULE_LABELS: Record<string, string> = {
   WIDTHTRUNC: "位宽截断",
   WIDTHDIGITS: "字面量位数超过声明宽度",
   WIDTHCONCAT: "拼接／复制位宽不确定",
-  UNUSEDSIGNAL: "部分信号位未使用",
+  UNUSEDSIGNAL: "信号未使用",
   UNUSED: "信号未使用",
   UNDRIVEN: "信号未驱动",
   DECLFILENAME: "文件名与模块名不一致",
@@ -116,6 +116,7 @@ export function diagnosticGroupMessage(diagnostics: readonly DiagnosticMessageLi
     if (first.source === "ghdl") return "GHDL 语法与语义诊断";
     if (first.source === "verilator" && first.ruleId === "VERILATOR-GENERAL") return "Verilator 语法与语义诊断";
     if (first.source === "verilator" && first.ruleId === "VERILATOR-PINNOTFOUND") return "端口／参数未找到";
+    if (first.source === "verilator" && first.ruleId === "VERILATOR-UNUSEDSIGNAL") return "信号使用情况";
   }
   return diagnosticDisplayMessage(first);
 }

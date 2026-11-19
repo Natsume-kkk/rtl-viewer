@@ -1,4 +1,4 @@
-import type { ModuleInfo } from "../parser";
+import type { HdlLang, ModuleInfo } from "../parser";
 import { filePathKey } from "../file-path";
 
 export interface ModuleDef {
@@ -7,6 +7,10 @@ export interface ModuleDef {
   line: number;
   isIp: boolean;
   vhdl?: ModuleInfo["vhdl"];
+}
+
+export function moduleIdentity(name: string, vhdl: boolean): string {
+  return vhdl ? `vhdl:${name.toLowerCase()}` : name;
 }
 
 /** 结构与详细解析共享绑定规则；只有 VHDL 声明及唯一实现允许跨文件组合。 */
@@ -37,13 +41,20 @@ export function selectModuleParts<T extends { file: string; vhdl?: ModuleInfo["v
 /** 模块名索引；歧义定义不作为跳转或补全目标。 */
 export class ModuleIndex {
   private byName = new Map<string, ModuleDef[]>();
+  private ipNames = new Map<string, Set<string>>();
   private preferred = new Map<string, string>();
 
   addModule(def: ModuleDef): void {
-    const key = def.name.toLowerCase();
+    const key = moduleIdentity(def.name, !!def.vhdl);
     const list = this.byName.get(key) ?? [];
     list.push(def);
     this.byName.set(key, list);
+    if (def.isIp) {
+      const lower = def.name.toLowerCase();
+      const names = this.ipNames.get(lower) ?? new Set<string>();
+      names.add(def.name);
+      this.ipNames.set(lower, names);
+    }
   }
 
   addStructure(modules: ModuleInfo[]): void {
@@ -56,13 +67,22 @@ export class ModuleIndex {
     this.addModule({ name, file, line: 1, isIp: true });
   }
 
-  resolve(name: string): ModuleDef | undefined {
-    const key = name.toLowerCase();
+  identity(name: string, language?: HdlLang): string {
+    const vhdl = moduleIdentity(name, true);
+    if (language === "vhdl" && this.byName.has(vhdl)) return vhdl;
+    if (this.byName.has(name)) return name;
+    const ips = this.ipNames.get(name.toLowerCase());
+    if (language === "vhdl" && ips?.size === 1) return [...ips][0];
+    return this.byName.has(vhdl) || language === "vhdl" ? vhdl : name;
+  }
+
+  resolve(name: string, language?: HdlLang): ModuleDef | undefined {
+    const key = this.identity(name, language);
     return bindModuleParts(selectModuleParts(this.byName.get(key) ?? [], this.preferred.get(key))).definition;
   }
 
-  bindingFiles(name: string): ModuleDef[] {
-    const key = name.toLowerCase();
+  bindingFiles(name: string, language?: HdlLang): ModuleDef[] {
+    const key = this.identity(name, language);
     const parts = selectModuleParts(this.byName.get(key) ?? [], this.preferred.get(key));
     const { definition, implementation, problem } = bindModuleParts(parts);
     if (problem) return [...parts];
@@ -70,30 +90,39 @@ export class ModuleIndex {
   }
 
   setPreferred(name: string, file: string): void {
-    const key = name.toLowerCase();
-    if ((this.byName.get(key) ?? []).some(part => filePathKey(part.file) === filePathKey(file))) this.preferred.set(key, filePathKey(file));
+    const path = filePathKey(file);
+    const includesFile = (parts: ModuleDef[]) => parts.some(part => filePathKey(part.file) === path);
+    const exact = this.identity(name);
+    const parts = this.byName.get(exact);
+    if (parts && includesFile(parts)) {
+      this.preferred.set(exact, path);
+      return;
+    }
+    // Older preferences stored the lowercase name. The chosen file identifies the original definition.
+    const matches = [...this.byName].filter(([, definitions]) => definitions[0].name.toLowerCase() === name.toLowerCase() && includesFile(definitions));
+    if (matches.length === 1) this.preferred.set(matches[0][0], path);
   }
 
-  preferredFile(name: string): string | undefined {
-    return this.preferred.get(name.toLowerCase());
+  preferredFile(name: string, language?: HdlLang): string | undefined {
+    return this.preferred.get(this.identity(name, language));
   }
 
-  candidates(name: string): ModuleDef[] {
-    return [...this.byName.get(name.toLowerCase()) ?? []];
+  candidates(name: string, language?: HdlLang): ModuleDef[] {
+    return [...this.byName.get(this.identity(name, language)) ?? []];
   }
 
   allDefs(): ModuleDef[] {
-    return [...this.byName.keys()].flatMap(name => this.resolve(name) ?? []);
+    return [...this.byName].flatMap(([key, parts]) => bindModuleParts(selectModuleParts(parts, this.preferred.get(key))).definition ?? []);
   }
 
   allNames(): string[] {
-    return [...this.byName.values()].map(parts => parts[0].name);
+    return [...new Set([...this.byName.values()].map(parts => parts[0].name))];
   }
 
-  problem(name: string): string | undefined {
-    if (this.preferredFile(name) && this.resolve(name)) return undefined;
-    const parts = this.byName.get(name.toLowerCase()) ?? [];
-    const problem = bindModuleParts(parts).problem;
+  problem(name: string, language?: HdlLang): string | undefined {
+    const key = this.identity(name, language);
+    const parts = this.byName.get(key) ?? [];
+    const problem = bindModuleParts(selectModuleParts(parts, this.preferred.get(key))).problem;
     return problem ? `${problem}\n${parts.map(part => `${part.file}:${part.line}`).join("\n")}` : undefined;
   }
 }

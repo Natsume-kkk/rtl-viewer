@@ -1,5 +1,5 @@
-import type { ModuleInfo } from "../parser";
-import { ModuleIndex, bindModuleParts, selectModuleParts } from "./index";
+import type { HdlLang, ModuleInfo } from "../parser";
+import { ModuleIndex, bindModuleParts, moduleIdentity, selectModuleParts } from "./index";
 
 export type NodeKind = "module" | "ip" | "unresolved" | "primitive";
 
@@ -55,6 +55,7 @@ export interface TreeNode {
   /** 显示名：例化名（顶层为模块名） */
   label: string;
   moduleName: string;
+  referenceLanguage?: HdlLang;
   kind: NodeKind;
   file?: string;
   line?: number;
@@ -107,63 +108,64 @@ function commonDirPrefix(paths: string[]): string {
  */
 function autoPickTop(
   candidates: string[],
+  index: ModuleIndex,
   structByModule: Map<string, ModuleInfo>,
   rootPrefix = "",
 ): string | undefined {
   if (candidates.length === 0) return undefined;
   const sizeCache = new Map<string, number>();
+  const childrenOf = (key: string): string[] => {
+    const module = structByModule.get(key);
+    return module?.instances.map(inst => index.identity(inst.module, module.vhdl ? "vhdl" : "verilog")) ?? [];
+  };
   const reachableSize = (root: string): number => {
-    const cached = sizeCache.get(root.toLowerCase());
+    const cached = sizeCache.get(root);
     if (cached !== undefined) return cached;
     const seen = new Set<string>();
-    const stack = [root.toLowerCase()];
+    const stack = [root];
     while (stack.length > 0) {
       const cur = stack.pop()!;
       if (seen.has(cur)) continue;
       seen.add(cur);
-      for (const inst of structByModule.get(cur)?.instances ?? []) {
-        stack.push(inst.module.toLowerCase());
-      }
+      for (const child of childrenOf(cur)) stack.push(child);
     }
-    sizeCache.set(root.toLowerCase(), seen.size);
+    sizeCache.set(root, seen.size);
     return seen.size;
   };
   const fileOf = (name: string) => {
-    const file = (structByModule.get(name.toLowerCase())?.file ?? "").replace(/\\/g, "/");
+    const file = (structByModule.get(name)?.file ?? "").replace(/\\/g, "/");
     return rootPrefix && file.toLowerCase().startsWith(rootPrefix.toLowerCase())
       ? file.slice(rootPrefix.length)
       : file;
   };
   const isTb = (name: string) =>
-    TB_NAME_RE.test(name) || SIM_PATH_RE.test(fileOf(name));
+    TB_NAME_RE.test(structByModule.get(name)?.name ?? name) || SIM_PATH_RE.test(fileOf(name));
   const unwrap = (name: string): string => {
     let cur = name;
-    const seen = new Set([cur.toLowerCase()]);
+    const seen = new Set([cur]);
     while (isTb(cur)) {
-      const children = (structByModule.get(cur.toLowerCase())?.instances ?? [])
-        .map((i) => i.module)
-        .filter((m) => structByModule.has(m.toLowerCase()) && !seen.has(m.toLowerCase()));
+      const children = childrenOf(cur).filter(m => structByModule.has(m) && !seen.has(m));
       if (children.length === 0) break;
       let bestChild = children[0];
       for (const c of children.slice(1)) {
         if (reachableSize(c) > reachableSize(bestChild)) bestChild = c;
       }
       cur = bestChild;
-      seen.add(cur.toLowerCase());
+      seen.add(cur);
     }
     return cur;
   };
   let best: string | undefined;
   let bestSize = -1;
   for (const name of candidates) {
-    const eff = unwrap(name);
+    const eff = unwrap(index.identity(name));
     const size = reachableSize(eff);
     if (size > bestSize || (size === bestSize && best !== undefined && isTb(best) && !isTb(eff))) {
       best = eff;
       bestSize = size;
     }
   }
-  return best;
+  return best === undefined ? undefined : structByModule.get(best)?.name ?? candidates.find(name => index.identity(name) === best);
 }
 
 /**
@@ -181,28 +183,32 @@ export function buildHierarchy(
   const partsByModule = new Map<string, ModuleInfo[]>();
   for (const modules of structures.values()) {
     for (const m of modules) {
-      const key = m.name.toLowerCase();
+      const key = moduleIdentity(m.name, !!m.vhdl);
       const parts = partsByModule.get(key) ?? [];
       parts.push(m); partsByModule.set(key, parts);
     }
   }
   for (const [key, parts] of partsByModule) {
-    const { implementation } = bindModuleParts(selectModuleParts(parts, index.preferredFile(key)));
+    const { name, vhdl } = parts[0];
+    const language = vhdl ? "vhdl" : "verilog";
+    if (index.problem(name, language) || index.resolve(name, language)?.isIp) continue;
+    const preferred = index.preferredFile(name, language);
+    const { implementation } = bindModuleParts(selectModuleParts(parts, preferred));
     if (implementation) structByModule.set(key, implementation);
   }
 
   const instantiated = new Set<string>();
   for (const m of structByModule.values()) {
     for (const inst of m.instances) {
-      instantiated.add(inst.module.toLowerCase());
+      instantiated.add(index.identity(inst.module, m.vhdl ? "vhdl" : "verilog"));
     }
   }
 
   const topCandidates = index
     .allNames()
-    .filter(name => !index.resolve(name)?.isIp && !instantiated.has(name.toLowerCase()));
+    .filter(name => !index.resolve(name)?.isIp && !instantiated.has(index.identity(name)));
 
-  const autoTop = autoPickTop(topCandidates, structByModule, commonDirPrefix([...structures.keys()]));
+  const autoTop = autoPickTop(topCandidates, index, structByModule, commonDirPrefix([...structures.keys()]));
   const chosenTop = topName ?? autoTop;
 
   const buildNode = (
@@ -210,35 +216,38 @@ export function buildHierarchy(
     label: string,
     key: string,
     ancestors: Set<string>,
+    referenceLanguage?: HdlLang,
   ): TreeNode => {
-    const def = index.resolve(moduleName);
-    const problem = index.problem(moduleName);
-    const lower = moduleName.toLowerCase();
+    const def = index.resolve(moduleName, referenceLanguage);
+    const problem = index.problem(moduleName, referenceLanguage);
+    const identity = index.identity(moduleName, referenceLanguage);
+    const candidates = index.candidates(moduleName, referenceLanguage);
     const node: TreeNode = {
       key,
       label,
       moduleName,
+      ...(referenceLanguage ? { referenceLanguage } : {}),
       kind: def ? (def.isIp ? "ip" : "module") : isVendorPrimitive(moduleName) ? "primitive" : "unresolved",
       file: def?.file,
       line: def?.line,
-      recursive: ancestors.has(lower),
+      recursive: ancestors.has(identity),
       children: [],
-      ...(index.candidates(moduleName).length > 1 ? { definitionCandidates: index.candidates(moduleName).map(candidate => ({ file: candidate.file, line: candidate.line })) } : {}),
+      ...(candidates.length > 1 ? { definitionCandidates: candidates.map(candidate => ({ file: candidate.file, line: candidate.line })) } : {}),
       ...(problem ? { problem } : {}),
     };
-    if (node.recursive || problem) return node;
-    const struct = structByModule.get(lower);
+    if (node.recursive || problem || def?.isIp) return node;
+    const struct = structByModule.get(identity);
     if (!struct || struct.instances.length === 0) return node;
     // children 懒构建：getter 首次访问时才物化直接子节点（子节点的 children 同样懒）。
     // 菱形复用高的工程例化路径数随深度指数增长，全量展开会组合爆炸；
     // UI 只渲染展开的行，懒构建让成本随实际访问的层级走。
-    const nextAncestors = new Set(ancestors).add(lower);
+    const nextAncestors = new Set(ancestors).add(identity);
     let built: TreeNode[] | undefined;
     Object.defineProperty(node, "children", {
       enumerable: true,
       get: () => {
         built ??= struct.instances.map((inst) => {
-          const child = buildNode(inst.module, inst.inst, `${key}/${inst.inst}`, nextAncestors);
+          const child = buildNode(inst.module, inst.inst, `${key}/${inst.inst}`, nextAncestors, struct.vhdl ? "vhdl" : "verilog");
           child.instFile = struct.file;
           child.instLine = inst.line;
           return child;
@@ -261,9 +270,9 @@ export function buildHierarchy(
     .filter(
       (d) =>
         !d.isIp &&
-        !instantiated.has(d.name.toLowerCase()) &&
-        (structByModule.get(d.name.toLowerCase())?.instances.length ?? 0) === 0 &&
-        d.name.toLowerCase() !== chosenTop?.toLowerCase(),
+        !instantiated.has(moduleIdentity(d.name, !!d.vhdl)) &&
+        (structByModule.get(moduleIdentity(d.name, !!d.vhdl))?.instances.length ?? 0) === 0 &&
+        (chosenTop === undefined || moduleIdentity(d.name, !!d.vhdl) !== index.identity(chosenTop)),
     )
     .map((d) => ({ name: d.name, file: d.file, line: d.line }));
 

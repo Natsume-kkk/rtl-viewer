@@ -1,5 +1,22 @@
-import type { ParameterInfo, PortInfo } from "../parser";
+import type { ModuleInfo, ParameterInfo, PortInfo } from "../parser";
 import { evaluateConstant } from "../parser/static-generate";
+
+export function verilogEntityStubs(modules: Iterable<ModuleInfo>, occupied: ReadonlySet<string>) {
+  const entities = new Map<string, ModuleInfo[]>();
+  for (const module of modules) {
+    if (!module.vhdl?.entity) continue;
+    const key = module.name.toLowerCase();
+    const definitions = entities.get(key) ?? [];
+    definitions.push(module);
+    entities.set(key, definitions);
+  }
+  return [...entities.values()].flatMap(([module, duplicate]) =>
+    duplicate || occupied.has(module.name) ? [] : [{
+      name: module.name,
+      source: verilogStub(module.name, module.ports, module.parameters ?? [], true),
+    }],
+  );
+}
 
 export function verilogStub(name: string, ports: PortInfo[], parameters: ParameterInfo[], vhdl = false): string {
   const parameterNames = new Map(parameters.map(parameter => [parameter.name.toLowerCase(), parameter.name]));

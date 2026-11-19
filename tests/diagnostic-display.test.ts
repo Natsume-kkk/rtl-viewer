@@ -121,6 +121,7 @@ it("Verilator 位宽、拼接和未使用信号显示完整中文细节", () => 
   expect(display("verilator", "VERILATOR-WIDTHEXPAND", "Bit extraction of array[4:0] requires 3 bit index, not 2 bits.")).toBe("array[4:0] 的索引要求 3 位，实际为 2 位");
   expect(display("verilator", "VERILATOR-WIDTHDIGITS", "Too many digits for 4 bit number: '4'hDF")).toBe("4 位数值包含过多数字：'4'hDF");
   expect(display("verilator", "VERILATOR-UNUSEDSIGNAL", "Bits of signal are not used: 'din'[31:1]")).toBe("部分信号位未使用：'din'[31:1]");
+  expect(display("verilator", "VERILATOR-UNUSEDSIGNAL", "Signal is not used: 'din'")).toBe("信号未使用：'din'");
 });
 
 it("真正未知的消息明确提示悬停查看原文并保留可识别标记", () => {

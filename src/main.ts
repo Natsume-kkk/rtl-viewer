@@ -40,13 +40,13 @@ import { createSignalController } from "./app/signal-controller";
 import { createModuleMetadataLoader } from "./app/module-metadata";
 import { createProjectScanner } from "./app/project-scanner";
 import { isGeneratedNetlist } from "./app/project-files";
-import { verilogStub, vhdlStub } from "./app/syntax-stubs";
+import { verilogEntityStubs, verilogStub, vhdlStub } from "./app/syntax-stubs";
 import { loadSyntaxOptions, saveSyntaxOptions, configuredPath, validateSyntaxOptions } from "./app/syntax-options";
 import { showSyntaxOptionsDialog } from "./ui/syntax-options";
 import { createFactsScheduler } from "./app/facts-scheduler";
 import { explainVerilatorSyntax } from "./app/diagnostic-display";
 import { syntaxDependencyFiles } from "./app/syntax-order";
-import { syntaxScope } from "./app/syntax-scope";
+import { syntaxScope, topologyScope } from "./app/syntax-scope";
 import { createStructureScanner } from "./app/structure-scanner";
 import { createCoalescedRefresh } from "./app/coalesced-refresh";
 import { StatsPanel } from "./ui/stats";
@@ -433,7 +433,6 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
       const scopeChanged = activeTopFiles.size !== scope.files.size || [...scope.files].some(file => !activeTopFiles.has(file));
       activeTopology = scope.topology;
       activeTopFiles = scope.files;
-      activeTopModules = scope.modules;
       if (scopeChanged && analysisScope === "top") void factsScheduler.start();
     }
     const libraries = new Map(syntaxOptions.vhdlLibraries.map(mapping => [filePathKey(configuredPath(folder, mapping.file)), mapping.library]));
@@ -465,23 +464,19 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
       refreshFactsViews();
       return false;
     }
-    const scopedIps = analysisScope === "project" ? state.ips : state.ips.filter(ip => scope.modules.has(ip.name.toLowerCase()));
+    const scopedIps = analysisScope === "project" ? state.ips : state.ips.filter(ip => scope.ipFiles.has(filePathKey(ip.file)));
     const selectedIps = scopedIps.filter(ip => scope.index.resolve(ip.name)?.isIp);
+    const occupied = new Set(files.filter(file => /\.(?:v|sv)$/i.test(file))
+      .flatMap(file => (structures.get(file) ?? []).map(module => module.name)));
     const ipStubs = (await Promise.all(selectedIps.map(async ip => {
+      if (occupied.has(ip.name)) return { name: ip.name, source: "" };
       const ports = await modulePorts(ip.name);
       const parameters = await moduleIpParameters(ip.name);
       return { name: ip.name, source: ports.length ? verilogStub(ip.name, ports, parameters) : "" };
     }))).filter(stub => stub.source);
-    const vhdlModules = new Map<string, ModuleInfo[]>();
-    for (const file of files.filter(file => /\.vhdl?$/i.test(file))) for (const module of parseFile(contents.get(file) ?? "", file)) {
-      if (!module.vhdl?.entity) continue;
-      const key = module.name.toLowerCase();
-      vhdlModules.set(key, [...vhdlModules.get(key) ?? [], module]);
-    }
-    const verilogVhdlStubs = [...vhdlModules.values()].filter(definitions => definitions.length === 1).map(([module]) => ({
-      name: module.name,
-      source: verilogStub(module.name, module.ports, module.parameters ?? [], true),
-    }));
+    for (const stub of ipStubs) occupied.add(stub.name);
+    const vhdlModules = files.filter(file => /\.vhdl?$/i.test(file)).flatMap(file => parseFile(contents.get(file) ?? "", file));
+    const verilogVhdlStubs = verilogEntityStubs(vhdlModules, occupied);
     const vhdlStubs = (await Promise.all(selectedIps.map(async ip => {
       const ports = await modulePorts(ip.name);
       return { name: ip.name, source: ports.length ? vhdlStub(ip.name, ports, await moduleIpParameters(ip.name)) : "" };
@@ -534,8 +529,9 @@ function cancelProjectSyntaxCheck(): void {
 function cancelRunningSyntaxCheck(): void {
   if (runningSyntaxRequest && !syntaxBackendStarted) {
     cancelProjectSyntaxCheck();
+    const hasPrevious = !!lastSyntaxResult;
     lastSyntaxResult = { ...(lastSyntaxResult ?? { checkedFiles: 0, backends: [], diagnostics: [] }), requestId: syntaxSerial, cancelled: true };
-    problemPanel.finish(lastSyntaxResult, true);
+    problemPanel.finish(lastSyntaxResult, hasPrevious);
     refreshFactsViews();
   } else if (runningSyntaxRequest) void cancelSyntaxCheck(runningSyntaxRequest);
 }
@@ -578,7 +574,6 @@ function reportFileName(folder: string, format: "html" | "csv", date: Date): str
 let factsDone = 0, factsTotal = 0;
 let analysisScope: "top" | "project" = "top";
 let activeTopFiles = new Set<string>();
-let activeTopModules = new Set<string>();
 let activeTopology: import("./model/hierarchy").TreeNode[] = [];
 const statsPanel = new StatsPanel(document.getElementById("stats-root")!, {
   displayPath,
@@ -994,7 +989,7 @@ function rebuildIndex(): void {
 
 function selectDefinition(name: string, file: string): void {
   state.index.setPreferred(name, file);
-  state.definitionPreferences.set(name.toLowerCase(), normalizePath(file));
+  state.definitionPreferences.set(name, normalizePath(file));
   saveDefinitionPreferences();
   signalController.invalidate();
   if (runningSyntaxRequest) syntaxChangedWhileRunning = true;
@@ -1012,19 +1007,7 @@ function renderTree(): void {
   state.autoTop = h.autoTop;
   const analysisTop = effectiveAnalysisTop();
   activeTopology = analysisTop === (state.topName || state.autoTop) ? h.tops : buildHierarchy(state.index, state.structures, analysisTop).tops;
-  activeTopModules = new Set<string>();
-  const pending = [...activeTopology];
-  while (pending.length) {
-    const node = pending.pop()!;
-    const key = node.moduleName.toLowerCase();
-    if (activeTopModules.has(key)) continue;
-    activeTopModules.add(key);
-    pending.push(...node.children);
-  }
-  activeTopFiles = new Set<string>();
-  for (const name of activeTopModules) {
-    for (const definition of state.index.bindingFiles(name)) activeTopFiles.add(filePathKey(definition.file));
-  }
+  activeTopFiles = topologyScope(state.index, activeTopology).files;
   tree.render(h, state.constraints);
 }
 
@@ -1056,7 +1039,7 @@ function saveRecents(list: string[]): void {
 function loadDefinitionPreferences(folder: string): Map<string, string> {
   try {
     const saved = JSON.parse(localStorage.getItem(`rtl-viewer.definitionPreferences.${folder.toLowerCase()}`) ?? "{}");
-    return new Map(Object.entries(saved).filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string").map(([name, file]) => [name.toLowerCase(), normalizePath(file)]));
+    return new Map(Object.entries(saved).filter((entry): entry is [string, string] => typeof entry[1] === "string").map(([name, file]) => [name, normalizePath(file)]));
   } catch {
     return new Map();
   }
@@ -1142,7 +1125,6 @@ async function openFolder(folder: string): Promise<void> {
   factsDone = factsTotal = 0;
   analysisScope = "top";
   activeTopFiles.clear();
-  activeTopModules.clear();
   activeTopology = [];
   statsPanel.render({ facts: [], files: [], diagnostics: [], done: 0, total: 0, running: false, stale: false, scope: "top" });
   state.folder = folder;

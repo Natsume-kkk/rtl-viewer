@@ -31,6 +31,12 @@ it("VHDL 输入悬空和未使用输出 open 分开判断", () => {
   expect(diagnostics.filter(item => item.ruleId === "9765-4.1-c")).toHaveLength(0);
 });
 
+it("VHDL 先绑定位置项，再绑定大小写无关的命名项", () => {
+  const child = analyzeFileFacts("child.vhd", "entity child is port(d : in bit; q : out bit; r : out bit); end;");
+  const top = analyzeFileFacts("top.vhd", "entity top is end; architecture rtl of top is begin u : entity work.child port map('0', R => open); end;");
+  expect(runProjectRules([child, top]).map(item => item.message)).toEqual(["未使用输出端口“q”宜显式写为 open。"]);
+});
+
 it("重复定义冲突时不猜测例化端口绑定", () => {
   const files = [
     analyzeFileFacts("a.v", "module child(input [7:0] a); endmodule"),

@@ -22,7 +22,7 @@ export function syntaxReportHtml(folder: string, result: SyntaxCheckResult, gene
   const codeLines = facts.reduce((sum, item) => sum + item.statistics.codeLines, 0);
   const commentLines = facts.reduce((sum, item) => sum + item.statistics.commentOnlyLines + item.statistics.inlineCommentLines, 0);
   const denominator = facts.reduce((sum, item) => sum + item.statistics.codeLines + item.statistics.commentOnlyLines + item.statistics.inlineCommentLines, 0);
-  const externalStatus = result.backends.length ? `外部检查 ${result.checkedFiles} 个文件` : "外部后端未运行";
+  const externalStatus = result.backends.length ? `外部检查 ${result.checkedFiles} 个文件` : result.cancelled ? "外部后端启动前已取消" : "外部后端未运行";
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>RTL 工程检查报告</title>
 <style>body{font:14px sans-serif;margin:24px;color:#222}table{border-collapse:collapse;width:100%;margin:12px 0 24px}th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top}th{background:#eee}.error{color:#b42318}.warning{color:#9a6700}.info{color:#175cd3}code{word-break:break-all}</style></head><body>
@@ -43,12 +43,13 @@ export function syntaxReportCsv(result: SyntaxCheckResult, context: SyntaxReport
   for (const diagnostic of result.diagnostics) {
     rows.push([diagnostic.severity, diagnostic.source, diagnostic.ruleId, diagnostic.file, String(diagnostic.line), String(diagnostic.column), diagnostic.message].map(csvField).join(","));
   }
-  if (!context.options && !context.facts && context.stale === undefined && !context.failure) return rows.join("\r\n") + "\r\n";
+  if (!context.options && !context.facts && context.stale === undefined && !context.failure && !result.cancelled) return rows.join("\r\n") + "\r\n";
   rows.push("");
   rows.push(["Backend", "Version", "Files", "Status"].map(csvField).join(","));
   if (result.backends.length) {
     for (const backend of result.backends) rows.push([backend.name, backend.version, String(backend.files), backend.status].map(csvField).join(","));
-  } else rows.push(["external", "未运行", "0", "not_run"].map(csvField).join(","));
+  } else rows.push(["external", result.cancelled ? "" : "未运行", "0", result.cancelled ? "cancelled" : "not_run"].map(csvField).join(","));
+  if (result.cancelled) rows.push(["Cancelled", "true"].map(csvField).join(","));
   rows.push(["Stale", context.stale ? "true" : "false"].map(csvField).join(","));
   if (context.failure) rows.push(["Failure", context.failure].map(csvField).join(","));
   rows.push(["Options", JSON.stringify(context.options ?? {})].map(csvField).join(","));

@@ -77,10 +77,9 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
   /** 子模块端口元数据：工程内模块取解析结果，IP 只取端口。 */
   async function modulePorts(moduleName: string): Promise<PortInfo[]> {
     const def = ctx.resolveModule(moduleName);
-    const key = moduleName.toLowerCase();
     if (!def) return [];
     if (!def.isIp) {
-      const mod = moduleFileModules(def)?.find((m) => m.name.toLowerCase() === key);
+      const mod = moduleFileModules(def)?.find(m => m.name === def.name);
       return mod?.ports ?? [];
     }
     return (await loadIpPorts(moduleName)).ports;
@@ -93,8 +92,7 @@ export function createModuleMetadataLoader(ctx: ModuleMetadataContext): {
   function moduleParameters(moduleName: string): ParameterInfo[] {
     const def = ctx.resolveModule(moduleName);
     if (!def || def.isIp) return [];
-    const key = moduleName.toLowerCase();
-    return moduleFileModules(def)?.find((m) => m.name.toLowerCase() === key)?.parameters ?? [];
+    return moduleFileModules(def)?.find(m => m.name === def.name)?.parameters ?? [];
   }
 
   function invalidateIps(): void {

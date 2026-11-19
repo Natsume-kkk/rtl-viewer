@@ -243,6 +243,7 @@ export class ProblemPanel {
     if (!this.result) return;
     this.stale = true;
     this.renderSummary();
+    if (this.empty) this.empty.textContent = this.emptyMessage(this.allDiagnostics().length);
   }
 
   get isStale(): boolean { return this.stale; }
@@ -356,7 +357,7 @@ export class ProblemPanel {
       : this.result?.backends.some(backend => backend.status === "failed" || backend.status === "timed_out") ? `外部检查未完成 · 已检查 ${this.result.checkedFiles} 个文件`
         : this.result ? `已检查 ${this.result.checkedFiles} 个文件` : "内置分析";
     const environmentText = data.environment ? ` · ${data.environment} 分析环境` : "";
-    const stale = this.stale ? " · 外部结果为上次快照，等待自动复查" : "";
+    const stale = this.stale ? this.result?.cancelled ? " · 外部结果为上次快照" : " · 外部结果为上次快照，等待自动复查" : "";
     this.summary.textContent = `${status} · ${data.counts.error} 错误 · ${data.counts.warning} 警告 · ${data.counts.info} 提示${environmentText} · 显示 ${filtered.length}/${all.length} 条${stale}`;
   }
 
@@ -381,7 +382,10 @@ export class ProblemPanel {
     const all = data.diagnostics;
     this.configureButton.hidden = !data.needsConfiguration;
     const filtered = this.filteredDiagnostics();
-    if (all === this.renderedAll && filtered === this.renderedFiltered) return;
+    if (all === this.renderedAll && filtered === this.renderedFiltered) {
+      if (this.empty) this.empty.textContent = this.emptyMessage(all.length);
+      return;
+    }
     this.renderedAll = all;
     this.renderedFiltered = filtered;
     const scrollTop = this.list.scrollTop;
@@ -396,9 +400,7 @@ export class ProblemPanel {
       this.groupDiagnostics.clear();
       this.empty = document.createElement("p");
       this.empty.className = "problem-empty";
-      this.empty.textContent = all.length
-        ? "当前筛选条件下没有匹配诊断，可清除筛选查看全部结果。"
-        : this.hasResults ? "本次检查未发现问题；不包含综合、实现、时序分析和完整跨时钟域验证。" : "尚未产生诊断。";
+      this.empty.textContent = this.emptyMessage(all.length);
       this.list.append(this.empty);
       return;
     }
@@ -457,6 +459,15 @@ export class ProblemPanel {
       if (active?.classList.contains("problem-group-jump")) group?.querySelector<HTMLButtonElement>(".problem-group-jump")?.focus();
       else group?.querySelector("summary")?.focus();
     }
+  }
+
+  private emptyMessage(total: number): string {
+    if (total) return "当前筛选条件下没有匹配诊断，可清除筛选查看全部结果。";
+    if (this.running || this.builtinRunning) return "检查进行中，当前没有可显示的诊断。";
+    if (this.result?.cancelled) return "检查已取消，当前没有可显示的诊断。";
+    if (this.indicator.failed) return "检查未完成，当前没有可显示的诊断。";
+    if (this.stale) return "上次结果没有诊断，等待复查。";
+    return this.hasResults ? "本次检查未发现问题；不包含综合、实现、时序分析和完整跨时钟域验证。" : "尚未产生诊断。";
   }
 
   private syncGroup(key: string, className: string, title: string, tooltip: string, diagnostics: Diagnostic[], rows: ProblemRows, onJump?: () => void): ProblemGroupElement {

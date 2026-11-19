@@ -308,3 +308,31 @@ it("同一行不同设计单元的边沿签名保持独立", () => {
   const vhdl = "entity a is end; architecture rtl of a is begin process(clk) begin if rising_edge(clk) then q <= d; end if; end process; end; entity b is end; architecture rtl of b is begin process(clk) begin if falling_edge(clk) then q <= d; end if; end process; end;";
   expect(vhdlIds(vhdl)).not.toContain("9765-4.9-i");
 });
+it("按位判断覆盖，同一向量的无条件位选不会掩盖其他位的缺失路径", () => {
+  const check = (body: string) => runGeneralRules(analyzeFileFacts("m.sv", `module m(input logic en, input logic d, output logic [3:0] q);
+    always_comb begin ${body} end
+    endmodule`)).some(item => item.ruleId === "VLG-SY-004");
+  expect(check("q[0] = d; if (en) q[1] = d;")).toBe(true);
+  expect(check("q[3:1] = 0; if (en) q[2:0] = 0; else q[0] = d;")).toBe(false);
+  expect(check("if (en) q = 0; else begin q[3:2] = 0; q[1:0] = 0; end")).toBe(false);
+  expect(check("case (en) 1'b1: q[1:0] = 0; default: q[0] = d; endcase")).toBe(true);
+  expect(check("case (en) 1'b1: q[1:0] = 0; default: begin q[1] = d; q[0] = d; end endcase")).toBe(false);
+});
+
+it("互斥 generate 分支的驱动不冲突，各分支内与独立驱动仍可冲突", () => {
+  const check = (body: string) => runGeneralRules(analyzeFileFacts("m.sv", `module m #(parameter ENABLE = 1)(input a, input b, output y);
+    ${body}
+    endmodule`)).filter(item => item.ruleId === "VLG-SY-005");
+  expect(check("if (1) begin : yes assign y = a; end else begin : no assign y = b; end")).toEqual([]);
+  expect(check("if (ENABLE) always @(*) y = a; else always @(*) y = b;")).toEqual([]);
+  expect(check("if (ENABLE) begin : yes assign y = a; assign y = b; end else assign y = b;")).toHaveLength(1);
+  expect(check("if (ENABLE) assign y = a; else assign y = b; assign y = b;")).toHaveLength(1);
+  expect(check("if (0) assign y = a; assign y = b;")).toEqual([]);
+  expect(check("for (genvar i = 0; i < 2; i++) begin : items if (i) assign y = a; else assign y = b; end")).toHaveLength(1);
+});
+
+it("Verilog 位宽按精确名字查找，标量 Data 不使用向量 data 的位宽", () => {
+  const facts = analyzeFileFacts("m.sv", "module m(input wire [7:0] data, input wire d, output wire [3:0] q); wire Data; assign Data = d; assign q = Data; endmodule");
+  expect(runGjb10157Rules(facts).filter(item => item.ruleId === "10157-R-10-2").map(item => item.message))
+    .toEqual(["赋值目标位宽为 4，表达式位宽为 1。"]);
+});

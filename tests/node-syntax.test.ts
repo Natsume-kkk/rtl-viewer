@@ -69,6 +69,30 @@ it("CLI 重复 entity 不猜选黑盒接口", () => {
   expect(buildStubs(request.files).stubs).toEqual([]);
 });
 
+it("混合工程保留真实 Verilog 定义，且按大小写保护不同名的 VHDL 黑盒", () => {
+  const request = syntaxFixture({
+    "top.sv": "module top(input a,output y); core u(.a(a),.y(y)); endmodule\n",
+    "core.sv": "module core(input a,output y); assign y=a; endmodule\n",
+    "core.vhd": "entity core is port(wide:in bit); end;\n",
+    "another.vhd": "entity OTHER is end;\n",
+    "other.sv": "module other; endmodule\n",
+  });
+  const stubs = buildStubs(request.files);
+  expect(stubs.stubs.map(stub => stub.name)).toEqual(["OTHER"]);
+  const result = runNodeSyntaxCheck({ ...request, top: "top", ...stubs });
+  expect(result.diagnostics.filter(item => item.severity === "error" || item.ruleId === "VERILATOR-MODDUP")).toEqual([]);
+});
+
+it("真实 GHDL 先分析 VHDL context，再检查引用方", () => {
+  const request = syntaxFixture({
+    "a_top.vhd": "context work.common_ctx; entity top is port (a : in std_logic); end;\n",
+    "z_context.vhd": "context common_ctx is library ieee; use ieee.std_logic_1164.all; end context;\n",
+  });
+  const result = runNodeSyntaxCheck(request);
+  expect(result.checkedFiles).toBe(2);
+  expect(result.diagnostics).toEqual([]);
+});
+
 it.each(["automatic", "static"])("package %s 的依赖被选入并先于使用者检查", lifetime => {
   const request = syntaxFixture({
     "a_top.sv": "module top(output pkg::word_t y); assign y=0; endmodule\n",

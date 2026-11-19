@@ -138,9 +138,20 @@ export function specializeText(text:string,start:number,region:StaticRegion,vhdl
 }
 
 /** 仅处理调用者已定位的模块区域；过程区域遮蔽，不将运行时 if/for 当作 generate。 */
-export function expandStaticGenerate(source:string,start:number,end:number,values:ConstantValues,vhdl:boolean,excluded:{start:number;end:number}[],maxIterations=256):{regions:StaticRegion[];boundaries:StaticBoundary[]} {
+export function expandStaticGenerate(source:string,start:number,end:number,values:ConstantValues,vhdl:boolean,excluded:{start:number;end:number}[],maxIterations=256, inspectBranch?: (start: number, end: number, branch: number, inactive: boolean) => void):{regions:StaticRegion[];boundaries:StaticBoundary[]} {
   let clean=vhdl?stripVhdlComments(source):stripComments(source);
-  for(const p of excluded) if(p.start<end&&p.end>start) clean=clean.slice(0,p.start)+clean.slice(p.start,p.end).replace(/[^\n]/g," ")+clean.slice(p.end);
+  const masked = [];
+  let unmaskedStart = 0;
+  for (const p of [...excluded].sort((a, b) => a.start - b.start)) {
+    if (p.start >= end || p.end <= start || p.end <= unmaskedStart) continue;
+    const maskStart = Math.max(p.start, unmaskedStart);
+    masked.push(clean.slice(unmaskedStart, maskStart));
+    const text = clean.slice(maskStart, p.end).replace(/[^\n]/g, " ");
+    // A process can itself be the single statement under a generate if.
+    masked.push(inspectBranch && text.length > 1 ? "@" + text.slice(1, -1) + ";" : text);
+    unmaskedStart = p.end;
+  }
+  if (masked.length) clean = masked.join("") + clean.slice(unmaskedStart);
   const regions:StaticRegion[]=[],boundaries:StaticBoundary[]=[];let iterations=0,depth=0;
   const ws=(p:number)=>{while(p<end&&/\s/.test(clean[p]))p++;return p;};
   const parens=(p:number)=>{let d=0;for(let i=p;i<end;i++){if(clean[i]==="(")d++;if(clean[i]===")"&&--d===0)return i+1;}return end;};
@@ -172,19 +183,19 @@ export function expandStaticGenerate(source:string,start:number,end:number,value
     }
     return names;
   }
-  const part=(a:number,b:number,scope:string,env:ConstantValues,names:Map<string,string>)=>{if(b>a)regions.push({start:a,end:b,scope,values:cloneConstants(env),names:new Map(names)});};
-  function walk(a:number,b:number,scope:string,inputValues:ConstantValues,inherited:Map<string,string>) {
+  const part=(a:number,b:number,scope:string,env:ConstantValues,names:Map<string,string>)=>{if(!inspectBranch&&b>a)regions.push({start:a,end:b,scope,values:cloneConstants(env),names:new Map(names)});};
+  function walk(a:number,b:number,scope:string,inputValues:ConstantValues,inherited:Map<string,string>,repeated=false) {
     if(++depth>32){boundaries.push({start:a,end:b,reason:"generate 嵌套超过分析预算"});depth--;return;}
     const env=cloneConstants(inputValues);
     const constants=vhdl?/\bconstant\s+(\w+)\s*:[^;]*?:=\s*([^;]+);/gi:/\blocalparam\s+([^;]+);/g;
-    for(const c of clean.slice(a,b).matchAll(constants)) {
+    for(const c of inspectBranch ? [] : clean.slice(a,b).matchAll(constants)) {
       const prefix=clean.slice(a,a+c.index!);
       const opens=(prefix.match(vhdl?/\bgenerate\b/gi:/\bbegin\b/g)??[]).length,closes=(prefix.match(vhdl?/\bend\s+generate\b/gi:/\bend\b/g)??[]).length;
       if(opens>(vhdl?2:1)*closes)continue;
       if(vhdl){const declaration=clean.slice(a+c.index!,a+c.index!+c[0].length);for(const p of parseParameters(declaration,declaration,true,true))setConstant(env,p.name.toLowerCase(),p.defaultValue,env,true,p.typeDeclaration);}
       else for(const p of parseParameters(c[1],c[1],false,true))setConstant(env,p.name,p.defaultValue,env,false,p.typeDeclaration);
     }
-    const names=blockNames(a,b,scope,inherited);
+    const names=inspectBranch ? inherited : blockNames(a,b,scope,inherited);
     const re=vhdl?/\b(\w+)\s*:\s*(if|for|case)\b([\s\S]*?)\bgenerate\b/gi:/\b(generate|if|for|case|casex|casez)\b/g;
     re.lastIndex=a;let cursor=a,m:RegExpExecArray|null;
     while((m=re.exec(clean))&&m.index<b) {
@@ -228,9 +239,20 @@ export function expandStaticGenerate(source:string,start:number,end:number,value
         boundaries.push({start:m.index,end:finish,reason:"generate case/elsif 选择尚不支持静态展开"});
       }else if(kind==="if") {
         const condition=evaluateConstant(header,env,vhdl);
-        if(condition===undefined)boundaries.push({start:m.index,end:finish,reason:`generate 条件无法静态确定：${header}`});
+        if (inspectBranch) {
+          const branch = m.index + 1;
+          // A genvar condition can take opposite values in different loop instances.
+          if (!repeated || condition !== undefined) inspectBranch(bodyStart, bodyEnd, branch, condition === 0);
+          if (condition !== 0) walk(bodyStart, bodyEnd, scope, env, names, repeated);
+          if (alternative) {
+            if (!repeated || condition !== undefined) inspectBranch(alternative.start, alternative.end, -branch, condition !== undefined && condition !== 0);
+            if (condition === undefined || condition === 0) walk(alternative.start, alternative.end, scope, env, names, repeated);
+          }
+        } else if(condition===undefined)boundaries.push({start:m.index,end:finish,reason:`generate 条件无法静态确定：${header}`});
         else if(condition)walk(bodyStart,bodyEnd,childScope(label),env,names);
         else if(alternative)walk(alternative.start,alternative.end,childScope(alternative.label),env,names);
+      }else if(inspectBranch) {
+        walk(bodyStart, bodyEnd, scope, env, names, true);
       }else {
         let variable:string|undefined,initial:number|undefined,condition:string|undefined,update:string|undefined,last:number|undefined,step=1;
         if(vhdl){const f=/^(\w+)\s+in\s+(.+?)\s+(to|downto)\s+(.+)$/i.exec(header);if(f){variable=f[1].toLowerCase();initial=evaluateConstant(f[2],env,true);last=evaluateConstant(f[4],env,true);step=f[3].toLowerCase()==="to"?1:-1;}}

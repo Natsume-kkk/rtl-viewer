@@ -639,7 +639,7 @@ export function parseVhdlProcess(text: string): ProcInfo {
       const t = tokens[i].text.toLowerCase();
       if (t === "end") break;
       if (t !== "when") { i++; continue; }
-      const labelStart = tokens[i + 1]?.index ?? text.length;
+      const labelStart = tokens[i].index + tokens[i].text.length;
       let k = i + 1;
       while (k < end && tokens[k].text !== "=>") k++;
       if (tokens[k]?.text !== "=>") return k;

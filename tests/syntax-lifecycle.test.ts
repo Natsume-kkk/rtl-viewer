@@ -7,9 +7,10 @@ import { ProblemPanel } from "../src/ui/problems";
 import { emptySyntaxCheckOptions, type SyntaxCheckResult } from "../src/ipc";
 import { syntaxReportCsv, syntaxReportHtml } from "../src/app/syntax-report";
 import { filePathKey, indexedFilePath } from "../src/file-path";
-import { scanStructure } from "../src/parser";
+import { parseFile, scanStructure } from "../src/parser";
 import { syntaxDependencyFiles } from "../src/app/syntax-order";
 import { syntaxScope } from "../src/app/syntax-scope";
+import { verilogEntityStubs } from "../src/app/syntax-stubs";
 import { createStructureScanner } from "../src/app/structure-scanner";
 
 // 执行真实入口函数，仅替换桌面 IO 与周边界面；避免加载整个 Monaco 应用。
@@ -22,8 +23,8 @@ function setup() {
   const old: SyntaxCheckResult = { requestId: 1, checkedFiles: 1, cancelled: false, backends: [{ name: "verilator", version: "old", files: 1, status: "completed" }], diagnostics: [] };
   panel.finish(old);
   const context = vm.createContext({
-    window, Date, filePathKey, indexedFilePath, syntaxScope, createStructureScanner,
-    syntaxScopeScanner: undefined, syntaxBackendStarted: false, activeTopFiles: new Set(), activeTopModules: new Set(), activeTopology: [], effectiveAnalysisTop: () => undefined,
+    window, Date, filePathKey, indexedFilePath, syntaxScope, createStructureScanner, verilogEntityStubs, parseFile,
+    syntaxScopeScanner: undefined, syntaxBackendStarted: false, activeTopFiles: new Set(), activeTopology: [], effectiveAnalysisTop: () => undefined,
     state: { folder: "D:/p", ips: [], structures: new Map(), contents: new Map(), definitionPreferences: new Map() },
     projectReady: true, syntaxRefreshTimer: undefined, syntaxSerial: 1, runningSyntaxRequest: 0, syntaxChangedWhileRunning: false,
     syntaxOptions: { ...emptySyntaxCheckOptions }, lastSyntaxOptions: { ...emptySyntaxCheckOptions }, lastSyntaxResult: old,
@@ -89,7 +90,6 @@ it("未保存新增例化按快照纳入传递子模块，移除后退出检查�
   context.groups = [{ tabs: { allTabs: [{ dirty: true, path: "D:/p/top.sv", encoding: "utf8", model: { getValue: () => edited } }] } }];
   context.analysisScope = "top";
   context.effectiveAnalysisTop = () => "top";
-  context.activeTopModules = new Set(["top"]);
   context.activeTopFiles = new Set([filePathKey("D:/p/top.sv")]);
   context.fileContent = (file: string) => file === "D:/p/top.sv" ? edited : sources.get(file);
   context.syntaxDependencyFiles = syntaxDependencyFiles;
@@ -101,6 +101,22 @@ it("未保存新增例化按快照纳入传递子模块，移除后退出检查�
   edited = sources.get("D:/p/top.sv")!;
   await context.runProjectSyntaxCheck();
   expect(context.runSyntaxCheck.mock.calls[1][1]).toEqual(["D:/p/top.sv"]);
+});
+
+it("桌面检查使用未保存的真实 Verilog 定义过滤同名 VHDL 黑盒", async () => {
+  const { context, old } = setup();
+  const sources = new Map([
+    ["D:/p/core.sv", "module before_edit; endmodule"],
+    ["D:/p/core.vhd", "entity core is end;"],
+    ["D:/p/vchild.vhd", "entity vchild is end;"],
+  ]);
+  context.state.contents = new Map([...sources].map(([file, content]) => [file, { content }]));
+  context.state.structures = new Map([...sources].map(([file, content]) => [file, scanStructure(content, file)]));
+  context.groups = [{ tabs: { allTabs: [{ dirty: true, path: "D:/p/core.sv", encoding: "utf8", model: { getValue: () => "module core; endmodule" } }] } }];
+  context.projectHdlFiles.mockReturnValue([...sources.keys()]);
+  context.runSyntaxCheck.mockResolvedValue(old);
+  expect(await context.runProjectSyntaxCheck()).toBe(true);
+  expect(context.runSyntaxCheck.mock.calls[0][5].map((stub: { name: string }) => stub.name)).toEqual(["vchild"]);
 });
 
 it("调用失败后导出旧结果仍记录过期和失败，成功重试后清除失败", async () => {

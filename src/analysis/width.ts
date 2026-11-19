@@ -26,20 +26,20 @@ export function declaredWidth(declaration: string | undefined): number | undefin
   return undefined;
 }
 
-export function expressionWidth(expression: string, widths: ReadonlyMap<string, number>): number | undefined {
+export function expressionWidth(expression: string, widths: ReadonlyMap<string, number>, vhdl = false): number | undefined {
   const text = stripParentheses(expression.trim());
-  if (/^[A-Za-z_]\w*$/.test(text)) return widths.get(text) ?? widths.get(text.toLowerCase());
+  if (/^[A-Za-z_]\w*$/.test(text)) return widths.get(vhdl ? text.toLowerCase() : text);
   if (/^'(?:0|1|x|z|u|w|l|h|-)'$/i.test(text)) return 1;
   const literal = /^(\d+)\s*'\s*[sS]?[bBoOdDhH][0-9a-fA-FxXzZ_?]+$/.exec(text);
   if (literal) return Number(literal[1]);
   const bit = /^([A-Za-z_]\w*)\s*\[\s*\d+\s*\]$/.exec(text);
-  if (bit && (widths.has(bit[1]) || widths.has(bit[1].toLowerCase()))) return 1;
+  if (bit && widths.has(bit[1])) return 1;
   const slice = /^([A-Za-z_]\w*)\s*\[\s*(\d+)\s*:\s*(\d+)\s*\]$/.exec(text);
-  if (slice && (widths.has(slice[1]) || widths.has(slice[1].toLowerCase()))) return Math.abs(Number(slice[2]) - Number(slice[3])) + 1;
+  if (slice && widths.has(slice[1])) return Math.abs(Number(slice[2]) - Number(slice[3])) + 1;
   if (text.startsWith("{") && text.endsWith("}")) {
     let total = 0;
     for (const part of splitTopLevel(text.slice(1, -1), ",")) {
-      const width = expressionWidth(part, widths);
+      const width = expressionWidth(part, widths, vhdl);
       if (width === undefined) return undefined;
       total += width;
     }

@@ -59,20 +59,24 @@ export function runGeneralRules(facts: FileFacts, includeStyle = false): RuleDia
 }
 
 function emitMultipleDrivers(facts: FileFacts, emit: (severity: RuleDiagnostic["severity"], ruleId: string, category: RuleDiagnostic["category"], line: number, column: number, message: string) => void): void {
-  const drivers = new Map<string, AssignmentFacts>();
+  const drivers = new Map<string, AssignmentFacts[]>();
   const reported = new Set<string>();
   for (const assignment of [...facts.processes.flatMap(process => process.assignments), ...facts.concurrentAssignments]) {
-    if (isProcessLocal(facts, assignment)) continue;
+    if (assignment.inactiveGenerate || isProcessLocal(facts, assignment)) continue;
     const target = assignment.targetText.trim();
     if (target !== assignment.target || !/^[A-Za-z_]\w*$/.test(target)) continue;
     const key = `${assignmentScope(facts, assignment)}|${facts.language === "vhdl" ? target.toLowerCase() : target}`;
-    const first = drivers.get(key);
-    if (first && (first.processIndex !== assignment.processIndex || first.processIndex === -1) && !reported.has(key)) {
+    if (reported.has(key)) continue;
+    const previous = drivers.get(key) ?? [];
+    const first = previous.find(driver => (driver.processIndex !== assignment.processIndex || driver.processIndex === -1)
+      && !driver.generateBranches?.some(branch => assignment.generateBranches?.includes(-branch)));
+    if (first) {
       reported.add(key);
       const id = facts.language === "vhdl" ? "VHD-SY-004" : "VLG-SY-005";
       emit("warning", id, "synth", assignment.line, 1, `信号“${target}”还在第 ${first.line} 行的过程或连续赋值中被驱动。`);
-    } else if (!first) {
-      drivers.set(key, assignment);
+    } else if (!previous.some(driver => driver.processIndex === assignment.processIndex && assignment.processIndex !== -1)) {
+      previous.push(assignment);
+      drivers.set(key, previous);
     }
   }
 }

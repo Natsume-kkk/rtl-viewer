@@ -56,6 +56,24 @@ it("未预先标记过期的结果在调用失败后也必须标记为旧结果"
   expect(panel.failureMessage).toBe("");
 });
 
+it("为空的检查结果按当前运行、失败、取消和完成状态更新文案", () => {
+  const { root, panel } = setup();
+  const empty = () => root.querySelector(".problem-empty")?.textContent;
+  const clean = { ...result(), diagnostics: [] };
+  panel.finish(clean);
+  expect(empty()).toContain("本次检查未发现问题");
+  panel.start();
+  expect(empty()).not.toContain("本次检查未发现问题");
+  panel.fail("backend unavailable");
+  expect(empty()).toContain("检查未完成");
+  panel.finish({ ...clean, cancelled: true });
+  expect(empty()).toContain("检查已取消");
+  panel.finish(clean);
+  expect(empty()).toContain("本次检查未发现问题");
+  panel.markStale();
+  expect(empty()).not.toContain("本次检查未发现问题");
+});
+
 it("同一文件不同 GHDL 错误共组时使用中性标题，明细和悬停保留各自原因", () => {
   const { root, panel, callbacks } = setup();
   const external = result();

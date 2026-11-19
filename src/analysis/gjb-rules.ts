@@ -319,7 +319,7 @@ export function runGjb9765Rules(facts: FileFacts): RuleDiagnostic[] {
     const widths = signalWidths(facts, scope);
     const binary = simpleBinary(assignment.expression, ["=", "/=", "<=", ">=", "<", ">", "+", "-", "*", "/"]);
     if (binary) {
-      const left = expressionWidth(binary.left, widths), right = expressionWidth(binary.right, widths);
+      const left = expressionWidth(binary.left, widths, true), right = expressionWidth(binary.right, widths, true);
       if (left !== undefined && right !== undefined && left !== right) emit("4.6-b", assignment.line, 1, `运算符“${binary.operator}”两侧位宽分别为 ${left} 和 ${right}。`);
     }
     for (const port of facts.ports.filter(port => moduleScopeAt(facts, port.line ?? 1, port.scope) === scope && (port.direction === "out" || port.direction === "output"))) {

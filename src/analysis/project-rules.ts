@@ -58,7 +58,8 @@ export function runProjectRules(files: FileFacts[]): RuleDiagnostic[] {
       }
       childPorts.forEach((port, index) => {
         const connection = named
-          ? instance.connections.find(item => item.port && bindingKey(facts, item.port) === bindingKey(facts, port.name))
+          ? (facts.language === "vhdl" && !instance.connections[index]?.port ? instance.connections[index] : undefined)
+            ?? instance.connections.find(item => item.port && bindingKey(facts, item.port) === bindingKey(facts, port.name))
           : instance.connections[index];
         const direction = port.direction?.toLowerCase();
         if (facts.language === "vhdl") {

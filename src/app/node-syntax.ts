@@ -7,6 +7,7 @@ import type { BackendSummary, SourceSnapshot, SyntaxCheckOptions, SyntaxCheckRes
 import { orderVerilogFiles, orderVhdlFiles } from "./syntax-order";
 import { readNodeSource } from "./node-source";
 import { explainVerilatorSyntax } from "./diagnostic-display";
+import { scanStructure } from "../parser";
 
 interface NodeCheckRequest {
   requestId: number;
@@ -53,7 +54,10 @@ export function runNodeSyntaxCheck(request: NodeCheckRequest): SyntaxCheckResult
     let checkedFiles = 0;
     if (verilog.length) {
       const version = toolVersion(tools, "verilator");
-      const top = vhdl.length && request.stubs.some(stub => stub.name.toLowerCase() === request.top?.toLowerCase()) ? undefined : request.top;
+      const requestedTop = request.top;
+      const stubTop = requestedTop && vhdl.length && request.stubs.some(stub => stub.name.toLowerCase() === requestedTop.toLowerCase());
+      const realTop = stubTop && verilog.some(file => scanStructure(readNodeSource(file.display), file.actual).some(module => module.name === requestedTop));
+      const top = stubTop && !realTop ? undefined : requestedTop;
       const outcome = runVerilator(tools, root, work, verilog, includeDirs, request.stubs, request.options, top);
       parseVerilator(outcome.output, root, diagnostics, snapshots.originals);
       const errors = diagnostics.filter(item => item.severity === "error");

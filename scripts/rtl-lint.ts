@@ -9,8 +9,8 @@ import { runGjb10157Rules, runGjb9765Rules } from "../src/analysis/gjb-rules";
 import { runProjectRules } from "../src/analysis/project-rules";
 import { ALL_RULE_PREFERENCES, applyRulePreferences } from "../src/analysis/rule-preferences";
 import { emptySyntaxCheckOptions, type SyntaxCheckResult, type SyntaxStub } from "../src/ipc";
-import { parseFile, parseXci } from "../src/parser";
-import { verilogStub, vhdlStub } from "../src/app/syntax-stubs";
+import { parseFile, parseXci, scanStructure } from "../src/parser";
+import { verilogEntityStubs, verilogStub, vhdlStub } from "../src/app/syntax-stubs";
 import { syntaxReportCsv, syntaxReportHtml } from "../src/app/syntax-report";
 import { projectFiles } from "../src/app/project-files";
 import { readNodeSource } from "../src/app/node-source";
@@ -43,12 +43,13 @@ function main(argv: string[]): number {
   }
   const root = path.resolve(options.root);
   const resolvedOptions = syntaxOptions(options);
+  const externalFiles = [...new Set([...files, ...resolvedOptions.vhdlLibraries.map(mapping => mapping.file)])];
   const external = options.external ? runNodeSyntaxCheck({
     requestId: 1,
     root,
-    files: [...new Set([...files, ...resolvedOptions.vhdlLibraries.map(mapping => mapping.file)])],
+    files: externalFiles,
     top: options.top,
-    ...buildStubs(scanned),
+    ...buildStubs([...externalFiles, ...scanned.filter(file => /\.xci$/i.test(file))]),
     options: resolvedOptions,
   }) : { requestId: 1, diagnostics: [], checkedFiles: 0, backends: [], cancelled: false };
   const facts = files.map(file => analyzeFileFacts(file, readNodeSource(file)));
@@ -139,7 +140,9 @@ export function collect(target: string, depth = 0): string[] {
 
 export function buildStubs(files: string[]): { stubs: SyntaxStub[]; vhdlStubs: SyntaxStub[] } {
   const stubs: SyntaxStub[] = [], vhdlStubs: SyntaxStub[] = [];
-  for (const file of files.filter(file => file.endsWith(".xci"))) {
+  const occupied = new Set(files.filter(file => /\.(?:v|sv)$/i.test(file))
+    .flatMap(file => scanStructure(readNodeSource(file), file).map(module => module.name)));
+  for (const file of files.filter(file => /\.xci$/i.test(file))) {
     const ip = parseXci(readNodeSource(file), file);
     const base = file.replace(/\.xci$/i, "");
     const dir = path.dirname(file);
@@ -148,25 +151,15 @@ export function buildStubs(files: string[]): { stubs: SyntaxStub[]; vhdlStubs: S
       const modules = parseFile(readNodeSource(candidate), candidate);
       const module = modules.find(item => item.name.toLowerCase() === ip.name.toLowerCase()) ?? modules[0];
       if (module?.ports.length) {
-        stubs.push({ name: ip.name, source: verilogStub(ip.name, module.ports, module.parameters ?? []) });
+        if (!occupied.has(ip.name)) stubs.push({ name: ip.name, source: verilogStub(ip.name, module.ports, module.parameters ?? []) });
         vhdlStubs.push({ name: ip.name, source: vhdlStub(ip.name, module.ports, module.parameters ?? []) });
       }
       break;
     }
   }
-  const entities = new Map<string, ReturnType<typeof parseFile>>();
-  for (const file of files.filter(file => /\.(?:vhd|vhdl)$/i.test(file))) {
-    for (const module of parseFile(readNodeSource(file), file)) {
-      if (!module.vhdl?.entity) continue;
-      const key = module.name.toLowerCase();
-      entities.set(key, [...entities.get(key) ?? [], module]);
-    }
-  }
-  for (const definitions of entities.values()) {
-    if (definitions.length !== 1) continue;
-    const module = definitions[0];
-    stubs.push({ name: module.name, source: verilogStub(module.name, module.ports, module.parameters ?? [], true) });
-  }
+  for (const stub of stubs) occupied.add(stub.name);
+  const entities = files.filter(file => /\.vhdl?$/i.test(file)).flatMap(file => parseFile(readNodeSource(file), file));
+  stubs.push(...verilogEntityStubs(entities, occupied));
   return { stubs, vhdlStubs };
 }
 

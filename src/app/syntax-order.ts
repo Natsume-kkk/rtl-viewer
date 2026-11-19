@@ -37,7 +37,9 @@ function vhdlDependencies<T extends OrderedFile>(files: T[], read: (file: T) => 
   const specifications = new Map<string, number>();
   const bodies = new Map<string, number>();
   const entities = new Map<string, number>();
+  const contexts = new Map<string, number>();
   texts.forEach((text, index) => {
+    const library = files[index].library.toLowerCase();
     for (const window of windows(words(text), 3)) {
       if (window[0] === "package" && (window[1] === "body" || window[2] === "is")) {
         const body = window[1] === "body";
@@ -49,6 +51,10 @@ function vhdlDependencies<T extends OrderedFile>(files: T[], read: (file: T) => 
         const key = `${files[index].library.toLowerCase()}.${window[1]}`;
         if (!entities.has(key)) entities.set(key, index);
       }
+      if (window[0] === "context" && window[2] === "is") {
+        const key = `${library}.${window[1]}`;
+        if (!contexts.has(key)) contexts.set(key, index);
+      }
     }
   });
   const dependencies = files.map(() => new Set<number>());
@@ -59,6 +65,13 @@ function vhdlDependencies<T extends OrderedFile>(files: T[], read: (file: T) => 
   texts.forEach((text, index) => {
     const tokens = words(text);
     const library = files[index].library.toLowerCase();
+    for (const reference of text.matchAll(/\bcontext\s+((?:[a-z_]\w*\s*\.\s*[a-z_]\w*\s*,\s*)*[a-z_]\w*\s*\.\s*[a-z_]\w*)\s*;/g)) {
+      for (const selectedName of reference[1].split(",")) {
+        const [prefix, name] = selectedName.split(".").map(part => part.trim());
+        const provider = contexts.get(`${prefix === "work" ? library : prefix}.${name}`);
+        if (provider !== undefined && provider !== index) dependencies[index].add(provider);
+      }
+    }
     for (const pair of windows(tokens, 2)) {
       const packageProvider = specifications.get(`${pair[0] === "work" ? library : pair[0]}.${pair[1]}`);
       if (packageProvider !== undefined && packageProvider !== index) dependencies[index].add(packageProvider);

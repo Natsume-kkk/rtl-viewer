@@ -239,7 +239,8 @@ end architecture;`,
     const primitives = [
       "FDRE", "FDCE", "LDCE", "SRLC32E", "RAMB36E1", "DSP48E1",
       "MMCME2_ADV", "PLLE2_ADV", "DCM_ADV", "IBUFDS", "OBUFDS",
-      "IBUFG", "IBUFGDS", "BUFGCE", "BUFIO", "BUFR", "BUFMRCE", "IDELAYCTRL",
+      "IBUFG", "IBUFGDS", "BUFGCE", "BUFGCE_DIV", "BUFG_GT", "BUFG_FABRIC", "BUFCE_LEAF", "BUFCE_ROW", "BUFIO", "BUFR", "BUFMRCE", "IDELAYCTRL",
+      "FIFO18E2", "FIFO36E2", "URAM288", "URAM288_BASE", "XADC", "DNA_PORT", "EFUSE_USR",
     ];
     const insts = primitives.map((m, i) => `  ${m} u_${i} ();`).join("\n");
     const h = buildFromFiles({ "top.v": `module top;\n${insts}\nendmodule` });

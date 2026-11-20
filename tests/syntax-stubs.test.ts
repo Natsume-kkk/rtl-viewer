@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import { verilogStub, vhdlStub } from "../src/app/syntax-stubs";
-import { parseFile } from "../src/parser";
+import { verilogPrimitiveStubs, verilogStub, vhdlStub } from "../src/app/syntax-stubs";
+import { parseFile, parseFileDetail } from "../src/parser";
 
 it("VHDL 黑盒保留端口方向、参数和常见位宽", () => {
   const source = verilogStub("demo", [
@@ -28,6 +28,15 @@ it("Verilog IP 黑盒保留输入输出方向和位宽，不包含内部实现",
   expect(source).toContain("output wire [7:0] data");
   expect(source).not.toContain("inout wire clk");
   expect(source).not.toContain("secret");
+});
+
+it("厂商原语黑盒合并例化端口和参数，真实定义与未知模块不生成 Stub", () => {
+  const modules = parseFileDetail("module top; LUT2 #(.INIT(4'h0)) u_lut(.I0(a), .I1(b), .O(y)); IOBUF u_io(.I(a), .O(y), .T(b), .IO(bus)); BUFG u_buf(.I(a), .O(y)); missing u_missing(); endmodule", "top.sv");
+  const stubs = verilogPrimitiveStubs(modules, new Set(["BUFG"]));
+  expect(stubs.map(stub => stub.name)).toEqual(["LUT2", "IOBUF"]);
+  expect(stubs[0].source).toContain("module LUT2 #(parameter INIT = 0) (input wire I0, input wire I1, output wire O);");
+  expect(stubs[1].source).toContain("input wire I, output wire O, input wire T, inout wire IO");
+  expect(stubs[0].source).not.toContain("assign");
 });
 
 it("GHDL 黑盒生成独立 entity 接口并转换 Verilog 位宽", () => {

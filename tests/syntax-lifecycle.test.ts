@@ -7,10 +7,10 @@ import { ProblemPanel } from "../src/ui/problems";
 import { emptySyntaxCheckOptions, type SyntaxCheckResult } from "../src/ipc";
 import { syntaxReportCsv, syntaxReportHtml } from "../src/app/syntax-report";
 import { filePathKey, indexedFilePath } from "../src/file-path";
-import { parseFile, scanStructure } from "../src/parser";
+import { parseFile, parseFileDetail, scanStructure } from "../src/parser";
 import { syntaxDependencyFiles } from "../src/app/syntax-order";
 import { syntaxScope } from "../src/app/syntax-scope";
-import { verilogEntityStubs } from "../src/app/syntax-stubs";
+import { verilogEntityStubs, verilogPrimitiveStubs, vhdlPrimitiveStubs } from "../src/app/syntax-stubs";
 import { createStructureScanner } from "../src/app/structure-scanner";
 
 // 执行真实入口函数，仅替换桌面 IO 与周边界面；避免加载整个 Monaco 应用。
@@ -23,7 +23,7 @@ function setup() {
   const old: SyntaxCheckResult = { requestId: 1, checkedFiles: 1, cancelled: false, backends: [{ name: "verilator", version: "old", files: 1, status: "completed" }], diagnostics: [] };
   panel.finish(old);
   const context = vm.createContext({
-    window, Date, filePathKey, indexedFilePath, syntaxScope, createStructureScanner, verilogEntityStubs, parseFile,
+    window, Date, filePathKey, indexedFilePath, syntaxScope, createStructureScanner, verilogEntityStubs, verilogPrimitiveStubs, vhdlPrimitiveStubs, parseFile, parseFileDetail,
     syntaxScopeScanner: undefined, syntaxBackendStarted: false, activeTopFiles: new Set(), activeTopology: [], effectiveAnalysisTop: () => undefined,
     state: { folder: "D:/p", ips: [], structures: new Map(), contents: new Map(), definitionPreferences: new Map() },
     projectReady: true, syntaxRefreshTimer: undefined, syntaxSerial: 1, runningSyntaxRequest: 0, syntaxChangedWhileRunning: false,
@@ -117,6 +117,26 @@ it("桌面检查使用未保存的真实 Verilog 定义过滤同名 VHDL 黑盒"
   context.runSyntaxCheck.mockResolvedValue(old);
   expect(await context.runProjectSyntaxCheck()).toBe(true);
   expect(context.runSyntaxCheck.mock.calls[0][5].map((stub: { name: string }) => stub.name)).toEqual(["vchild"]);
+});
+
+it("桌面检查为 Verilog 和 VHDL 厂商原语生成接口黑盒", async () => {
+  const { context, old } = setup();
+  const sources = new Map([
+    ["D:/p/a.sv", "module top(input d, output q); BUFG u_buf(.I(d), .O(q)); endmodule"],
+    ["D:/p/b.vhd", "entity vtop is end; architecture rtl of vtop is begin u_buf:entity work.BUFG port map(I=>'0',O=>open); end;"],
+  ]);
+  context.state.contents = new Map([...sources].map(([file, content]) => [file, { content }]));
+  context.state.structures = new Map([...sources].map(([file, content]) => [file, scanStructure(content, file)]));
+  context.projectHdlFiles.mockReturnValue([...sources.keys()]);
+  context.runSyntaxCheck.mockResolvedValue(old);
+  expect(await context.runProjectSyntaxCheck()).toBe(true);
+  const stubs = context.runSyntaxCheck.mock.calls[0][5];
+  expect(stubs.map((stub: { name: string }) => stub.name)).toContain("BUFG");
+  expect(stubs.find((stub: { name: string }) => stub.name === "BUFG").source).toContain("input wire I, output wire O");
+  const vhdlStubs = context.runSyntaxCheck.mock.calls[0][8];
+  expect(vhdlStubs.map((stub: { name: string }) => stub.name)).toEqual(["BUFG"]);
+  expect(vhdlStubs[0].source).toContain("I : in std_logic");
+  expect(vhdlStubs[0].source).toContain("O : out std_logic");
 });
 
 it("调用失败后导出旧结果仍记录过期和失败，成功重试后清除失败", async () => {

@@ -50,6 +50,38 @@ it("未知黑盒默认值要求显式参数覆盖，不生成确定的假位宽"
   expect(runNodeSyntaxCheck({ ...request, top: "top", stubs: [{ name: "child", source }] }).diagnostics).toContainEqual(expect.objectContaining({ severity: "error", message: expect.stringMatching(/parameter|default/i) }));
 });
 
+it("厂商原语使用例化接口黑盒且不影响未知模块诊断", () => {
+  const request = syntaxFixture({
+    "top.sv": "module top(input wire d, output wire q); BUFG u_buf(.I(d), .O(q)); missing u_missing(); endmodule\n",
+  });
+  const stubs = buildStubs(request.files);
+  expect(stubs.stubs.map(stub => stub.name)).toEqual(["BUFG"]);
+  const result = runNodeSyntaxCheck({ ...request, top: "top", ...stubs });
+  expect(result.diagnostics.filter(item => item.severity === "error")).toEqual([
+    expect.objectContaining({ ruleId: "VERILATOR-MODMISSING", message: expect.stringContaining("missing") }),
+  ]);
+});
+
+it("VHDL 直接例化的厂商原语使用接口黑盒", () => {
+  const request = syntaxFixture({
+    "top.vhd": "library ieee; use ieee.std_logic_1164.all; entity top is port(a:in std_logic; q:out std_logic); end; architecture rtl of top is begin u_buf:entity work.BUFG port map(I=>a,O=>q); end;\n",
+  });
+  const stubs = buildStubs(request.files);
+  expect(stubs.vhdlStubs.map(stub => stub.name)).toEqual(["BUFG"]);
+  const result = runNodeSyntaxCheck({ ...request, top: "top", ...stubs });
+  expect(result.diagnostics.filter(item => item.severity === "error")).toEqual([]);
+});
+
+it("补充识别的原语变体不引入缺模块或端口方向错误", () => {
+  const request = syntaxFixture({
+    "top.sv": "module top(input wire a, input wire ce, output wire q); BUFGCE_DIV u_buf(.I(a), .CE(ce), .CLR(1'b0), .O(q)); endmodule\n",
+  });
+  const stubs = buildStubs(request.files);
+  expect(stubs.stubs.map(stub => stub.name)).toEqual(["BUFGCE_DIV"]);
+  const result = runNodeSyntaxCheck({ ...request, top: "top", ...stubs });
+  expect(result.diagnostics.filter(item => item.severity === "error")).toEqual([]);
+});
+
 it("CLI 分文件 entity 和 architecture 只生成一个完整接口", () => {
   const request = syntaxFixture({
     "top.sv": "module top(input a,output y); child u(.a(a),.y(y)); endmodule\n",

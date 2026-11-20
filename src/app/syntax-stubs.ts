@@ -1,5 +1,50 @@
 import type { ModuleInfo, ParameterInfo, PortInfo } from "../parser";
 import { evaluateConstant } from "../parser/static-generate";
+import { isVendorPrimitive } from "../model/hierarchy";
+
+export function verilogPrimitiveStubs(modules: Iterable<ModuleInfo>, occupied: ReadonlySet<string>) {
+  return primitiveInterfaces(modules, false, occupied).map(primitive => ({
+    name: primitive.name,
+    source: verilogStub(primitive.name, primitive.ports, primitive.parameters),
+  }));
+}
+
+export function vhdlPrimitiveStubs(modules: Iterable<ModuleInfo>, occupied: ReadonlySet<string>) {
+  return primitiveInterfaces(modules, true, occupied).map(primitive => ({
+    name: primitive.name,
+    source: vhdlStub(primitive.name, primitive.ports, primitive.parameters),
+  }));
+}
+
+function primitiveInterfaces(modules: Iterable<ModuleInfo>, vhdl: boolean, occupied: ReadonlySet<string>) {
+  const primitives = new Map<string, { name: string; ports: Map<string, PortInfo>; parameters: Map<string, ParameterInfo> }>();
+  for (const module of modules) {
+    if (!!module.vhdl !== vhdl) continue;
+    for (const instance of module.instances) {
+      const key = vhdl ? instance.module.toLowerCase() : instance.module;
+      if (occupied.has(key) || !isVendorPrimitive(instance.module)) continue;
+      const primitive = primitives.get(key) ?? { name: instance.module, ports: new Map<string, PortInfo>(), parameters: new Map<string, ParameterInfo>() };
+      primitives.set(key, primitive);
+      for (const [index, connection] of (instance.connections ?? []).entries()) {
+        const name = connection.port ?? `port_${index}`;
+        const portKey = vhdl ? name.toLowerCase() : name;
+        if (!primitive.ports.has(portKey)) primitive.ports.set(portKey, { name, direction: primitivePortDirection(name) });
+      }
+      for (const [index, override] of (instance.parameterOverrides ?? []).entries()) {
+        const name = override.name ?? `parameter_${index}`;
+        const parameterKey = vhdl ? name.toLowerCase() : name;
+        if (!primitive.parameters.has(parameterKey)) primitive.parameters.set(parameterKey, { name, defaultValue: "0" });
+      }
+    }
+  }
+  return [...primitives.values()].map(primitive => ({ name: primitive.name, ports: [...primitive.ports.values()], parameters: [...primitive.parameters.values()] }));
+}
+
+function primitivePortDirection(name: string): string {
+  if (/^IO\d*$/i.test(name)) return "inout";
+  if (/^(?:O|Q)\d*$/i.test(name)) return "output";
+  return "input";
+}
 
 export function verilogEntityStubs(modules: Iterable<ModuleInfo>, occupied: ReadonlySet<string>) {
   const entities = new Map<string, ModuleInfo[]>();

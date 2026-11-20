@@ -11,7 +11,7 @@ import { extractOutline, breadcrumbAt, OUTLINE_KIND_LABELS } from "./model/outli
 import type { OutlineItem } from "./model/outline";
 import { createProjectSearch } from "./app/project-search";
 import { analyzeDefinitionChoices } from "./app/definition-choices";
-import { parseFile, scanStructure } from "./parser";
+import { parseFileDetail, scanStructure } from "./parser";
 import type { ModuleInfo, IpInfo } from "./parser";
 import { openFolderDialog, openFileDialog, pathExists, showInFolder, isDirectory, normalizePath, runSyntaxCheck, cancelSyntaxCheck, saveReportDialog, writeFile, type SyntaxCheckResult } from "./ipc";
 import { ProblemPanel, type ProblemIndicator } from "./ui/problems";
@@ -40,7 +40,7 @@ import { createSignalController } from "./app/signal-controller";
 import { createModuleMetadataLoader } from "./app/module-metadata";
 import { createProjectScanner } from "./app/project-scanner";
 import { isGeneratedNetlist } from "./app/project-files";
-import { verilogEntityStubs, verilogStub, vhdlStub } from "./app/syntax-stubs";
+import { verilogEntityStubs, verilogPrimitiveStubs, verilogStub, vhdlPrimitiveStubs, vhdlStub } from "./app/syntax-stubs";
 import { loadSyntaxOptions, saveSyntaxOptions, configuredPath, validateSyntaxOptions } from "./app/syntax-options";
 import { showSyntaxOptionsDialog } from "./ui/syntax-options";
 import { createFactsScheduler } from "./app/facts-scheduler";
@@ -475,13 +475,19 @@ async function runProjectSyntaxCheck(): Promise<boolean> {
       return { name: ip.name, source: ports.length ? verilogStub(ip.name, ports, parameters) : "" };
     }))).filter(stub => stub.source);
     for (const stub of ipStubs) occupied.add(stub.name);
-    const vhdlModules = files.filter(file => /\.vhdl?$/i.test(file)).flatMap(file => parseFile(contents.get(file) ?? "", file));
+    const vhdlModules = files.filter(file => /\.vhdl?$/i.test(file)).flatMap(file => parseFileDetail(contents.get(file) ?? "", file));
     const verilogVhdlStubs = verilogEntityStubs(vhdlModules, occupied);
-    const vhdlStubs = (await Promise.all(selectedIps.map(async ip => {
+    for (const stub of verilogVhdlStubs) occupied.add(stub.name);
+    const verilogModules = files.filter(file => /\.(?:v|sv)$/i.test(file)).flatMap(file => parseFileDetail(contents.get(file) ?? "", file));
+    const primitiveStubs = verilogPrimitiveStubs(verilogModules, occupied);
+    const ipVhdlStubs = (await Promise.all(selectedIps.map(async ip => {
       const ports = await modulePorts(ip.name);
       return { name: ip.name, source: ports.length ? vhdlStub(ip.name, ports, await moduleIpParameters(ip.name)) : "" };
     }))).filter(stub => stub.source);
-    const stubs = [...ipStubs, ...verilogVhdlStubs];
+    const vhdlOccupied = new Set(vhdlModules.filter(module => module.vhdl?.entity).map(module => module.name.toLowerCase()));
+    for (const stub of ipVhdlStubs) vhdlOccupied.add(stub.name.toLowerCase());
+    const vhdlStubs = [...ipVhdlStubs, ...vhdlPrimitiveStubs(vhdlModules, vhdlOccupied)];
+    const stubs = [...ipStubs, ...verilogVhdlStubs, ...primitiveStubs];
     if (request !== syntaxSerial || folder !== state.folder) return false;
     const options = {
       ...syntaxOptions,

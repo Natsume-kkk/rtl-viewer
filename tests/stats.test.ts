@@ -38,7 +38,8 @@ it("统计与诊断口径一致，支持排序、下钻和部分分析状态", (
   expect(root.querySelector(".stats-check-status")!.textContent).toContain("上次快照");
   expect(root.querySelector(".stats-check-status")!.textContent).not.toContain("人工核对");
   expect(root.querySelector(".stats-table")!.textContent).toContain("待分析");
-  expect([...root.querySelectorAll(".stats-table tbody tr:first-child td")].map(cell => cell.textContent)).toEqual(["合计", "4", "20%", "0", String(diagnostics.length)]);
+  expect([...root.querySelectorAll(".stats-table th button")].map(button => button.textContent)).toEqual(["文件", "总行数", "代码行", "注释比例", "例化", "问题"]);
+  expect([...root.querySelectorAll(".stats-table tbody tr:first-child td")].map(cell => cell.textContent)).toEqual(["合计", "6", "4", "20%", "0", String(diagnostics.length)]);
   [...root.querySelectorAll<HTMLButtonElement>(".stats-diagnostic")].find(button => button.textContent === "错误 1")!.click();
   expect(onOpenProblems).toHaveBeenCalledWith({ severity: "error" });
   const fileLink = [...root.querySelectorAll<HTMLButtonElement>(".stats-table td button")].find(button => button.title === "D:/project/a.sv")!;
@@ -80,7 +81,7 @@ it("模块拓扑按需展开，定位按钮打开定义行且不显示长目录"
   expect(header.nextElementSibling).toBe(root.querySelector(".stats-topology-total"));
   expect(rootRow.children[1]).toBe(rootRow.querySelector(".stats-topology-label"));
   expect(rootRow.lastElementChild).toBe(rootRow.querySelector(".stats-open-file"));
-  expect([...root.querySelector(".stats-topology-total")!.children].map(cell => cell.textContent)).toEqual(["", "合计", "2", "0%", "0", "1", ""]);
+  expect([...root.querySelector(".stats-topology-total")!.children].map(cell => cell.textContent)).toEqual(["", "合计", "2", "2", "0%", "0", "1", ""]);
   expect(root.textContent).not.toContain("D:/project");
   childNode.querySelector("summary")!.click();
   expect(childNode.open).toBe(true);

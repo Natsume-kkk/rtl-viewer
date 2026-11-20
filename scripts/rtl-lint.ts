@@ -9,8 +9,8 @@ import { runGjb10157Rules, runGjb9765Rules } from "../src/analysis/gjb-rules";
 import { runProjectRules } from "../src/analysis/project-rules";
 import { ALL_RULE_PREFERENCES, applyRulePreferences } from "../src/analysis/rule-preferences";
 import { emptySyntaxCheckOptions, type SyntaxCheckResult, type SyntaxStub } from "../src/ipc";
-import { parseFile, parseXci, scanStructure } from "../src/parser";
-import { verilogEntityStubs, verilogStub, vhdlStub } from "../src/app/syntax-stubs";
+import { parseFile, parseFileDetail, parseXci, scanStructure } from "../src/parser";
+import { verilogEntityStubs, verilogPrimitiveStubs, verilogStub, vhdlPrimitiveStubs, vhdlStub } from "../src/app/syntax-stubs";
 import { syntaxReportCsv, syntaxReportHtml } from "../src/app/syntax-report";
 import { projectFiles } from "../src/app/project-files";
 import { readNodeSource } from "../src/app/node-source";
@@ -158,8 +158,15 @@ export function buildStubs(files: string[]): { stubs: SyntaxStub[]; vhdlStubs: S
     }
   }
   for (const stub of stubs) occupied.add(stub.name);
-  const entities = files.filter(file => /\.vhdl?$/i.test(file)).flatMap(file => parseFile(readNodeSource(file), file));
-  stubs.push(...verilogEntityStubs(entities, occupied));
+  const entities = files.filter(file => /\.vhdl?$/i.test(file)).flatMap(file => parseFileDetail(readNodeSource(file), file));
+  const entityStubs = verilogEntityStubs(entities, occupied);
+  stubs.push(...entityStubs);
+  for (const stub of entityStubs) occupied.add(stub.name);
+  const vhdlOccupied = new Set(entities.filter(module => module.vhdl?.entity).map(module => module.name.toLowerCase()));
+  for (const stub of vhdlStubs) vhdlOccupied.add(stub.name.toLowerCase());
+  vhdlStubs.push(...vhdlPrimitiveStubs(entities, vhdlOccupied));
+  const modules = files.filter(file => /\.(?:v|sv)$/i.test(file)).flatMap(file => parseFileDetail(readNodeSource(file), file));
+  stubs.push(...verilogPrimitiveStubs(modules, occupied));
   return { stubs, vhdlStubs };
 }
 
